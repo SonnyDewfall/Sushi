@@ -7239,3 +7239,23 @@ file edit, so only the end is pushed; and a push read mid-write took a
 panel's focus away, so a page holds a push until 0.3 s after its own write.
 Not opened on a phone or installed from one, not tried through a proxy or
 with a pedal, not run on the rig. *(2026-11-24)*
+
+**Pushed changes, PR #242's review (#139).** Six findings. (1) A swept pedal
+or a dragged knob made every page poll back to back, each a full read of
+Sushi: now a `midi` push (a message of a control the machine file names;
+none for any other) reads `/health` alone, a push reads the whole rig at most
+twice a second a page, and `GET /live` requests that come while a read is
+under way, with no change since it began, share it (in flight only, never a
+finished read, so Sushi gone or back is read afresh). Three pages, 40
+footswitch presses in two seconds: 6 reads of the rig, against 27 before. (2)
+The 5 s write timeout never fires for writes this small, so a phone gone
+without closing held a stream for the kernel's ~15 minutes: each stream's
+socket now has `TCP_USER_TIMEOUT` 30 s and keepalive from 10 s (read back in
+a test; no half-open peer is made), and one address may hold 4 streams
+(loopback only the total of 32, for a proxy on the rig). (3) The hold after
+the page's own write is by time (0.3 s after its end), since the answer
+usually comes before the push. (4) The hub knows its loop from the app's
+start. (5) `index.html` preloads the fonts; the wait before the first draw is
+0.5 s, and the stream opens after it. (6) The stream tests assert order and
+counts, not short wall-clock limits. Not run on the rig. *(2026-11-24)*
+

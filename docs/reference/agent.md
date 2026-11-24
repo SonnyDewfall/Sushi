@@ -294,7 +294,8 @@ of a write answered (any `POST`, whatever its answer, but the visualiser's
 tap lease), `log` (an entry in the operation log: a pedal's change too),
 `busy` (a lifecycle command, a switch, a save ending; not starting, since
 while one runs a page draws no chain, and most take a fraction of a second), `midi` (a
-message heard: the pedals' lights) and `supervisor` (a child of the rig that
+message of a control the machine file names: the pedals' lights, for which the
+page reads `/health` alone) and `supervisor` (a child of the rig that
 exited with no `down`), or `many` past sixteen at once. An event says what
 changed and carries no state: the page polls `/health`, `/live` and the rest
 at once, as it does every second, because its poll is the one place its
@@ -308,13 +309,28 @@ dependency.
 
 - **Coalesced.** Changes that come within 0.25 s of a stream's last event go
   in its next one (`events.GAP`), so a swept pedal is at most four events a
-  second to each page, and each page at most four polls a second.
-- **A slow client holds up nothing.** Publishing never waits; each stream is
-  written by its own handler, and one whose write does not finish within 5 s
-  (`WRITE_TIMEOUT`) is dropped. A comment line every 15 s keeps a quiet stream
-  open through a proxy, and a page that has gone is noticed within a second.
-- **At most 32 streams** (`MAX_STREAMS`); past it, `503 too_many_streams`,
-  and the page polls alone and tries again in 10 s.
+  second to each page; the page reads the whole rig for them at most twice a
+  second ([the web UI](web-ui.md#how-it-reads-the-rig)).
+- **One read for pages reading together.** `GET /live` requests that come
+  while a read of Sushi is under way, with no change since it began
+  (`events.seq`), share that read (`Agent._live_shared_read`): the pages a
+  push brings poll within a few milliseconds of one another. Never a read
+  once done, and never one begun before a change, so no page is given a
+  reading older than what it was told of.
+- **A slow or gone client holds up nothing.** Publishing never waits; each
+  stream is written by its own handler, and one whose write does not finish
+  within 5 s (`WRITE_TIMEOUT`) is dropped. Writes are a few hundred bytes,
+  which aiohttp never waits to drain, so that alone would not notice a phone
+  that left the Wi-Fi without closing: each stream's socket has
+  `TCP_USER_TIMEOUT` of 30 s and keepalive from 10 s of quiet (Linux;
+  elsewhere what the platform has), so the kernel gives such a peer up in
+  about 30 s rather than the 15 minutes of its own retransmission limit. A
+  comment line every 15 s keeps a quiet stream open through a proxy, and a
+  page that has closed is noticed within a second.
+- **At most 32 streams** (`MAX_STREAMS`), **and 4 from one address**
+  (`MAX_PER_PEER`; loopback is held to the total alone, since a reverse
+  proxy on the rig brings every phone from 127.0.0.1); past either, `503
+  too_many_streams`, and the page polls alone and tries again in 10 s.
 - **The guard.** Another site's page asking for it is refused, `403
   cross_site`, as for a write (`GUARDED_READS`).
 - **Shutdown.** Every stream ends when the agent stops, before aiohttp waits

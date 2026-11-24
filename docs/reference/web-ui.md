@@ -730,19 +730,30 @@ started, stopped or switched (from a page or a pedal), a save, a recording,
 a pedal heard (its light), a crashed child. The page then polls at once, the
 same poll it makes every second, so a knob turned on the phone moves on the
 laptop within a fraction of a second rather than up to a second later
-(measured in Chromium against the fake rig: about 0.1 s for a bypass, 0.3 s
-for a knob turned just after it, since the agent sends at most four events a
-second to a page). The event names what changed and carries no state: the
-poll is the one place the page puts its answers together. The poll stays,
+(measured in Chromium against the fake rig: about 0.1 s for a bypass, 0.2 s
+for a knob turned 0.6 s after it). The event names what changed and carries
+no state: the poll is the one place the page puts its answers together. What
+a push costs is bounded: an event that names only the pedals' lights (`midi`)
+reads `/health` alone, kept only if it shows the same run and nothing
+running (else it is a whole poll); and a push reads the whole rig at most
+twice a second a page (`PUSH_LIVE_MS`, one read at the end covering
+everything pushed meanwhile). A swept pedal or a knob dragged on another
+device is then the second's poll and two reads a second on each page, and
+the agent answers pages that ask for `/live` together with one read of Sushi
+([the agent](agent.md#pushed-changes)). Measured against the fake rig, three
+pages, two seconds each: 40 footswitch presses cost 6 reads of the rig (27
+before this bound), 40 knob changes 18. The poll stays,
 at its second: for what the agent cannot see (the Open Stage Control panel
 and Sushi's own MIDI change Sushi without it), and as the fallback when the
 stream is down. The browser opens the stream again by itself after the agent
 restarts or the network drops, and the page polls as it does, so what it
 missed meanwhile shows; a stream the agent refused (too many open, 503) is
 tried again after 10 s. A push that comes while the page's own write is in
-flight is read 0.3 s after its last write instead (`PUSH_HELD_MS`): a read
-landing between a write and what the page does with its answer (closing a
-panel, giving the focus back) took the focus away. A command starting (a
+flight, or within 0.3 s of its end (`PUSH_HELD_MS`), is read when that time
+has passed: a read landing between a write and what the page does with its
+answer (closing a panel, giving the focus back) took the focus away. By
+time, not by the write being in flight, since its answer usually comes
+before the push. A command starting (a
 start, a switch, a save) is not pushed, only its end: while one runs the page
 draws no chain, and most take a fraction of a second, so pushing the start
 made every open page drop its chain and draw it again for each. A long one
@@ -761,7 +772,8 @@ project's variable WOFF2, byte for byte, with its OFL licence beside it;
 `fonts/README.md` says where each came from, at which commit and version,
 and its checksum, which a test holds. Upright only, 375 KB together: nothing
 in `style.css` sets italic (the guide's emphasis is the browser's slant of the
-upright). The page asks for them before its first draw (up to 1 s), so it is
+upright). `index.html` preloads them, and the page waits for them before its
+first draw and before opening its stream (up to 0.5 s), so it is
 not laid out in the system's fonts and again a moment later in its own; once
 in, nothing reflows. Two places their metrics moved are set to hold: the
 record head's Help link takes 20 px of the row (Newsreader's line at 22 px is

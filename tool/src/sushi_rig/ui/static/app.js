@@ -19,11 +19,15 @@ const EVENTS_PATH = "/events";
 // How long after its own last write the page reads a change pushed meanwhile
 // (`pushed`): long enough for it to have finished with the answer.
 const PUSH_HELD_MS = 300;
-// The page's three fonts (#139, style.css) are asked for before its first
-// draw, so it is not laid out in the system's fonts and again a moment later
-// in its own: they are the agent's files, a few ms away. It draws after this
-// long whatever has arrived.
-const FONTS_MS = 1000;
+// A push reads the whole rig (/live, a full read of Sushi) at most once this
+// often (`pushed`): a pedal swept or a knob dragged elsewhere is two reads a
+// second on each page, not one after another.
+const PUSH_LIVE_MS = 500;
+// The page's three fonts (#139, style.css, preloaded by index.html) are
+// asked for before its first draw, so it is not laid out in the system's
+// fonts and again a moment later in its own: they are the agent's files, a
+// few ms away. It draws after this long whatever has arrived.
+const FONTS_MS = 500;
 const FONTS = ["600 16px Newsreader", "400 16px 'Instrument Sans'", "400 16px 'Geist Mono'"];
 // GET /rig/load this long after the last answer, and only while a rig is up:
 // each is a pw-top run of about a second on the rig, so slower than /live,
@@ -160,7 +164,10 @@ const state = {
   pollSeq: 0, seq: 0, timer: null, polling: false,
   pollAgain: false,          // a push or a kick came while a poll was in flight: poll again when it ends
   stream: null, streamed: false,  // the EventSource (#139), and whether it has opened once
-  writing: 0, pushHeld: null,  // this page's own writes in flight, and a push held back meanwhile: see `pushed`
+  // This page's own writes in flight and when the last ended; a push waiting,
+  // its timer, and when a push last read the rig: see `pushed`.
+  writing: 0, lastWriteEnd: -Infinity, pushWaiting: false, pushTimer: null, pushedAt: -Infinity,
+  lightsReading: false,      // a push of the pedals' lights alone, its /health read in flight: see `readLights`
   screen: null, regions: null, updaters: [], keys: new WeakMap(),
 };
 
@@ -185,7 +192,7 @@ async function request(method, path, body) {
   } catch (error) {
     return { ok: false, status: 0, body: null, reason: `the agent did not answer (${error.message})` };
   } finally {
-    if (writes) { state.writing -= 1; if (!state.writing) heldPush(); }
+    if (writes) { state.writing -= 1; state.lastWriteEnd = Date.now(); }
   }
 }
 
@@ -563,26 +570,57 @@ function listen() {
   });
 }
 
-// A push while this page's own write is in flight is held until the page has
-// done with the answer (PUSH_HELD_MS after its last write), not read at once:
-// a poll landing between a write and what the page does with its answer
-// (closing a panel, putting the focus back, a second write that follows the
-// first) drew the rig half-way through and took the focus with it. The
-// page's own change is read by its own `kick`; one from elsewhere waits that
-// long more.
-function pushed() {
-  if (state.writing) { state.pushHeld = state.pushHeld || "waiting"; return; }
-  if (state.pushHeld) return;  // already timed: see heldPush
+// A push. One that names only the pedals' lights ("midi") reads /health
+// alone (`readLights`): nothing else changed. Any other reads the whole rig,
+// but not at once in two cases:
+// - while this page's own write is in flight, or within PUSH_HELD_MS of its
+//   end: a poll landing between a write and what the page does with its
+//   answer (closing a panel, putting the focus back, a second write that
+//   follows the first) drew the rig half-way through and took the focus
+//   with it. The answer usually comes before the push does, so this is by
+//   time, not by the write still being in flight;
+// - within PUSH_LIVE_MS of the last push that read it: one more read, at
+//   the end of that, covers everything pushed meanwhile.
+function pushed(event) {
+  let what = null;
+  try { what = JSON.parse(event.data).what; } catch { /* no list: read everything */ }
+  if (Array.isArray(what) && what.length && what.every((w) => w === "midi")) { readLights(); return; }
+  state.pushWaiting = true;
+  settlePush();
+}
+function settlePush() {
+  clearTimeout(state.pushTimer);
+  state.pushTimer = null;
+  if (!state.pushWaiting) return;
+  const now = Date.now();
+  const wait = Math.max(state.writing ? PUSH_HELD_MS : 0, PUSH_HELD_MS - (now - state.lastWriteEnd),
+    PUSH_LIVE_MS - (now - state.pushedAt));
+  if (wait > 0) { state.pushTimer = setTimeout(settlePush, wait); return; }
+  state.pushWaiting = false;
+  state.pushedAt = now;
   kick();
 }
-function heldPush() {
-  if (state.pushHeld !== "waiting") return;
-  state.pushHeld = "timed";
-  setTimeout(() => {
-    if (state.writing) { state.pushHeld = "waiting"; return; }
-    state.pushHeld = null;
-    kick();
-  }, PUSH_HELD_MS);
+
+// The pedals' lights alone (#192, #139): /health's counts, without /live.
+// What it read is kept only if it shows the same run and nothing running
+// that the page drew; otherwise it is a whole poll after all.
+async function readLights() {
+  if (state.polling || state.lightsReading || !state.health || !state.health.ok) return;
+  state.lightsReading = true;
+  try {
+    const health = await request("GET", "/health");
+    if (state.polling || !state.health || !state.health.ok) return;
+    const same = (h) => {
+      const rig = h.body.rig || {};
+      return JSON.stringify([rig.running ? rig.config_name : null, rig.started_at ?? null, (h.body.agent || {}).busy ?? null]);
+    };
+    if (!health.ok || same(health) !== same(state.health)) { kick(); return; }
+    state.health = health;
+    state.pedalUi.lights = R.pedalLights(state.pedalUi.lights, health, pedalBoard().controller, Date.now());
+    render();
+  } finally {
+    state.lightsReading = false;
+  }
 }
 
 document.addEventListener("visibilitychange", () => {
@@ -4377,11 +4415,10 @@ setInterval(tickElapsed, TICK_MS);
 // the first chain waits for the profiles (`profilesDue`).
 inBackground("profiles", refreshProfiles);
 inBackground("names", refreshNames);
-// The fonts first (FONTS_MS at most), then the first poll, and the stream.
+// The fonts first (FONTS_MS at most), then the stream and the first poll.
 function fontsIn() {
   if (!document.fonts || !document.fonts.load) return Promise.resolve();
   const loaded = Promise.all(FONTS.map((font) => document.fonts.load(font))).catch(() => { /* the system's own, then */ });
   return Promise.race([loaded, new Promise((resolve) => setTimeout(resolve, FONTS_MS))]);
 }
-fontsIn().then(poll).then(pollLoad);
-listen();
+fontsIn().then(() => { listen(); return poll(); }).then(pollLoad);

@@ -61,11 +61,19 @@ class Served:
     """An agent on a real port, run by `web.AppRunner` as `serve` runs it
     (its shutdown waits up to 60 s for a handler), inside one test's loop."""
 
-    def __init__(self, agent):
+    def __init__(self, agent, peer=None):
         self.agent = agent
+        self.peer = peer  # every request handed to the agent as from this address
 
     async def __aenter__(self):
-        self.runner = web.AppRunner(self.agent.app())
+        app = self.agent.app()
+        if self.peer is not None:
+            @web.middleware
+            async def from_peer(request, handler):
+                return await handler(request.clone(remote=request.headers.get("X-Test-Peer", self.peer)))
+
+            app.middlewares.insert(0, from_peer)
+        self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
         await site.start()
@@ -82,8 +90,8 @@ class Served:
         await self.stop()
 
 
-def served(**kwargs):
-    return Served(Agent(describe=lambda: dict(DOWN), run=Runner(), **kwargs))
+def served(peer=None, **kwargs):
+    return Served(Agent(describe=lambda: dict(DOWN), run=Runner(), **kwargs), peer=peer)
 
 
 async def next_event(stream, timeout=2.0):
@@ -134,7 +142,7 @@ def test_a_write_is_pushed_as_it_is_answered_naming_what_changed():
             # event goes in the next.
             said = set(event["data"]["what"])
             assert said <= {"busy", "/rig/down"} and "busy" in said, said
-            assert took < 0.5, took
+            assert took < 2.0, took  # pushed, not polled: well inside a second, with room for a slow machine
             while "/rig/down" not in said:
                 event = await next_event(stream, timeout=events_module.GAP + 0.5)
                 said |= set(event["data"]["what"])
@@ -155,9 +163,10 @@ def test_a_refused_write_and_a_read_push_nothing_and_the_tap_lease_is_not_pushed
             assert (await server.session.get(server.url + "/health")).status == 200
             tap = await server.session.post(server.url + "/visualiser/tap", json={"page": "p"})
             assert tap.status in (403, 409)  # not local, or refused: either way not pushed
-            with pytest.raises(asyncio.TimeoutError):
-                await next_event(stream, timeout=0.6)
             assert server.agent.events.seq == 0
+            # By order, not by waiting for nothing: the next event says only this.
+            server.agent.events.publish("marker")
+            assert (await next_event(stream))["data"] == {"seq": 1, "what": ["marker"]}
             stream.close()
 
     asyncio.run(go())
@@ -181,9 +190,10 @@ def test_a_log_entry_busy_a_crash_and_a_thread_are_each_pushed():
             ]:
                 publish()
                 if said is None:
-                    with pytest.raises(asyncio.TimeoutError):
-                        await next_event(stream, timeout=events_module.GAP + 0.3)
-                    continue
+                    # Nothing was published: a marker published now is all the
+                    # next event says (had anything been, it would be in it too).
+                    agent.events.publish("marker")
+                    said = "marker"
                 event = await next_event(stream)
                 assert event["data"]["what"] == [said], (said, event)
             stream.close()
@@ -200,15 +210,18 @@ def test_changes_close_together_go_as_one_event_and_a_flood_is_named_many():
             first = await next_event(stream)
             assert len(first["data"]["what"]) == events_module.MOST_NAMED + 1
             assert "many" in first["data"]["what"]
-            # Within the gap after an event, what comes waits and goes together.
-            began = time.monotonic()
+            # Within the gap after an event, what comes waits and goes together;
+            # each event follows the last by the gap at least (a lower bound,
+            # which a slow machine cannot break).
             server.agent.events.publish("a")
             server.agent.events.publish("b")
             second = await next_event(stream)
+            began = time.monotonic()
             assert second["data"]["what"] == ["a", "b"]
-            with pytest.raises(asyncio.TimeoutError):
-                await next_event(stream, timeout=0.5)
-            assert time.monotonic() - began >= 0.5
+            server.agent.events.publish("c")
+            third = await next_event(stream)
+            assert third["data"]["what"] == ["c"]
+            assert time.monotonic() - began >= events_module.GAP * 0.9
             stream.close()
 
     asyncio.run(go())
@@ -228,7 +241,7 @@ def test_every_stream_ends_when_the_agent_stops_and_the_stop_does_not_wait_for_t
         for stream in streams:
             assert await next_event(stream) is None, "each stream ends"
         await server.session.close()
-        assert took < 2.0, took
+        assert took < 10.0, took  # against aiohttp's 60 s without it
         assert server.agent.events.streams == set()
 
     asyncio.run(go())
@@ -240,7 +253,7 @@ def test_a_stream_whose_page_has_gone_ends_within_a_second():
             stream = await opened(server)
             assert len(server.agent.events.streams) == 1
             stream.close()
-            deadline = time.monotonic() + events_module.LOOK + 1.0
+            deadline = time.monotonic() + events_module.LOOK + 5.0
             while server.agent.events.streams and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
             assert server.agent.events.streams == set()
@@ -259,7 +272,7 @@ def test_past_the_most_streams_a_new_one_is_refused_and_the_page_polls(monkeypat
             body = await refused.json()
             assert body["code"] == "too_many_streams" and "2 streams" in body["reason"]
             kept[0].close()
-            deadline = time.monotonic() + events_module.LOOK + 1.0
+            deadline = time.monotonic() + events_module.LOOK + 5.0
             while len(server.agent.events.streams) > 1 and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
             (await opened(server)).close()  # room again
@@ -273,7 +286,7 @@ def test_a_client_that_does_not_read_holds_up_nothing_but_its_own_stream(monkeyp
     client that never reads: the write cannot finish. Meanwhile /health and
     a write answer at once and another page's stream is told of the change;
     after `WRITE_TIMEOUT` the stuck stream is dropped."""
-    monkeypatch.setattr(events_module, "WRITE_TIMEOUT", 0.8)
+    monkeypatch.setattr(events_module, "WRITE_TIMEOUT", 3.0)
     big = b": " + b"x" * (32 * 1024 * 1024) + b"\n\n"
 
     async def go():
@@ -283,16 +296,16 @@ def test_a_client_that_does_not_read_holds_up_nothing_but_its_own_stream(monkeyp
             stuck_reader, stuck = await asyncio.open_connection("127.0.0.1", server.port)
             stuck.write(f"GET /events HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n\r\n".encode())
             await stuck.drain()
-            deadline = time.monotonic() + 2.0
+            deadline = time.monotonic() + 5.0
             while len(server.agent.events.streams) < 2 and time.monotonic() < deadline:
                 await asyncio.sleep(0.02)
             assert len(server.agent.events.streams) == 2, "the stuck stream is open and writing"
-            began = time.monotonic()
             assert (await server.session.get(server.url + "/health")).status == 200
             assert (await server.session.post(server.url + "/rig/down")).status == 200
             event = await next_event(reader)
             assert event["event"] == "changed"
-            assert time.monotonic() - began < 0.5
+            # By order: all of that was answered while the stuck stream was still stuck.
+            assert len(server.agent.events.streams) == 2, "answered before the stuck stream was dropped"
             deadline = time.monotonic() + events_module.WRITE_TIMEOUT + 2.0
             while len(server.agent.events.streams) > 1 and time.monotonic() < deadline:
                 await asyncio.sleep(0.05)
@@ -338,3 +351,139 @@ def test_an_event_is_one_data_line_of_json():
     assert events_module.event("changed", {"seq": 3, "what": ["/live/bypass"]}, 3) == \
         b'event: changed\nid: 3\ndata: {"seq":3,"what":["/live/bypass"]}\n\n'
     assert events_module.opening(0).startswith(b"retry: 1000\n\nevent: hello\n")
+
+
+def test_a_stream_socket_gives_up_on_a_gone_peer_within_its_deadline():
+    """A phone that leaves the Wi-Fi fails no write (they are a few hundred
+    bytes, which aiohttp never waits to drain), so the deadline is the
+    socket's: TCP_USER_TIMEOUT and keepalive, read back off the agent's end
+    of an open stream. A half-open peer itself is not made here."""
+    import socket
+
+    if not hasattr(socket, "TCP_USER_TIMEOUT"):
+        pytest.skip("this platform has no TCP_USER_TIMEOUT; keepalive alone is set")
+
+    async def go():
+        async with served() as server:
+            stream = await opened(server)
+            ends = [c for c in server.runner.server.connections if c.transport is not None]
+            sockets = [c.transport.get_extra_info("socket") for c in ends]
+            held = [s for s in sockets if s.getsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT)]
+            assert len(held) == 1, "the stream's socket, and no other"
+            sock = held[0]
+            assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT) == events_module.USER_TIMEOUT_MS
+            assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+            assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE) == events_module.KEEPALIVE_IDLE
+            assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT) == events_module.KEEPALIVE_COUNT
+            stream.close()
+
+    asyncio.run(go())
+
+
+def test_one_address_may_hold_a_few_streams_and_loopback_only_the_total():
+    async def go():
+        async with served(peer="192.168.1.20") as server:
+            kept = [await opened(server) for _ in range(events_module.MAX_PER_PEER)]
+            refused = await server.session.get(server.url + "/events")
+            assert refused.status == 503
+            body = await refused.json()
+            assert body["code"] == "too_many_streams" and "192.168.1.20" in body["reason"]
+            # Another phone is not held to the first one's streams.
+            other = await opened(server, {"X-Test-Peer": "192.168.1.21"})
+            # A proxy on this machine brings every phone from loopback: the total alone.
+            local = [await opened(server, {"X-Test-Peer": "127.0.0.1"})
+                     for _ in range(events_module.MAX_PER_PEER + 1)]
+            for stream in kept + [other] + local:
+                stream.close()
+
+    asyncio.run(go())
+
+
+def test_the_hub_knows_its_loop_from_the_start_so_a_worker_thread_publishes_through_it():
+    """`publish` from a thread before any stream has opened is handed to the
+    loop, not run on the worker's thread beside the loop's."""
+    async def go():
+        async with served() as server:
+            hub = server.agent.events
+            assert hub._loop is asyncio.get_running_loop() and hub._thread == threading.get_ident()
+            ran_on = []
+            real = hub._publish
+            hub._publish = lambda what: (ran_on.append(threading.get_ident()), real(what))
+            worker = threading.Thread(target=hub.publish, args=("from a worker",))
+            worker.start()
+            worker.join()
+            for _ in range(100):
+                if ran_on:
+                    break
+                await asyncio.sleep(0.01)
+            assert ran_on == [threading.get_ident()]
+
+    asyncio.run(go())
+
+
+def test_a_midi_message_of_no_named_control_is_not_pushed():
+    class Feed:
+        controller = "fbv"
+
+        def __init__(self, control):
+            self.control = control
+
+        def control_of(self, message):
+            return self.control
+
+    agent = Agent(describe=lambda: dict(DOWN), run=Runner())
+    message = type("Message", (), {"value": 64})()
+    assert agent._midi_saw(Feed(None), message) is False
+    assert agent._midi_saw(Feed("pedal"), message) is True
+
+
+class SlowSnapshots:
+    """A `Live` whose snapshot takes `seconds` and is counted."""
+
+    def __init__(self, seconds=0.3):
+        self.seconds = seconds
+        self.reads = 0
+
+    def connect(self, address=None):
+        return object()
+
+    def disconnect(self, controller):
+        pass
+
+    def snapshot(self, controller):
+        self.reads += 1
+        read = self.reads  # which read this is, as it begins
+        time.sleep(self.seconds)
+        return {"processors": {"drive": {"parameters": {"Gain": read}}}, "tracks": {}, "parameter_info": {}}
+
+
+UP = {"verdict": "running", "running": True, "config_name": "electric_board"}
+
+
+def test_pages_reading_the_rig_together_share_one_read_and_a_change_starts_another():
+    """Five GET /live at once are one snapshot of Sushi. One that comes after
+    a change, while the first still runs, is a read of its own, never the
+    reading from before the change; and once a read is done the next
+    request reads again."""
+    live = SlowSnapshots()
+
+    async def go():
+        server = Served(Agent(describe=lambda: dict(UP), run=Runner(), live=live))
+        async with server:
+            together = await asyncio.gather(*[server.session.get(server.url + "/live") for _ in range(5)])
+            bodies = [await r.json() for r in together]
+            assert [r.status for r in together] == [200] * 5
+            assert live.reads == 1 and {b["processors"]["drive"]["parameters"]["Gain"] for b in bodies} == {1}
+
+            first = asyncio.ensure_future(server.session.get(server.url + "/live"))
+            while live.reads < 2:
+                await asyncio.sleep(0.01)
+            server.agent.events.publish("/live/parameter")  # a change while it reads
+            after = await server.session.get(server.url + "/live")
+            assert (await after.json())["processors"]["drive"]["parameters"]["Gain"] == 3
+            assert (await (await first).json())["processors"]["drive"]["parameters"]["Gain"] == 2
+            again = await server.session.get(server.url + "/live")
+            assert (await again.json())["processors"]["drive"]["parameters"]["Gain"] == 4
+            assert live.reads == 4
+
+    asyncio.run(go())

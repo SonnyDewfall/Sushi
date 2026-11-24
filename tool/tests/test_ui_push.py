@@ -29,6 +29,8 @@ pytest.importorskip("aiohttp")
 from test_ui import browser, expect, served, slider, until  # noqa: E402,F401
 from ui_fake import Served  # noqa: E402
 
+from sushi_rig import agent_client  # noqa: E402
+
 PHONE = {"width": 390, "height": 844}
 
 
@@ -102,7 +104,11 @@ def test_a_change_on_one_page_shows_on_another_in_well_under_a_second(browser, s
     expect(watcher.locator('.card[data-unit="delay"]')).to_have_class(re.compile(r"\bbypassed\b"), timeout=1000)
     bypass_took = time.monotonic() - began
 
-    # A knob, turned with the keyboard on the other page.
+    # A knob, turned with the keyboard on the other page. The watching page's
+    # clock is moved on 0.6 s first, past the half-second a push waits after
+    # the last that read the rig, and short of its one-second poll.
+    watching.page.clock.run_for(600)
+    assert watching.polls() == 1, "the bypass's read, and no poll"
     knob = slider(turning, "overdrive Tone")
     knob.focus()
     began = time.monotonic()
@@ -226,3 +232,53 @@ def test_another_sites_page_cannot_open_the_stream(browser, served, elsewhere): 
     assert page.evaluate("() => window.said") == ["error 2"], "closed for good (readyState 2)"
     assert opened == [] and served.agent.events.streams == set()
     page.close()
+
+
+def rig_reads(served):  # noqa: F811
+    return sum(1 for call in served.rig.calls if call == ("snapshot",))
+
+
+def test_a_burst_of_pedal_presses_and_changes_costs_a_bounded_number_of_rig_reads(browser):  # noqa: F811
+    """Three pages open while, for two seconds each, a footswitch is pressed
+    twenty times a second, then a knob is set twenty times a second from
+    elsewhere. Each push is read, but: a press (its light) is a read of
+    /health alone, so the rig is read only by the pages' second's poll; and
+    a change reads the rig at most twice a second a page more, and pages
+    reading together share one read of Sushi. Before (#242's review) each
+    press and each change was a whole poll, back to back on every page."""
+    with Served(save=True, pedals=True) as s:
+        pages = []
+        for _ in range(3):
+            page = browser.new_page(viewport=PHONE)
+            page.goto(s.url + "/#stage")
+            page.wait_for_selector(".stage-screen .card")
+            pages.append(page)
+        until(lambda: len(s.agent.events.streams) == 3)
+        clock = pages[0]
+
+        before, began = rig_reads(s), time.monotonic()
+        for _ in range(40):
+            s.pedals.press("d")
+            clock.wait_for_timeout(50)
+        lights = rig_reads(s) - before
+        took = time.monotonic() - began
+        # The second's poll alone: a page polls once a second, and one more
+        # read each is room for a poll at either end.
+        assert lights <= len(pages) * (took + 2), (lights, took)
+
+        before, began = rig_reads(s), time.monotonic()
+        for n in range(40):
+            agent_client.ask(s.url, "POST", "/live/parameter",
+                             {"processor": "overdrive", "parameter": "Tone", "value": 0.3 + n * 0.01})
+            clock.wait_for_timeout(50)
+        changes = rig_reads(s) - before
+        took = time.monotonic() - began
+        # The poll, and at most two reads a second from pushes, a page.
+        assert changes <= len(pages) * (3 * took + 2), (changes, took)
+        print(f"rig reads: {lights} over {len(pages)} pages for 40 presses, {changes} for 40 changes")
+        # And the last change shows everywhere.
+        for page in pages:
+            page.locator('.card[data-unit="overdrive"] button.open-card').click()
+            expect(slider(page, "overdrive Tone")).to_have_attribute("aria-valuenow", "69")
+        for page in pages:
+            page.close()

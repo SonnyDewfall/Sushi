@@ -24,7 +24,9 @@ The agent publishes (`Hub.publish`) when:
   is in it, and sends no request;
 - `busy` ends (a lifecycle command, a switch, a save done, from a page or
   a pedal); not as it starts, which `Agent.busy` says why;
-- the MIDI listener hears a message (the pedals' lights, `/health`'s counts);
+- the MIDI listener hears a message of a control the machine file names
+  (the pedals' lights, `/health`'s counts): the page reads `/health` alone
+  for an event that names nothing else;
 - the supervisor sees a child of the rig exit that no `down` asked for.
 
 What it cannot see is not pushed: a change made to Sushi from outside the
@@ -38,8 +40,12 @@ Publishing never waits: it marks each stream and wakes it. Each stream
 writes in its own handler, so a client that reads slowly holds up only its
 own stream, and one whose write does not finish within `WRITE_TIMEOUT` is
 closed (the page's EventSource opens another, or its poll carries on).
-Changes that come while a stream is writing, or within `GAP` of its last
-event, are sent together as one event: a pedal swept through a hundred
+Writes are small, so a peer that has gone without closing (a phone off the
+Wi-Fi) fails no write: the stream's socket is given TCP_USER_TIMEOUT and
+keepalive (`hold_to_a_deadline`), so the kernel gives it up within about 30
+s, and one address may hold `MAX_PER_PEER` streams. Changes that come while
+a stream is writing, or within `GAP` of its last event, are sent together as
+one event: a pedal swept through a hundred
 values is a few events a second, not a hundred, and each page polls at
 most that often. A stream sends a comment every `HEARTBEAT` seconds, which
 keeps a proxy from timing it out and finds a client that has gone. At most
@@ -77,13 +83,61 @@ MAX_STREAMS = 32
 RETRY_MS = 1000
 # The most distinct paths one event names; past it, "many".
 MOST_NAMED = 16
+# Streams open at once from one address, past which a new one from it is
+# refused (503): a phone has a page or two, so a device that opens more is
+# one whose connections are not closing. Loopback is exempt (`Hub.refusal`).
+MAX_PER_PEER = 4
+# A stream's socket gives up on a peer that has stopped acknowledging what
+# is sent (a phone that left the Wi-Fi: half-open, so nothing fails a
+# write) after this long, where the platform has TCP_USER_TIMEOUT (Linux),
+# with keepalive probes from KEEPALIVE_IDLE seconds of quiet. Writes are a
+# few hundred bytes, far under what makes aiohttp wait on a drain, so
+# `WRITE_TIMEOUT` alone would never fire for one: without these a gone
+# phone held its stream for the kernel's own retransmission limit, about 15
+# minutes.
+USER_TIMEOUT_MS = 30_000
+KEEPALIVE_IDLE = 10
+KEEPALIVE_INTERVAL = 5
+KEEPALIVE_COUNT = 3
+
+
+def is_loopback(peer: str) -> bool:
+    return peer == "::1" or peer.startswith("127.") or peer.startswith("::ffff:127.")
+
+
+def hold_to_a_deadline(sock: Any) -> list[str]:
+    """Set the stream socket's TCP_USER_TIMEOUT and keepalive (above), each
+    where the platform has it; the names of those set. A socket that refuses
+    one keeps the rest: the stream still works, it is only slower to give
+    up on a gone peer."""
+    import socket
+
+    done = []
+    options = [
+        (socket.SOL_SOCKET, "SO_KEEPALIVE", 1),
+        (socket.IPPROTO_TCP, "TCP_USER_TIMEOUT", USER_TIMEOUT_MS),
+        (socket.IPPROTO_TCP, "TCP_KEEPIDLE", KEEPALIVE_IDLE),
+        (socket.IPPROTO_TCP, "TCP_KEEPINTVL", KEEPALIVE_INTERVAL),
+        (socket.IPPROTO_TCP, "TCP_KEEPCNT", KEEPALIVE_COUNT),
+    ]
+    for level, name, value in options:
+        option = getattr(socket, name, None)
+        if option is None or sock is None:
+            continue
+        try:
+            sock.setsockopt(level, option, value)
+        except OSError:
+            continue
+        done.append(name)
+    return done
 
 
 class Stream:
-    """One open stream: what has changed since its last event, and the
-    event its handler waits on."""
+    """One open stream: what has changed since its last event, the event
+    its handler waits on, and the address it came from (`peer`)."""
 
-    def __init__(self) -> None:
+    def __init__(self, peer: str | None = None) -> None:
+        self.peer = peer
         self.pending: set[str] = set()
         self.wake = asyncio.Event()
         self.closing = False
@@ -130,14 +184,38 @@ class Hub:
         for stream in self.streams:
             stream.note(what)
 
-    def open(self) -> Stream | None:
-        """A new stream, or None when `MAX_STREAMS` are open or the hub is
-        closed. Called on the loop, which it remembers for `publish`."""
-        if self.closed or len(self.streams) >= MAX_STREAMS:
-            return None
+    def bind(self) -> None:
+        """Remember the loop the agent serves on, and its thread, so a
+        `publish` from another thread is handed to it, from the start (not
+        only once a first stream has opened). Called on that loop, as the
+        app starts; reopens a hub an earlier stop closed."""
         self._loop = asyncio.get_running_loop()
         self._thread = threading.get_ident()
-        stream = Stream()
+        self.closed = False
+
+    def refusal(self, peer: str | None) -> str | None:
+        """Why a new stream from `peer` is not opened, or None: the hub is
+        closed ("stopping"), `MAX_STREAMS` are open, or `MAX_PER_PEER` are
+        open from that address ("too_many_streams"). A loopback peer is held
+        to the total alone: a reverse proxy on this machine (Tailscale Serve,
+        nginx) brings every phone's stream from 127.0.0.1. Pure over the
+        hub's state."""
+        if self.closed:
+            return "stopping"
+        if len(self.streams) >= MAX_STREAMS:
+            return "too_many_streams"
+        if peer and not is_loopback(peer) and sum(s.peer == peer for s in self.streams) >= MAX_PER_PEER:
+            return "too_many_streams"
+        return None
+
+    def open(self, peer: str | None = None) -> Stream | None:
+        """A new stream from `peer`, or None when `refusal` says why not.
+        Called on the loop."""
+        if self.refusal(peer) is not None:
+            return None
+        if self._loop is None:
+            self.bind()
+        stream = Stream(peer)
         self.streams.add(stream)
         return stream
 

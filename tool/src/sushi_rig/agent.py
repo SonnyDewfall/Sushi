@@ -2057,6 +2057,9 @@ class Agent:
         self._build_library = library or self._read_library
         self._library: dict[str, Any] | None = None
         self._library_lock = asyncio.Lock()
+        # GET /live's read of Sushi in flight, shared (#139,
+        # `_live_shared_read`): (events.seq as it began, its task).
+        self._live_shared: tuple | None = None
         self._midi_init(midi)  # the MIDI listener's state: see the MIDI section
         self.switching = switching or Switching()  # the live switch (#93): see its section
         self._amp_init(carla)  # the amp: see its block
@@ -2721,6 +2724,29 @@ class Agent:
         does.
         """
         self._refuse_while_busy()
+        return web.json_response(await self._live_shared_read(request))
+
+    async def _live_shared_read(self, request) -> dict[str, Any]:
+        """GET /live's answer, one read of Sushi shared by every request that
+        comes while it runs (#139): a push brings every open page's poll at
+        once, and a read on the rig is hundreds of Sushi calls, so N pages
+        would otherwise be N reads side by side. Only a read begun since the
+        latest change is joined (`events.seq`, which every write, log entry
+        and command's end moves), so a request after a change never gets a
+        reading from before it; and only while it runs, never once done, so
+        what the agent cannot see (Sushi gone or back, the panel's changes)
+        is read afresh by the next request, as before. A read that fails
+        fails each request sharing it, as it would have alone."""
+        shared = self._live_shared
+        if shared is not None and shared[0] == self.events.seq and not shared[1].done():
+            return await asyncio.shield(shared[1])
+        task = asyncio.ensure_future(self._live_read(request))
+        # Retrieved here: a failure is each sharer's to raise, not the loop's to log.
+        task.add_done_callback(lambda done: done.cancelled() or done.exception())
+        self._live_shared = (self.events.seq, task)
+        return await asyncio.shield(task)
+
+    async def _live_read(self, request) -> dict[str, Any]:
         # Whether a dip was under way as the read began, as it ended, or began
         # and ended while it ran (#137): a snapshot reads the gain somewhere
         # in between, so any of the three may have read the floor (review of
@@ -2729,12 +2755,12 @@ class Agent:
         async with self._connected(request) as controller:
             rig = await self._sushi(request, self.live.snapshot, controller, reading=True)
         processors = self._hide_dip(rig.get("processors", {}), before, dips_before)
-        return web.json_response({
+        return {
             "ok": True,
             "processors": processors,
             "tracks": rig.get("tracks", {}),
             "parameter_info": rig.get("parameter_info", {}),
-        })
+        }
 
     def _hide_dip(self, processors: Any, before: float | None, dips_before: int) -> Any:
         """`processors` with the master's gain as the level a dip puts back,
@@ -3469,7 +3495,9 @@ class Agent:
         app.on_shutdown.append(self._events_close)
 
     async def _events_open(self, app=None) -> None:
-        self.events.closed = False  # an agent served again after a stop (the tests')
+        # The loop a `publish` from a worker thread is handed to, known from
+        # the start; and an agent served again after a stop (the tests') opens.
+        self.events.bind()
 
     async def _events_close(self, app=None) -> None:
         self.events.close()
@@ -3511,15 +3539,18 @@ class Agent:
         event (`{"seq", "what"}`) whenever what /health, /live and the log
         answer may have changed (`events.py` says when, and why an event
         names the change rather than carrying it). 503 `too_many_streams`
-        past `events.MAX_STREAMS`, or `stopping` while the agent stops.
-        Behind the cross-site check as a write is (`GUARDED_READS`)."""
-        stream = self.events.open()
+        past `events.MAX_STREAMS`, or `events.MAX_PER_PEER` from one
+        address, or `stopping` while the agent stops. Behind the cross-site
+        check as a write is (`GUARDED_READS`). Its socket gives up on a peer
+        gone without closing within about 30 s (`events.hold_to_a_deadline`)."""
+        why = self.events.refusal(request.remote)
+        stream = self.events.open(request.remote) if why is None else None
         if stream is None:
-            stopping = self.events.closed
             refused = web.HTTPServiceUnavailable(reason=(
-                "the agent is stopping" if stopping else
-                f"refused: {events_module.MAX_STREAMS} streams are open already; the page polls instead"))
-            refused.agent_code = "stopping" if stopping else "too_many_streams"
+                "the agent is stopping" if why == "stopping" else
+                f"refused: {events_module.MAX_STREAMS} streams are open already, or "
+                f"{events_module.MAX_PER_PEER} from {request.remote}; the page polls instead"))
+            refused.agent_code = why or "too_many_streams"
             raise refused
         response = web.StreamResponse(headers={
             "Content-Type": "text/event-stream", "Cache-Control": "no-store",
@@ -3527,6 +3558,8 @@ class Agent:
             "X-Accel-Buffering": "no",
         })
         try:
+            if request.transport is not None:
+                events_module.hold_to_a_deadline(request.transport.get_extra_info("socket"))
             await response.prepare(request)
             await self._events_send(response, events_module.opening(self.events.seq))
             quiet = 0.0
@@ -4422,8 +4455,8 @@ class Agent:
         if generation != self._midi_generation or plan is None:
             return
         bindings = plan.feeds[feed].bindings
-        self._midi_saw(plan.feeds[feed], message)
-        self.events.publish("midi")  # the pedals' lights: /health's counts (#139)
+        if self._midi_saw(plan.feeds[feed], message):
+            self.events.publish("midi")  # the pedals' lights: /health's counts (#139)
         try:
             if message.kind == "program":
                 if bindings.programs is None:
@@ -4481,15 +4514,18 @@ class Agent:
         self._midi_tasks.add(task)
         task.add_done_callback(self._midi_tasks.discard)
 
-    def _midi_saw(self, feed: midi_listener.Feed, message: midi_listener.Message) -> None:
+    def _midi_saw(self, feed: midi_listener.Feed, message: midi_listener.Message) -> bool:
         """Count `message` against the control it came from (#192), bound or
-        not: a dict lookup and a tuple, on the loop, nothing near the audio."""
+        not: a dict lookup and a tuple, on the loop, nothing near the audio.
+        Whether it was counted: a message of no control the machine file
+        names changes no light, and is not pushed (#139)."""
         control = feed.control_of(message)
         if control is None:
-            return
+            return False
         controls = self._midi_seen.setdefault(feed.controller, {})
         count = controls.get(control, (0, 0, 0.0))[0]
         controls[control] = (count + 1, message.value, self.clock())
+        return True
 
     def _midi_decided(self, said: str, deciding: bool = False) -> None:
         """What became of the last message, once it is known (#191): a rig

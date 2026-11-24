@@ -186,14 +186,23 @@ def offline_page(browser, served, url, **viewport):  # noqa: F811
 
 def drawn_with(page, selector):
     """The fonts Chromium drew `selector`'s first element's text with:
-    [(family, custom)], from DevTools' CSS.getPlatformFontsForNode."""
+    [(family, custom)], from DevTools' CSS.getPlatformFontsForNode.
+
+    The page redraws a region when a poll brings something new (a push can
+    bring one at any moment), and a node just drawn has no fonts until it is
+    laid out: so it is asked again, the node found afresh, until it has."""
     devtools = page.context.new_cdp_session(page)
     devtools.send("DOM.enable")
     devtools.send("CSS.enable")
-    root = devtools.send("DOM.getDocument")["root"]["nodeId"]
-    node = devtools.send("DOM.querySelector", {"nodeId": root, "selector": selector})["nodeId"]
-    assert node, f"nothing matches {selector}"
-    used = devtools.send("CSS.getPlatformFontsForNode", {"nodeId": node})["fonts"]
+    used = []
+    for _ in range(40):
+        root = devtools.send("DOM.getDocument")["root"]["nodeId"]
+        node = devtools.send("DOM.querySelector", {"nodeId": root, "selector": selector})["nodeId"]
+        assert node, f"nothing matches {selector}"
+        used = devtools.send("CSS.getPlatformFontsForNode", {"nodeId": node})["fonts"]
+        if used:
+            break
+        page.wait_for_timeout(50)
     devtools.detach()
     return [(font["familyName"], font["isCustomFont"]) for font in used]
 
