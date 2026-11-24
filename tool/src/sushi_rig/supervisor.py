@@ -541,6 +541,9 @@ class Supervisor:
         # Kept after the rig is stopped, so a crash is still readable after the
         # `down` that followed it; cleared when the agent next starts a rig.
         self.crashed: list[dict[str, Any]] = []
+        # Called when a child of the held rig exits with no `down` asking:
+        # the agent pushes it to the open pages (#139). Nothing by default.
+        self.changed: Callable[[], None] = lambda: None
         # What is wrong beyond a child's exit: the holder lost, a start that
         # left processes behind. Cleared, like `crashed`, by the next start.
         self.problems: list[dict[str, Any]] = []
@@ -966,6 +969,7 @@ class Supervisor:
             if held.ready:
                 self.crashed.append(child.exit)
                 self._say(crash_message(child.exit))
+                self.changed()
             else:
                 held.startup_exits.append(child.exit)
         if held.holder_exit is None and held.holder.poll() is not None:

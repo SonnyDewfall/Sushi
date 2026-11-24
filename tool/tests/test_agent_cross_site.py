@@ -459,6 +459,7 @@ GET_ROUTES = {
     "/help", "/help/", "/help/x", "/help/img/x",  # the user guide (#167)
     "/midi",  # the pedals and the running rig's assignments (#191): reads two files and lists config/rigs/
     "/undo",  # what the one Undo would step back (#209): reads the history and the file or bin entry it names
+    "/events",  # the pushed changes (#139): a stream that says what changed; changes nothing, and is cross-site checked
 }
 
 

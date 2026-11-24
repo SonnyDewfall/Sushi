@@ -722,6 +722,73 @@ MASTER fader does not flick to −∞ and back. Each
 change is sent as it happens. A change the agent refuses shows the agent's
 reason on screen, beside the knob; nothing is put back without saying why.
 
+**Changes are pushed (#139).** While it is shown, the page holds
+`GET /events` open ([the agent](agent.md#pushed-changes)): a server-sent event
+stream on which the agent says, as it happens, that something changed: a
+knob, fader, bypass, move, add or remove from any page, an Undo, a rig
+started, stopped or switched (from a page or a pedal), a save, a recording,
+a pedal heard (its light), a crashed child. The page then polls at once, the
+same poll it makes every second, so a knob turned on the phone moves on the
+laptop within a fraction of a second rather than up to a second later
+(measured in Chromium against the fake rig: about 0.1 s for a bypass, 0.3 s
+for a knob turned just after it, since the agent sends at most four events a
+second to a page). The event names what changed and carries no state: the
+poll is the one place the page puts its answers together. The poll stays,
+at its second: for what the agent cannot see (the Open Stage Control panel
+and Sushi's own MIDI change Sushi without it), and as the fallback when the
+stream is down. The browser opens the stream again by itself after the agent
+restarts or the network drops, and the page polls as it does, so what it
+missed meanwhile shows; a stream the agent refused (too many open, 503) is
+tried again after 10 s. A push that comes while the page's own write is in
+flight is read 0.3 s after its last write instead (`PUSH_HELD_MS`): a read
+landing between a write and what the page does with its answer (closing a
+panel, giving the focus back) took the focus away. A command starting (a
+start, a switch, a save) is not pushed, only its end: while one runs the page
+draws no chain, and most take a fraction of a second, so pushing the start
+made every open page drop its chain and draw it again for each. A long one
+shows at the next poll, as before. A tab in the background gives its stream up, and
+takes it again when shown: a stream is one of the six connections a browser
+keeps to the agent over HTTP/1.1, which all its tabs of the page share. A
+page of another site cannot open one (the cross-site guard, 403).
+
+## The fonts, and the home screen
+
+**The three fonts are the page's own (#139).** Newsreader (display),
+Instrument Sans (body) and Geist Mono (numbers), as the mockups set them, are
+bundled in `tool/src/sushi_rig/ui/static/fonts/` and served by the agent, so
+the page and the guide are drawn in them with no network. Each is its
+project's variable WOFF2, byte for byte, with its OFL licence beside it;
+`fonts/README.md` says where each came from, at which commit and version,
+and its checksum, which a test holds. Upright only, 375 KB together: nothing
+in `style.css` sets italic (the guide's emphasis is the browser's slant of the
+upright). The page asks for them before its first draw (up to 1 s), so it is
+not laid out in the system's fonts and again a moment later in its own; once
+in, nothing reflows. Two places their metrics moved are set to hold: the
+record head's Help link takes 20 px of the row (Newsreader's line at 22 px is
+22), and on a wide screen LOAD and XRUNS hold a reading's width from the start
+(164 px), since at 1200 px the header otherwise rewrapped, moving Stage, Help
+and Lock, as the first reading came in. A browser test with every request to anywhere but the
+agent refused shows each kind of text drawn in its font (`test_ui_install.py`,
+by what Chromium reports it drew with).
+
+**The stage installs to a phone's home screen (#139).**
+`ui/static/manifest.webmanifest`: `display: standalone`, opening on the stage
+(`start_url: /#stage`), in the page's ground colour (`theme_color` and
+`background_color`, `--ground`), with the page's knob as its icon at 192 and
+512 px and a maskable 512 px one (`ui/static/icons/`, drawn as SVG and
+rasterised by `tests/ui_icons.py`), and a 180 px `apple-touch-icon` for iOS.
+There is **no service worker**: Chromium finds the page installable without
+one (`Page.getInstallabilityErrors` is empty), so nothing can serve an old
+`app.js` after an update or keep an answer of the agent's. The page's files
+are `no-cache` (asked again against their ETag on every load, as before), and
+every answer of the agent's is `no-store`. Installing needs what the phone's
+browser asks of a web app: **Android's Chrome installs only from HTTPS** (or
+localhost), so from the rig's plain `http://<address>:8029/` it adds a
+shortcut that opens in a tab, with its bars; behind HTTPS (Tailscale Serve,
+a reverse proxy, with `--allow-host`, [the agent](agent.md#another-sites-page-and-dns-rebinding))
+it installs and opens without them. iOS's Safari adds the page from **Share →
+Add to Home Screen**. Neither is tried on a real phone yet.
+
 ## The Help links
 
 **Help**, in the rack's header and at the end of the stage's nav, opens the
@@ -1022,7 +1089,7 @@ it, so an up rig reads "sound not measured" and is never green, #49);
 the lock is the page's own, since the agent has no performance lock yet (#29);
 "unsaved" counts only changes made through the agent since the rig came up or
 was last saved through it, so a change from the OSC panel, or a `sushi-rig
-save` since, is not reflected; changes go over HTTP, not a WebSocket. Of the
+save` since, is not reflected. Of the
 canvas's Save, the commit (with its message), "throw all away" and the rig
 file shown on screen are not built; of its history, Revert is the whole of
 it, by the player's choice (2026-11-06). Of its Record, the
@@ -1063,6 +1130,14 @@ real files in a temporary checkout; no Program Change has been sent from a
 pedal after a delete. The 15 s an outcome and its Undo stay (#189) is passed
 on Playwright's fake clock, paused, and a reload, which offers no Undo, is
 Playwright's reload in one browser context.
+
+Not run on the rig (2026-11-24): the bundled fonts, the home-screen
+install and the pushed changes (#139). Tested in headless Chromium against
+the agent over the fake rig: two pages, the watching one's clock stopped so
+its poll never fires (`test_ui_push.py`); the stream itself without a browser
+(`test_agent_events.py`). Not opened on a phone, not installed to a home
+screen from a phone's browser, and not tried through a proxy or with a pedal.
+The guides' screenshots predate the fonts.
 
 Not run on the rig (2026-11-23): the one Undo and the cut text (#209).
 Tested in headless Chromium against the agent's real routes over the fake

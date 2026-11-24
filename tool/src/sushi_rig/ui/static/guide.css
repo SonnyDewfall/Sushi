@@ -1,7 +1,22 @@
 /* The user guide's pages (#167), served by the agent at /help/ from
    docs/guide/ (sushi_rig/guide.py). The rack's colours and type (style.css),
    restated for prose: a column that reads at a phone's width, the way back
-   to the rig always at the top, and nothing fetched from the network. */
+   to the rig always at the top, and nothing fetched from the network. The
+   three fonts are style.css's own files (fonts/, #139), declared again here
+   because a guide page does not load style.css. */
+
+@font-face {
+  font-family: Newsreader; font-style: normal; font-weight: 200 800; font-display: swap;
+  src: url("fonts/newsreader/Newsreader.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Instrument Sans"; font-style: normal; font-weight: 400 700; font-stretch: 75% 100%; font-display: swap;
+  src: url("fonts/instrument-sans/InstrumentSans.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono"; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url("fonts/geist-mono/GeistMono.woff2") format("woff2");
+}
 
 :root {
   --ground: #0F1012;

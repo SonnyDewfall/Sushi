@@ -243,7 +243,18 @@ def test_the_ui_files_are_in_the_package_data_a_wheel_carries():
     globs = config["tool"]["setuptools"]["package-data"]["sushi_rig"]
     package = UI_DIR.parent.parent
     files = [path.relative_to(package).as_posix() for path in UI_DIR.rglob("*") if path.is_file()]
-    assert sorted(files) == ["ui/static/app.js", "ui/static/guide.css", "ui/static/index.html", "ui/static/rig.js",
+    assert sorted(files) == ["ui/static/app.js",
+                            # The three fonts and their licences (#139), and the home-screen icons.
+                            "ui/static/fonts/README.md",
+                            "ui/static/fonts/geist-mono/GeistMono.woff2", "ui/static/fonts/geist-mono/OFL.txt",
+                            "ui/static/fonts/instrument-sans/InstrumentSans.woff2",
+                            "ui/static/fonts/instrument-sans/OFL.txt",
+                            "ui/static/fonts/newsreader/Newsreader.woff2", "ui/static/fonts/newsreader/OFL.txt",
+                            "ui/static/guide.css",
+                            "ui/static/icons/apple-touch-icon.png", "ui/static/icons/icon-192.png",
+                            "ui/static/icons/icon-512.png", "ui/static/icons/icon-maskable-512.png",
+                            "ui/static/icons/icon-maskable.svg", "ui/static/icons/icon.svg",
+                            "ui/static/index.html", "ui/static/manifest.webmanifest", "ui/static/rig.js",
                             "ui/static/screensaver.js", "ui/static/style.css",
                             "ui/static/vendor/butterchurn-2.6.7/LICENSE", "ui/static/vendor/butterchurn-2.6.7/SOURCE.txt",
                             "ui/static/vendor/butterchurn-2.6.7/butterchurn.min.js",

@@ -7120,3 +7120,40 @@ part-way. (2) Live steps were dropped by any lifecycle command that ran,
 even an `up` refused for a rig already up: now only when it succeeded or the
 run changed (`_run_identity` of `describe_rig`'s answer before and after).
 Not run on the rig. *(2026-11-24)*
+
+**The page's fonts, its home-screen install, and pushed changes (#139, the
+first three of its five).** (1) Newsreader, Instrument Sans and Geist Mono are
+bundled under `tool/src/sushi_rig/ui/static/fonts/`: each project's own
+variable WOFF2, byte for byte (Newsreader 1.003 at productiontype/Newsreader
+`1ece6a8`, Instrument Sans 1.000 at Instrument/instrument-sans `7fa2230`,
+Geist Mono 1.700 at vercel/geist-font `v1.9.2`), with its OFL 1.1 licence
+beside it, upright only, 375 KB together; `fonts/README.md` gives the URLs
+and checksums, which a test holds. `style.css` and `guide.css` declare them,
+and the page asks for them before its first draw. With every request to
+anywhere but the agent refused, Chromium draws the stage, the rack and the
+guide in them (`test_ui_install.py`, by DevTools' platform fonts for a node).
+Their metrics moved two things, both set to hold: the record head's Help link
+(Newsreader's line is shorter than the system serif's) and, at 1200 px, the
+rack's header rewrapping as LOAD's first reading came in. (2)
+`manifest.webmanifest`: standalone, opening on `/#stage`, `--ground` as its
+colours, the page's knob as icons at 192 and 512 and a maskable 512
+(`icons/`, SVG rasterised by `tests/ui_icons.py`), and an apple-touch-icon.
+No service worker: Chromium finds the page installable without one, so
+nothing can serve a stale `app.js` (the files stay `no-cache` against their
+ETag) and every other answer of the agent's is now `Cache-Control: no-store`.
+Android's Chrome installs only from HTTPS, which the rig's plain LAN address
+is not. (3) `GET /events`, server-sent events (`events.py`): a `changed`
+event naming what changed (a write answered, a log entry, a command's end,
+a pedal heard, a crash), and the page polls at once; the poll stays at its
+second for what the agent cannot see and when the stream drops. At most four
+events a second a stream, a stuck client dropped after 5 s, at most 32
+streams, behind the cross-site guard as a write is, every stream ended on
+shutdown before aiohttp waits for handlers (without it a stop waited out
+aiohttp's 60 s, tried). In Chromium, two pages, the watching one's clock stopped:
+a bypass shows in about 0.1 s, a knob in 0.3 s; the stream comes back after
+an agent restart and the page reads what it missed. Two things found on the
+way: pushing a command's *start* made every page drop its chain for each rig
+file edit, so only the end is pushed; and a push read mid-write took a
+panel's focus away, so a page holds a push until 0.3 s after its own write.
+Not opened on a phone or installed from one, not tried through a proxy or
+with a pedal, not run on the rig. *(2026-11-24)*

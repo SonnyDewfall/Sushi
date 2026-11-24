@@ -18,6 +18,7 @@ curl localhost:8029/                 # the web UI (its files are under /ui/)
 curl localhost:8029/help/            # the user guide, docs/guide/, as HTML (#167); pages at /help/<name>, pictures at /help/img/
 curl localhost:8029/rigs             # the rigs of config/rigs/ a start or switch can name, and which is the running rig's
 curl localhost:8029/rig/load         # one pw-top sample of the rig's nodes: load, xruns, the block budget
+curl -N localhost:8029/events        # the pushed changes (#139): an event each time something changes, until Ctrl+C
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
 curl -X POST localhost:8029/rig/down
 curl -X POST localhost:8029/rig/restart                             # refused (409 unsaved) if it would drop changes no save has written
@@ -213,7 +214,10 @@ with no preflight. It refuses:
   `cross_site_refusal`. A `GET` from another site is not refused, since a
   link to the page from elsewhere is one, and that site cannot read the
   answer, which carries no CORS header. No `GET` route changes anything;
-  `test_agent_cross_site.py` lists them, so a new one is reviewed.
+  `test_agent_cross_site.py` lists them, so a new one is reviewed. The one
+  `GET` held to this check as a write is, `GET /events` ([pushed
+  changes](#pushed-changes)), is a stream another site's page could
+  otherwise hold open.
 - **any request by a name the agent does not answer to** (DNS rebinding),
   reads and page loads included: a page of an attacker's name whose DNS is
   then pointed at this machine is same-origin to the browser, so it could
@@ -265,6 +269,70 @@ Stopping that needs authentication, #29's local/remote split. Shown in
 Chromium against the agent over the UI's fake (`test_ui_cross_site.py`, with
 the names mapped by the resolver rules, not DNS); **not tried on the rig,
 from a real phone, behind a real proxy, or with a pedal.**
+
+## Pushed changes
+
+`GET /events` (#139) is how a change made on one page shows on another
+without waiting for a poll: a [server-sent
+event](https://html.spec.whatwg.org/multipage/server-sent-events.html) stream,
+`text/event-stream`, which the page opens with the browser's `EventSource`.
+
+```
+retry: 1000
+
+event: hello
+id: 41
+data: {"seq":41}
+
+event: changed
+id: 44
+data: {"seq":44,"what":["/live/parameter","log"]}
+```
+
+`seq` counts the changes since the agent started; `what` names them: the path
+of a write answered (any `POST`, whatever its answer, but the visualiser's
+tap lease), `log` (an entry in the operation log: a pedal's change too),
+`busy` (a lifecycle command, a switch, a save ending; not starting, since
+while one runs a page draws no chain, and most take a fraction of a second), `midi` (a
+message heard: the pedals' lights) and `supervisor` (a child of the rig that
+exited with no `down`), or `many` past sixteen at once. An event says what
+changed and carries no state: the page polls `/health`, `/live` and the rest
+at once, as it does every second, because its poll is the one place its
+answers are put together, and a `/live` made for every change would be a full
+read of Sushi whether a page was open or not.
+
+Server-sent events, not a WebSocket: the push is one way (the page still
+sends each change over HTTP), it is aiohttp's own streamed answer behind the
+same middlewares, so the cross-site guard covers it, and it needs no new
+dependency.
+
+- **Coalesced.** Changes that come within 0.25 s of a stream's last event go
+  in its next one (`events.GAP`), so a swept pedal is at most four events a
+  second to each page, and each page at most four polls a second.
+- **A slow client holds up nothing.** Publishing never waits; each stream is
+  written by its own handler, and one whose write does not finish within 5 s
+  (`WRITE_TIMEOUT`) is dropped. A comment line every 15 s keeps a quiet stream
+  open through a proxy, and a page that has gone is noticed within a second.
+- **At most 32 streams** (`MAX_STREAMS`); past it, `503 too_many_streams`,
+  and the page polls alone and tries again in 10 s.
+- **The guard.** Another site's page asking for it is refused, `403
+  cross_site`, as for a write (`GUARDED_READS`).
+- **Shutdown.** Every stream ends when the agent stops, before aiohttp waits
+  for its handlers, so a stop is not held up by open pages.
+
+What it cannot see is not pushed: the Open Stage Control panel and Sushi's own
+MIDI change Sushi without the agent, and a CLI run with no agent writes the
+state file alone. The page's poll stays at its second for those.
+
+Every answer that sets no `Cache-Control` of its own is `no-store`, so nothing
+the agent says is kept by a browser, a proxy or a page installed to a home
+screen. The page's own files are `no-cache`, as before: asked again on every
+load against their ETag. The page has no service worker
+([the web UI](web-ui.md#the-fonts-and-the-home-screen)).
+
+Shown against the agent over aiohttp's runner (`test_agent_events.py`) and
+in Chromium, two pages, over the UI's fake rig (`test_ui_push.py`); **not
+tried on the rig, from a phone, through a proxy, or with a pedal.**
 
 ## Live operations
 
