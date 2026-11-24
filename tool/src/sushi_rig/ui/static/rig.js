@@ -2753,7 +2753,10 @@ export function channelGoes(c, controls) {
 export function removeOutcome(channel, answer, asked = {}) {
   const body = answer.body || {};
   if (!answer.ok) {
-    const out = { ok: false, title: "Not removed", reason: answer.reason, notes: [], offer: null, ask: null };
+    // Written, and the rig not made to play it (`not_switched`, or 504): said
+    // as that, since the file no longer has the channel.
+    const title = body.written ? "Not switched" : "Not removed";
+    const out = { ok: false, title, reason: answer.reason, notes: [], offer: null, ask: null };
     if (body.midi_note) out.notes.push(`${body.midi_note}.`);
     if (answer.code === "unsaved") out.offer = { ...asked, label: "Remove anyway", discard: true };
     if (answer.code === "midi") {

@@ -117,7 +117,11 @@ def test_what_a_removal_says_and_the_second_tap_each_refusal_offers(blank):
         restarts: R.removeOutcome('vocal', no('restarts', 'nothing was written: removing vocal restarts Sushi: x',
           {why: []}), {dropMidi: true}),
         last: R.removeOutcome('vocal', no('last_channel', "vocal is r's only channel")),
+        unswitched: R.removeOutcome('vocal', no('not_switched', "r's file was written (without vocal), but",
+          {written: true, midi_note: 'the pedals follow the rig as it runs'})),
       };""")
+    assert out["unswitched"]["title"] == "Not switched" and out["unswitched"]["offer"] is None
+    assert out["unswitched"]["notes"] == ["the pedals follow the rig as it runs."]
     assert out["live"]["title"] == "Removed vocal"
     assert out["live"]["text"] == "Live. Wrote config/rigs/r.yaml; not committed. Revert… goes back."
     assert out["live"]["notes"] == ["Dropped MIDI d (mute vocal)."]
@@ -277,4 +281,70 @@ def test_a_removal_is_taken_back_by_the_one_undo_held_while_locked(browser, file
     p.locator(".undo-ask").get_by_role("button", name="Yes").click()
     expect(p.locator(".undo-said")).to_have_text("Undone: remove channel vocal")
     assert path_of(files_served).read_bytes() == before
+    page.close()
+
+
+def test_a_removal_written_and_not_switched_is_said_under_the_strips(browser, files_served):
+    """Review of PR #238: the file is written and the rig could not be made
+    to play it (`not_switched`, `written: true`). The strip then has nothing
+    of the channel in the file, so the panel is gone with it: what was said
+    is under the strips, "Not switched", the reason and the pedals' note on
+    hover."""
+    files_served.lifecycle.refuse_switch = ("Sushi went away mid-switch", "failed")
+    page = rack(browser, files_served)
+    p = page.page
+    unlock(p)
+    ask(p, "vocal").get_by_role("button", name="Yes").click()
+    done = p.locator(".remove-done")
+    expect(done.locator("strong")).to_have_text("Not switched")
+    expect(done.locator(".said")).to_be_visible()
+    expect(done).to_have_attribute("title", re.compile("Sushi went away mid-switch.*pedals' bindings follow the rig"))
+    assert channels(files_served) == ["board"], "written"
+    assert "vocal" in files_served.rig.chains, "and not played"
+    assert page.errors == []
+    page.close()
+
+
+def test_what_a_removal_said_is_shown_under_its_own_rig_only(browser, files_served):
+    (files_served.save.root / "config" / "rigs" / "clean.yaml").write_text(RIG_FILE)
+    page = rack(browser, files_served)
+    p = page.page
+    unlock(p)
+    ask(p, "vocal").get_by_role("button", name="Yes").click()
+    expect(p.locator(".remove-done")).to_contain_text("Removed vocal")
+    status = p.evaluate("""async () => (await fetch('/rig/switch', {method: 'POST', headers: {'content-type':
+      'application/json'}, body: JSON.stringify({config_name: 'clean'})})).status""")
+    assert status == 200
+    expect(p.locator(".strip[data-channel='vocal']")).to_have_count(1)  # clean's own vocal
+    expect(p.locator(".remove-done")).to_have_count(0)
+    page.close()
+
+
+def test_a_load_and_a_removal_wait_for_each_other(browser, files_served):
+    """Review of PR #238: while a removal waits, no load starts, and while a
+    load waits, no removal does."""
+    (files_served.save.root / "config" / "rigs" / "clean.yaml").write_text(RIG_FILE)
+    page = rack(browser, files_served)
+    p = page.page
+    unlock(p)
+    held = []
+    p.route("**/rig/channels/*/remove", lambda route: held.append(route))
+    ask(p, "vocal").get_by_role("button", name="Yes").click()
+    expect(p.get_by_text("Removing…")).to_be_visible()
+    expect(p.get_by_role("button", name="Load a channel onto board")).to_be_disabled()
+    expect(p.get_by_role("button", name="Remove board", exact=True)).to_be_disabled()
+    held.pop().continue_()
+    p.unroute("**/rig/channels/*/remove")
+    expect(p.locator(".remove-done")).to_contain_text("Removed vocal")
+    p.route("**/rig/channels/*/load", lambda route: held.append(route))
+    p.get_by_role("button", name="Load a channel onto board").click()
+    group = p.get_by_role("group", name="Load onto board")
+    group.get_by_label("Channel to load onto board").select_option(label="clean / vocal")
+    group.get_by_role("button", name="Load", exact=True).click()
+    expect(group.get_by_role("button", name="Loading…")).to_be_visible()
+    expect(p.get_by_role("button", name="Remove board", exact=True)).to_be_disabled()
+    held.pop().continue_()
+    p.unroute("**/rig/channels/*/load")
+    expect(group.locator(".load-result")).to_be_visible()
+    expect(p.get_by_role("button", name="Remove board", exact=True)).to_be_enabled()
     page.close()

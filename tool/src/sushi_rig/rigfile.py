@@ -88,7 +88,7 @@ import copy
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection
 
 from . import stereo
 from .save import NAME_PATTERN
@@ -2139,7 +2139,7 @@ def _cc_targets(midi: Any) -> set[str]:
 
 def diff(
     running: dict[str, Any], next_config: dict[str, Any], live: dict[str, Any] | None = None,
-    *, root: Path | None = None, amp_off: bool = False, remove_tracks: Any = (),
+    *, root: Path | None = None, amp_off: bool = False, remove_tracks: Collection[str] = (),
 ) -> SwitchPlan | NeedsRestart:
     """How to turn the running rig into the next one live, or why not. Pure.
 
@@ -2164,7 +2164,8 @@ def diff(
     Never the master. Every other rule still holds of the tracks that stay:
     a channel removed in front of another moves that one's engine input
     (`track`), which is a restart. A rig switch passes none, so no switch
-    between two rigs removes a track live.
+    between two rigs removes a track live. A collection of names, never one
+    name as a bare `str` (`TypeError`), whose letters would each be a name.
 
     A processor survives the switch when the next rig has one of the same
     name, on the same track, of the same plugin. Its parameters and bypass are
@@ -2221,6 +2222,9 @@ def diff(
     assumes in writing none (a guess about Sushi: see the list above this
     section).
     """
+    if isinstance(remove_tracks, (str, bytes)):
+        raise TypeError(f"remove_tracks is a collection of track names, not one name: {remove_tracks!r}")
+    remove_tracks = frozenset(remove_tracks)
     reasons: list[RestartReason] = []
 
     def need(code: str, detail: str) -> None:

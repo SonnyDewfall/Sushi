@@ -1854,8 +1854,8 @@ class Live:
     disconnect_cc: Callable[[Any, dict[str, Any]], None] | None = None
     cc_connections: Callable[[Any], list[dict[str, Any]]] | None = None
     # -- a channel removed from the running rig (#190): (track) -> None, the
-    # track and everything on it; None is "only at a restart". UNVERIFIED on
-    # a real Sushi: live.py's `remove_live_track`.
+    # track and everything on it; None is "only at a restart". `at` gives
+    # None: see there, and live.py's `remove_live_track`.
     remove_track: Callable[[Any, str], None] | None = None
 
     @classmethod
@@ -1882,7 +1882,17 @@ class Live:
             connect_cc=lambda c, mapping: m.connect_live_cc(mapping, address, c),  # #210
             disconnect_cc=lambda c, mapping: m.disconnect_live_cc(mapping, address, c),
             cc_connections=lambda c: m.read_live_cc(address, c),
-            remove_track=lambda c, track: m.remove_live_track(track, address, c),  # #190
+            # A channel's removal is a restart, asked first (#190, PR #238's
+            # review). Live, through `m.remove_live_track`, it was run against
+            # Sushi 1.3.0 (tests/test_live_remove_track.py, and by hand some
+            # six hundred times) and mostly works, but not always: 3 runs in
+            # 300 had Sushi stop at `delete_track`, neither applying nor
+            # confirming it, then ignore SIGTERM; and a command sent soon
+            # after connecting can be applied and never confirmed (elkpy's
+            # notice), which fails the step and restarts the rig unasked.
+            # The path stays, for a stand-in Sushi in the tests and for a
+            # Sushi that can be shown to do it every time.
+            remove_track=None,
         )
 
 
@@ -7838,8 +7848,9 @@ class Agent:
     # Kept in one block, as a load's is, and made as a load is made: the rig
     # file written in place (comments kept), then the running rig switched
     # into it (`_revert_switch`), live where the switch can take the track
-    # out (`rigfile.diff`'s `remove_tracks`, `Live.remove_track`), by restart
-    # where it cannot. Outside it the agent calls in at `app`
+    # out (`rigfile.diff`'s `remove_tracks`, `Live.remove_track`, which the
+    # agent's own Sushi link does not offer: `Live.at`), by restart where it
+    # cannot. Outside it the agent calls in at `app`
     # (`_channel_remove_routes`). What goes, and what in the MIDI map names
     # the channel, is rigedit.py's, pure; what a rig may be is the compiler's.
     # Locks as a load's: lifecycle (`busy: "channel remove"`), then live.
@@ -7858,14 +7869,18 @@ class Agent:
         kept), compiled before it is (the compiler's refusal, nothing
         written), and the file as it was is kept as a revert point
         (`saves.keep`) unless a save keeps it already. The running rig is
-        then switched into it as a load's is (`_revert_switch`): live where
-        it can be, the track and everything on it taken out
-        (`remove_track`), which holds for the last channel of the file and
-        one added since the rig started; by restart where it cannot (a
-        channel in front of another, whose engine input then moves; a MIDI
-        map Sushi loads only at the start), the answer saying which and why.
-        Its `op: "rig"` entry is the new baseline. The pedals' listener, and
-        its links to Sushi, follow the rig after (`_midi_sync`, #210).
+        then switched into it as a load's is (`_revert_switch`), which, with
+        the agent's own Sushi link, is a restart: `Live.at` removes no track
+        live (see there). Given a link that can (`Live.remove_track`, a
+        stand-in in the tests), the last channel of the file is taken out
+        live; a channel in front of another (whose engine input then moves)
+        and a MIDI map Sushi loads only at the start restart all the same.
+        The answer says which and why. Its `op: "rig"` entry is the new
+        baseline. The pedals' listener, and its links to Sushi, follow the
+        rig after (`_midi_sync`, #210). A channel the running rig has no
+        track for (added to the file since it started) is written out of the
+        file alone, `how: "file"`: no unsaved work is at stake, nothing is
+        switched, and its Undo plays nothing.
 
         Refused before anything is written, each a 409 with its reason:
         `no_rig`, `panel`, `v1` (as a save); `changed`, when `rig` is given
@@ -7885,9 +7900,9 @@ class Agent:
         not be made to play it, `written: true`. One Undo (#209) step, `act:
         "remove_channel"`: the file put back, and the rig switched into it.
 
-        Not run against a live Sushi: shown against the fakes of the tests,
-        and Sushi's removal of a track live never (live.py's
-        `remove_live_track`)."""
+        Not run against a live Sushi but for `remove_live_track` itself
+        (tests/test_live_remove_track.py): shown against the fakes of the
+        tests."""
         from . import rigedit
 
         try:
@@ -7898,6 +7913,7 @@ class Agent:
         self._refuse_while_busy()
         answer: dict[str, Any]
         path: Path | None = None
+        switched = False
         async with self._lock:
             self.busy = "channel remove"
             try:
@@ -7909,58 +7925,74 @@ class Agent:
                 if asked["rig"] is not None and path.stem != asked["rig"]:
                     raise _conflict(f"the running rig is {path.stem}, not {asked['rig']}, so nothing was removed: "
                                     "look at the rig and remove it again", "changed")
+                discarded: list[dict[str, Any]] = []
                 try:
                     planned = await self._rigfile_thread(
                         request, path, lambda: self._plan_removal(path, channel, asked["drop_midi"], run))
                     async with self._live_lock:
-                        refusal = load_refusal(run["state"], self.log, f"removing {channel}", "remove it")
-                        if refusal is not None and not asked["discard"]:
-                            raise RigFileRefused(*refusal)
-                        discarded = (unsaved_entries(self.log, since=run["state"].get("started_at"))
-                                     if refusal is not None else [])
-                        if asked["restart"] is False:
-                            restarts = await asyncio.to_thread(self._would_restart, planned["compiled"], run,
-                                                               discarded, (channel,))
-                            if restarts:
-                                raise RigFileRefused(
-                                    f"nothing was written: removing {channel} restarts Sushi: "
-                                    + "; ".join(f"{r['code']}: {r['detail']}" for r in restarts)
-                                    + '; remove it with "restart": true to go ahead', "restarts", {"why": restarts})
+                        if planned["playing"]:
+                            refusal = load_refusal(run["state"], self.log, f"removing {channel}", "remove it")
+                            if refusal is not None and not asked["discard"]:
+                                raise RigFileRefused(*refusal)
+                            discarded = (unsaved_entries(self.log, since=run["state"].get("started_at"))
+                                         if refusal is not None else [])
+                            if asked["restart"] is False:
+                                restarts = await asyncio.to_thread(self._would_restart, planned["compiled"], run,
+                                                                   discarded, (channel,))
+                                if restarts:
+                                    raise RigFileRefused(
+                                        f"nothing was written: removing {channel} restarts Sushi: "
+                                        + "; ".join(f"{r['code']}: {r['detail']}" for r in restarts)
+                                        + '; remove it with "restart": true to go ahead', "restarts",
+                                        {"why": restarts})
                         kept = await self._rigfile_thread(request, path, lambda: self._write_removal(path, planned))
                 except RigFileRefused as exc:
                     error = _conflict(" ".join(str(exc).split()), exc.code)
                     if exc.extra:
                         error.agent_extra = exc.extra
                     raise error
-                # One Undo (#209): the file put back and the rig switched into
-                # it, as a load's is, whatever the switch below does.
-                self._history_file(path, planned["before"], planned["after"], f"remove channel {channel}",
-                                   run=run, apply="switch", act="remove_channel")
                 answer = {
                     "ok": True, "rig": path.stem, "file": self._save_shown(path), "channel": channel,
                     "written": True, "discarded": bool(discarded),
                     "removed": {"plugins": planned["plugins"], "send": planned["send"]},
                     "dropped": planned["dropped"], "kept_before": kept,
                 }
+                if not planned["playing"]:
+                    # In the file and not a track of the running rig (added
+                    # since it started, waiting for a restart): nothing plays
+                    # it, so the file alone is written. No unsaved work is at
+                    # stake and none is refused over, nothing is switched, so
+                    # the live steps stay Undo's and no take is stopped; its
+                    # Undo puts the file back and plays nothing (`apply:
+                    # "none"`).
+                    self._history_file(path, planned["before"], planned["after"], f"remove channel {channel}",
+                                       run=run, apply="none", act="remove_channel")
+                    answer["how"] = "file"
+                else:
+                    # One Undo (#209): the file put back and the rig switched
+                    # into it, as a load's is, whatever the switch below does.
+                    self._history_file(path, planned["before"], planned["after"], f"remove channel {channel}",
+                                       run=run, apply="switch", act="remove_channel")
 
-                def mark(entry: dict[str, Any]) -> None:
-                    entry["args"]["remove_channel"] = channel
+                    def mark(entry: dict[str, Any]) -> None:
+                        entry["args"]["remove_channel"] = channel
 
-                answer.update(await self._revert_switch(
-                    request, path.stem, {"id": f"remove:{channel}", "what": f"without {channel}"}, mark=mark,
-                    done="written", discarded=discarded, command=["remove", f"{channel} from {path.stem}"],
-                    remove_tracks=(channel,)))
-                if discarded:
-                    answer["discard"] = discard_said(discarded, answer)
-                if not answer.get("ok"):
-                    # As a load's: the pedals follow what runs, not the file.
-                    answer["midi_note"] = (
-                        "the pedals' bindings follow the rig as it runs (its compiled config, "
-                        f"{run['described'].get('config')}), not the file just written: restart the rig to "
-                        "play the file, and its pedals with it")
+                    switched = True
+                    answer.update(await self._revert_switch(
+                        request, path.stem, {"id": f"remove:{channel}", "what": f"without {channel}"}, mark=mark,
+                        done="written", discarded=discarded, command=["remove", f"{channel} from {path.stem}"],
+                        remove_tracks=(channel,)))
+                    if discarded:
+                        answer["discard"] = discard_said(discarded, answer)
+                    if not answer.get("ok"):
+                        # As a load's: the pedals follow what runs, not the file.
+                        answer["midi_note"] = (
+                            "the pedals' bindings follow the rig as it runs (its compiled config, "
+                            f"{run['described'].get('config')}), not the file just written: restart the rig to "
+                            "play the file, and its pedals with it")
             finally:
                 self.busy = None
-                if path is not None:
+                if switched:
                     await self._midi_sync()  # the switch stopped the listener; it follows the rig now
         await self._rigfile_git_after(answer, path)
         if answer["ok"]:
@@ -7997,7 +8029,12 @@ class Agent:
         compiled = self._rigfile_compile(edited, run)
         self._rigfile_plugins(compiled, path.stem, run, "changed", "remove it again")
         chain = entry.get("chain") if isinstance(entry.get("chain"), list) else []
-        return {"raw": edited, "compiled": compiled, "channel": channel, "dropped": named,
+        try:
+            running = self.switching.read_config(run["described"].get("config"))
+            playing = channel in {t.get("name") for t in running.get("tracks") or [] if isinstance(t, dict)}
+        except Exception:  # noqa: BLE001 -- not known: switched, which plays whatever it is
+            playing = True
+        return {"raw": edited, "compiled": compiled, "channel": channel, "dropped": named, "playing": playing,
                 "plugins": [p.get("name") for p in chain if isinstance(p, dict)],
                 "send": f"{channel}{rigfile.SEND_SUFFIX}"}
 

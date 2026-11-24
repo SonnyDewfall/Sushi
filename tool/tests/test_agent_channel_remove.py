@@ -89,6 +89,11 @@ def test_what_names_a_channel_is_its_plugins_mute_volume_and_every_blend_it_is_i
         rigedit.without_channel(raw, "keys")
 
 
+def test_remove_tracks_is_names_never_one_name_as_text():
+    with pytest.raises(TypeError, match="collection of track names"):
+        rigfile.diff({"tracks": []}, {"tracks": []}, remove_tracks="vocal")
+
+
 def test_a_track_is_removed_live_only_where_the_caller_names_it():
     """`rigfile.diff`'s `remove_tracks`: the track named is one step, its
     processors with it, while any other missing track, and every switch
@@ -172,18 +177,89 @@ def test_a_channel_in_front_of_another_is_a_restart_asked_first(root):
     assert [c["name"] for c in yaml.safe_load(path.read_text())["channels"]] == ["vocal"]
 
 
-def test_a_channel_added_to_the_file_and_not_yet_playing_is_removed_live_with_nothing_to_do(root):
+def test_a_channel_added_to_the_file_and_not_yet_playing_is_removed_from_the_file_alone(root):
+    """Review of PR #238: a channel the running rig has no track for (added
+    to the file, waiting for a restart) is written out of the file and
+    nothing else: no refusal over other channels' unsaved work (none is at
+    stake), no switch (no `op: "rig"`, so the live steps stay Undo's), no
+    take stopped, and its Undo puts the file back and plays nothing."""
     agent, world, fake, runner = make_agent(root)
     path = rig_file(root, "guitar_vocal")
     status, body = call(agent, "POST", "/rigs/guitar_vocal/channels/add",
                         json={"name": "keys", "input": "vocal-in", "width": "mono"})
     assert status == 200 and body["takes_effect"] == "restart", body
     added = path.read_bytes()
+    turned = next(iter(fake.values["guitar_overdrive"]))
+    status, said = call(agent, "POST", "/live/parameter",
+                        json={"processor": "guitar_overdrive", "parameter": turned, "value": 0.25})
+    assert status == 200, said
+    finished, real = [], agent._finish_take
+
+    async def finishing(origin, why):
+        finished.append(why)
+        return await real(origin, why)
+
+    agent._finish_take = finishing
+    syncs = counting_syncs(agent)
+    logged = len(agent.log)
     status, body = remove(agent, "keys", restart=False)
-    assert status == 200 and body["how"] == "live" and body["plan"] == [], body
-    assert fake.tracks == ["guitar", "vocal", "master"] and runner.calls == []
+    assert status == 200 and body["how"] == "file" and body["discarded"] is False, body
+    assert "plan" not in body and "entry" not in body, "nothing was switched"
     assert [c["name"] for c in yaml.safe_load(path.read_text())["channels"]] == ["guitar", "vocal"]
-    assert path.read_bytes() != added
+    assert fake.tracks == ["guitar", "vocal", "master"] and runner.calls == []
+    assert fake.values["guitar_overdrive"][turned] == 0.25, "the unsaved knob plays on, not discarded"
+    assert len(agent.log) == logged and not [e for e in agent.log if e.get("op") == "rig"], "no switch logged"
+    assert finished == [] and syncs == [], "no take stopped, no listener restarted"
+    status, state = call(agent, "GET", "/undo")
+    assert state["next"]["label"] == "remove channel keys" and state["depth"] == 3, state
+    status, undone = call(agent, "POST", "/undo", json={"seq": state["next"]["seq"], "restart": False})
+    assert status == 200 and undone["how"] == "file", undone
+    assert path.read_bytes() == added, "the file as it was"
+    assert undone["next"]["label"] == f"guitar_overdrive {turned}", "the knob's live step is still Undo's"
+    assert call(agent, "POST", "/undo", json={})[0] == 200
+    assert fake.values["guitar_overdrive"][turned] != 0.25
+
+
+def test_a_live_removal_whose_step_fails_restarts_into_the_file_and_its_undo_is_there(root):
+    """Sushi refusing the track's removal (`remove_track` raises): the switch
+    restarts into the written file, as any live switch that fails part-way
+    does, said as `failed`; the history holds the removal, and its Undo
+    puts the file back."""
+    from sushi_rig.live import LiveError
+
+    agent, world, fake, runner = make_agent(root)
+    path = rig_file(root, "guitar_vocal")
+    before = path.read_bytes()
+
+    def refused(connection, track):
+        raise LiveError(f"Sushi refused to delete track {track!r}")
+
+    fake.remove_track = refused
+    status, body = remove(agent, "vocal", restart=False)
+    assert status == 200, body
+    assert body["how"] == "restart" and [r["code"] for r in body["why"]] == ["failed"], body
+    assert "refused to delete track 'vocal'" in body["why"][0]["detail"]
+    assert runner.calls and runner.calls[0][0] == "down"
+    assert [c["name"] for c in yaml.safe_load(path.read_text())["channels"]] == ["guitar"]
+    status, state = call(agent, "GET", "/undo")
+    assert state["next"]["label"] == "remove channel vocal" and state["next"]["can"] is True, state
+    assert state["depth"] == 1, "the removal alone: the switch ended the live steps"
+    status, undone = call(agent, "POST", "/undo", json={"restart": True})
+    assert status == 200 and path.read_bytes() == before, undone
+
+
+def test_unsaved_work_on_the_removed_channel_itself_is_refused_and_dropped_with_it(root):
+    agent, world, fake, runner = make_agent(root)
+    status, said = call(agent, "POST", "/live/parameter",
+                        json={"processor": "vocal_eq", "parameter": "High", "value": 0.9})
+    assert status == 200, said
+    status, body = remove(agent, "vocal", restart=False)
+    assert status == 409 and body["code"] == "unsaved" and "vocal_eq" in body["reason"], body
+    status, body = remove(agent, "vocal", restart=False, discard=True)
+    assert status == 200 and body["how"] == "live" and body["discarded"] is True, body
+    assert body["plan"] == [{"op": "remove_track", "track": "vocal"}], "nothing put back on what goes"
+    assert body["discard"]["changes"] == 1 and "vocal_eq" not in fake.values
+    assert runner.calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -372,3 +448,24 @@ def test_a_removal_changed_since_cannot_be_undone(root):
     path.write_text(path.read_text() + "# a hand edit\n")
     status, body = call(agent, "POST", "/undo", json={"restart": True})
     assert status == 409 and body["code"] == "cant_undo" and "has changed since" in body["reason"], body
+
+
+def test_the_agents_own_sushi_link_removes_no_track_live_so_every_removal_is_a_restart_asked(root):
+    """PR #238's review: `Live.at` gives no `remove_track` (Sushi 1.3.0
+    was seen to leave a track's deletion unconfirmed, and once to stop
+    applying graph changes: tests/test_live_remove_track.py), so a removal
+    the stand-in takes out live is, on the agent's own link, a restart, and
+    with `"restart": false` it is asked first, nothing written."""
+    from sushi_rig.agent import Live
+
+    assert Live.at("localhost:1").remove_track is None
+    agent, world, fake, runner = make_agent(root)
+    fake.remove_track = None  # as `Live.at`'s
+    before = rig_file(root, "guitar_vocal").read_bytes()
+    status, body = remove(agent, "vocal", restart=False)
+    assert status == 409 and body["code"] == "restarts", body
+    assert [r["code"] for r in body["why"]] == ["track_removed"], body
+    assert rig_file(root, "guitar_vocal").read_bytes() == before
+    status, body = remove(agent, "vocal", restart=True)
+    assert status == 200 and body["how"] == "restart" and runner.calls[0][0] == "down", body
+    assert ["remove_track"] not in [c[:1] for c in fake.calls]

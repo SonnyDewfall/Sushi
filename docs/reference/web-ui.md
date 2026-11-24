@@ -584,14 +584,20 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   **Last channel** and asks nothing (a rig needs one). It is behind the lock,
   as a load is (`lockRefusal(…, "remove_channel")`): locked, Yes is off and
   the panel says "Locked". Yes sends `restart: false` and the rig the page
-  drew; a removal that would restart Sushi (a channel in front of another)
-  comes back asking **Restart?**, and Yes sends it again with `restart:
-  true`. A refusal is shown in the panel in a few words with the second tap
+  drew; a removal of a channel that plays is a restart, so it comes back
+  asking **Restart?**, and Yes sends it again with `restart: true` (one
+  added to the file and not yet playing is taken out of the file with no
+  restart). A refusal is shown in the panel in a few words with the second tap
   it offers, keeping any yes already given: **Remove anyway** (`discard`),
   **Drop N and remove** (`drop_midi`), the controls named on the page ("MIDI:
   d, knob1") and each with why in the title. Once removed the strip goes,
-  and "Removed vocal" is said under the strips (live, or the restart and
-  why, and that Revert… goes back, on hover) until its × is pressed. The one
+  and "Removed vocal" is said under the strips (the restart and why, and
+  that Revert… goes back, on hover) until its × is pressed, under that
+  rig's strips only. A removal written and not played (`not_switched`, or
+  a timeout, `written: true`) is said there too, **Not switched**, the
+  reason and the pedals' note on hover, since the strip has nothing of the
+  channel left to show it in. A load and a removal wait for each other: while
+  one is in flight, the other's buttons are off. The one
   Undo puts the channel back, held by the lock as a load's is
   (`UNDO_LOCKED_ACTS`); that is a restart, which it asks about. The
   decisions are rig.js's (`channelRemoveCall`, `midiNaming`, `channelGoes`,

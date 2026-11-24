@@ -74,11 +74,11 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
    how many plugins its chain has and, if any, how many pedal assignments
    name it (**MIDI**). Hover over the line for each one by name.
 4. Click **Yes**, or **No** to keep it.
-5. If the rig has to restart to lose the channel, the strip asks
+5. The rig has to restart to lose the channel, so the strip asks
    **Restart?** first, and nothing has changed yet. **Yes** removes it; the
-   sound stops for a few seconds while the rig comes back. Taking out the
-   last channel in the rig's list plays on with no restart; taking out one in
-   front of another needs one.
+   sound stops for a few seconds while the rig comes back. A channel you
+   added and have not yet restarted to play is simply taken out of the file,
+   with no restart.
 6. The strip goes, and **Removed** and the channel's name are shown under the
    strips. **Undo**, at the top of the page, puts the channel back, with its
    chain and its pedals; that needs a restart, which it asks about.
@@ -88,7 +88,9 @@ on/off, its volume, or a blend of it and another channel), the strip says
 **Not removed** and names the pedal controls: click **Drop** and the number
 **and remove** to take them out of the rig with the channel. With unsaved
 changes it offers **Remove anyway**, which drops them. A rig's only channel
-cannot be removed: the strip says **Last channel**.
+cannot be removed: the strip says **Last channel**. If the channel has gone
+from the file but the rig could not be made to play it, the box under the
+strips says **Not switched**: hover over it for why, then restart the rig.
 
 ## Delete a rig
 
@@ -126,9 +128,7 @@ folder's `.gitignore` where it is.
 
 - **Adding a channel or changing an input needs the rig to restart**, which is
   a few seconds of silence. Nothing changes in the sound until then.
-  **Removing** the last channel in the rig's list does not; removing one in
-  front of another does, and so does dropping a knob or pedal assignment
-  with it. Putting a removed channel back with **Undo** always does.
+  So does **removing** a channel, and putting it back with **Undo**.
 - **A new channel with an empty chain has no effects.** Add them on the rack
   once the rig is running ([Shaping a sound](shaping-a-sound.md#add-a-plugin)),
   or use **Start from** to copy another channel's chain.

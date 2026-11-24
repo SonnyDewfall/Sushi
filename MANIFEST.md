@@ -7239,3 +7239,35 @@ source of negative lags (it gave delayed copies, at 4163), and says an octave
 down fully wet peaks at +24083 plus the latency and reads as one (tested on a
 synthetic shift). After: `nulltest --all` passes all 44 here, and
 `--calibrate --all` in a copy wrote every delay as committed. *(2026-11-24)*
+
+**Remove a channel: PR #238's review, and the live removal tried on a real
+Sushi (#190).** Run against Sushi 1.3.0's release AppImage here (dummy
+frontend, gRPC; `tests/test_live_remove_track.py`, and the same rig by hand
+some six hundred times), `live.remove_live_track` took the track, its
+processors and its send out while it played, and the master went on with the
+other channel alone, nothing of the removed one in it. But not every time:
+with the processors taken off send first, as the agent does, 3 runs in 300
+had Sushi stop at `delete_track` on the emptied track, neither applying nor
+confirming it, and then ignore SIGTERM (killed); taken off in the other
+order, 1 in 132 stuck at the send; and about one command in twenty on a
+fresh connection was applied and never confirmed (elkpy subscribes to
+Sushi's command notices on a thread of its own, and a command sent before
+that is up is never confirmed: 10 first commands of 150 without a wait,
+none of 150 with half a second), which would fail the step and restart the
+rig unasked. So **`Live.at` gives no `remove_track`**: removing a playing
+channel is a restart, asked first ("Restart?"), and the live path stays for
+the stand-ins of the tests and a Sushi shown to do it every time. The test
+waits a second after connecting; a failure of it is one of the faults above.
+Two wav_writers drift apart on the dummy frontend (11168 frames in one run),
+so it reads the master by its spectrum (440 Hz left, 660 Hz removed), not
+against a second recording. Also from the review: a channel added to the
+file and not yet playing is written out of the file alone (`how: "file"`, no
+unsaved refusal, no switch, so no `op: "rig"`, the live steps kept and no
+take stopped; its Undo `apply: "none"`); a removal written and not switched
+is said under the strips, "Not switched", the reason and the pedals' note on
+hover; that notice shows under its own rig only; a load and a removal wait
+for each other on the page; `rigfile.diff`'s `remove_tracks` is a collection
+of names, a bare `str` refused; and tests for a `remove_track` step that
+fails (the switch restarts into the file, the Undo step kept) and for unsaved
+work on the channel removed, with `discard`. Not tried on the rig.
+*(2026-11-24)*
