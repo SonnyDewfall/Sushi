@@ -476,8 +476,10 @@ def test_the_committed_machine_files_describe_the_fbv_as_aseqdump_heard_it(name)
         "d": ("switch", "single"), "pedal": ("expression", None), "wah": ("expression", None),
         "toe": ("switch", "latching")}
     # The heel is where the agent silences a volume: the pedal never reads
-    # below 8 and rests up to 13 there, so a heel of 0 would never be reached.
-    assert fbv["model"]["pedal"]["range"] == [15, 127] and fbv["model"]["wah"]["range"] == [15, 127]
+    # below 8 and rests up to 13 there, so a heel of 0 would never be reached;
+    # just after a move it comes to rest at up to 17, which a heel of 15 left
+    # 35 dB down (#210), so the heel is 20.
+    assert fbv["model"]["pedal"]["range"] == [20, 127] and fbv["model"]["wah"]["range"] == [20, 127]
     text = path.read_text()
     assert "unverified" not in text[text.index("  fbv:"):]
     assert (checkout_root() / "machines" / "fbv" / "sushi-rig-line-6.fbv").read_bytes().startswith(b"FBVP")

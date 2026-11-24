@@ -14,6 +14,7 @@ expects); a revert's or a channel load's switch is `UiLifecycle`'s stand-in.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -364,3 +365,68 @@ def test_an_amp_parameter_is_undone():
         assert body["said"] == f"Undone: amp {name}"
         now = call(served, "GET", "/amp")[1]
         assert next(p for p in now["parameters"] if p["name"] == name)["value"] == pytest.approx(was)
+
+
+# ------------------------------------------------------------- #210's pedals, merged
+
+def test_a_pedal_mapping_sushi_took_live_is_taken_back_live(served):
+    """#210 maps a volume pedal in Sushi live (elkpy's connect, read back);
+    its Undo puts the file back and disconnects the mapping live, by the
+    assignment's own path, with no restart. Against test_agent_midi_assign's
+    LiveCC: a real Sushi doing this is unverified."""
+    from sushi_rig.rigfile import AGENT_BINDINGS
+    from test_agent_midi_assign import LiveCC, listening
+
+    sushi = LiveCC(served.rig)
+    listening(served)
+    path = rig_file(served)
+    original = path.read_bytes()
+    status, body = call(served, "POST", "/rig/midi/assign", {"control": "pedal", "volume": "vocal"})
+    assert status == 200 and body["how"] == "live", body
+    assert [m["plugin_name"] for m in sushi.held] == ["vocal_send"]
+    status, body = undo(served)
+    assert status == 200, body
+    assert body["said"] == "Undone: pedal" and body["how"] == "live", body
+    assert path.read_bytes() == original
+    assert sushi.calls[-1] == ("disconnect", "vocal_send", 7) and sushi.held == [], "taken off Sushi live"
+    assert not (served.save.config.get("midi") or {}).get("cc_mappings"), "the running config says so"
+    assert not served.save.config.get(AGENT_BINDINGS)
+    assert served.lifecycle.calls == [], "nothing restarted"
+
+
+def test_a_pedal_mapping_that_cannot_be_taken_back_live_offers_the_restart(served):
+    from test_agent_midi_assign import LiveCC, listening
+
+    sushi = LiveCC(served.rig)
+    listening(served)
+    path = rig_file(served)
+    original = path.read_bytes()
+    assert call(served, "POST", "/rig/midi/assign", {"control": "pedal", "volume": "vocal"})[1]["how"] == "live"
+    sushi.stuck = True  # Sushi keeps the mapping a disconnect asks it to drop
+    status, body = undo(served)
+    assert status == 200, body
+    assert body["how"] == "restart" and body["offer"] == "restart", body
+    assert any(r["code"] == "midi_live" for r in body["why"]), body["why"]
+    assert path.read_bytes() == original, "the file is back whatever Sushi did"
+
+
+def test_a_channel_muted_from_a_footswitch_is_unmuted_by_undo(served):
+    """#210: a channel's mute is its send bypassed. A press of C, assigned
+    to the vocal's on/off, is a live step like any bypass, said as a mute."""
+    from test_agent_midi_assign import listening
+
+    listening(served)
+    status, body = call(served, "POST", "/rig/midi/assign", {"control": "c", "mute": "vocal"})
+    assert status == 200 and body["how"] == "live", body
+    served.pedals.press("c")
+    deadline = time.monotonic() + 5
+    while served.rig.bypassed["vocal_send"] is not True and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert served.rig.bypassed["vocal_send"] is True, "the press muted the channel"
+    assert call(served, "GET", "/undo")[1]["next"]["label"] == "mute vocal"
+    status, body = undo(served)
+    assert status == 200, body
+    assert body["said"] == "Undone: mute vocal" and body["how"] == "live"
+    assert served.rig.bypassed["vocal_send"] is False
+    status, body = undo(served)
+    assert status == 200 and body["said"] == "Undone: pedal c", body

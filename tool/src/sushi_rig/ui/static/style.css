@@ -499,6 +499,8 @@ a.rig-act { display: inline-flex; align-items: center; justify-content: center; 
 .selector select { color: var(--text); max-width: 100%; }
 .machine-hint { margin: 4px 0; padding: 8px 10px; border-radius: 8px; background: var(--ground); color: var(--text); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rigfile-result .offer { align-self: flex-start; margin-top: 4px; }
+/* The file's pedal map waiting for a restart (#210): a result box's look, not one (no dismiss). */
+.pedal-behind { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.5; background: var(--card); border: 1px solid var(--edge); }
 
 .wiring { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .wiring:empty { display: none; }

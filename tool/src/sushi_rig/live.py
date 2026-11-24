@@ -463,6 +463,97 @@ def set_live_bypass(
         _wait(c.audio_graph.set_processor_bypass_state(proc_id, bool(bypassed)), strict=True)
 
 
+# --------------------------------------------------------------------------- #
+# A pedal's mapping, live (#210)
+# --------------------------------------------------------------------------- #
+#
+# UNVERIFIED AGAINST A REAL SUSHI. Read from elkpy 1.3.0's midicontroller.py
+# and its sushi_rpc.proto, not run: whether Sushi 1.3.0 honours
+# ConnectCCToParameter and DisconnectCC on a running rig, whether the
+# connection then drives the parameter as the config's cc_mapping would,
+# and whether GetAllCCInputConnections lists it. The agent calls these only
+# behind `Agent._midi_cc_live`, which reads the connections back and treats
+# any failure as "plays after a restart", the answer it gave before.
+
+# The proto's MidiChannel: DUMMY 0, MIDI_CH_1 1 .. MIDI_CH_16 16, OMNI 17. A
+# cc_mapping's channel is the machine file's, from 0 (the pedal followed a
+# mapping on channel 0 sending on the wire's channel 0, the laptop,
+# 2026-11-23), or a string for any channel.
+MIDI_CHANNEL_OMNI = 17
+
+
+def midi_channel(channel: Any) -> int:
+    """A cc_mapping's `channel` as the gRPC API's MidiChannel numbers it."""
+    if isinstance(channel, int) and not isinstance(channel, bool) and 0 <= channel < 16:
+        return channel + 1
+    return MIDI_CHANNEL_OMNI
+
+
+def _cc_ids(c, mapping: dict[str, Any]) -> tuple[int, int]:
+    proc_id = c.audio_graph.get_processor_id(mapping["plugin_name"])
+    return proc_id, c.parameters.get_parameter_id(proc_id, mapping["parameter_name"])
+
+
+def connect_live_cc(mapping: dict[str, Any], address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> None:
+    """Have the running Sushi map one CC as a config's `cc_mappings` entry
+    (`rigfile.compile_midi`'s shape) would: elkpy's
+    `MidiController.connect_cc_to_parameter`. Strict: `LiveError` if Sushi
+    reports an error or does not confirm. Unverified: see above."""
+    with _connection(address, controller) as c:
+        proc_id, param_id = _cc_ids(c, mapping)
+        _wait(c.midi_controller.connect_cc_to_parameter(
+            proc_id, param_id, midi_channel(mapping.get("channel")), int(mapping.get("port", 0)),
+            int(mapping["cc_number"]), float(mapping["min_range"]), float(mapping["max_range"]),
+            mapping.get("mode") == "relative"), strict=True)
+
+
+def disconnect_live_cc(mapping: dict[str, Any], address: str = DEFAULT_GRPC_ADDRESS,
+                       controller: Any = None) -> None:
+    """Take one CC mapping off the running Sushi: elkpy's
+    `MidiController.disconnect_cc`, with the mapping's own values. Strict, as
+    `connect_live_cc`. Unverified: see above."""
+    with _connection(address, controller) as c:
+        proc_id, param_id = _cc_ids(c, mapping)
+        _wait(c.midi_controller.disconnect_cc(
+            proc_id, param_id, midi_channel(mapping.get("channel")), int(mapping.get("port", 0)),
+            int(mapping["cc_number"]), float(mapping["min_range"]), float(mapping["max_range"]),
+            mapping.get("mode") == "relative"), strict=True)
+
+
+def read_live_cc(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> list[dict[str, Any]]:
+    """Every CC mapping the running Sushi holds, as `{plugin_name,
+    parameter_name, channel, port, cc_number, min_range, max_range, mode}` in
+    the cc_mappings' own terms
+    (the channel from 0, or "all"): what `Agent._midi_cc_live` checks a live
+    mapping against. A processor or parameter it cannot name is said by its
+    ids. Unverified: see above."""
+    with _connection(address, controller) as c:
+        names: dict[int, str] = {}
+        for track in c.audio_graph.get_all_tracks():
+            names[track.id] = track.name
+            for processor in c.audio_graph.get_track_processors(track.id):
+                names[processor.id] = processor.name
+        out = []
+        for connection in c.midi_controller.get_all_cc_input_connections() or []:
+            parameters = {}
+            try:
+                parameters = {p.id: p.name for p in c.parameters.get_processor_parameters(connection.processor_id)}
+            except Exception:  # noqa: BLE001 -- said by id instead
+                pass
+            channel = connection.channel
+            out.append({
+                "plugin_name": names.get(connection.processor_id, f"processor {connection.processor_id}"),
+                "parameter_name": parameters.get(connection.parameter_id, f"parameter {connection.parameter_id}"),
+                "channel": channel - 1 if 1 <= channel <= 16 else "all",
+                "port": connection.port, "cc_number": connection.cc_number,
+                # Compared within a tolerance (float32 on the wire): a range
+                # Sushi holds wrongly is not the mapping asked for (#210's review).
+                "min_range": float(connection.min_range), "max_range": float(connection.max_range),
+                "mode": "relative" if connection.relative_mode else "absolute",
+            })
+        return out
+
+
 def _walk_chains(controller) -> tuple[dict[str, list[str]], dict[str, int]]:
     """`({track: [processor names in chain order]}, {name: id})` for every
     track and processor: one call for the tracks and one per track, however many

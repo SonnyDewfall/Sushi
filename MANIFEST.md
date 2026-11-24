@@ -6918,6 +6918,64 @@ only CCs, so the spike plays from a keyboard or the MPD218. A section says how
 we would write our own Linux control app for the pickup if one were needed.
 Nothing is built. *(2026-11-23)*
 
+**The FBV in the rig (#210).** The owner's diagnosis on the laptop with the
+board found four things. (1) Nothing linked a pedal to Sushi's own MIDI input:
+the patchbay links audio only, and the agent reads the pedal on a client of
+its own, so Sushi's `cc_mappings` never heard it; Sushi 1.3.0 with `-j` is
+ALSA client `Sushi`, input port 0 `listen:in`, and `aconnect "FBV Express Mk
+II:0" "Sushi:0"` made a volume pedal follow. Each listener's `AlsaPort` now
+makes that link through alsa-midi, by name, at its open, on a hot-plug and
+when a Sushi starts, leaving a link already there alone; `plan_for` links
+only the map's controller, and only when Sushi maps something of it (its
+cc_mappings, on their port), a map of sweeps alone is a feed of its own so it
+is linked, `/health`'s feeds say `linked_to_sushi` (from ALSA's own list),
+`link_wanted` and why, the PEDALS line says "listening, not linked" where a
+link is wanted, and `up` with no agent links the rig's pedal once
+(`link_once`, the same rule). The review found the first version linked every
+pedal it listened to, never took a link down (one made at the start drove a
+mapping an assignment had since made a clash, while `/health` said "not
+linked"), and never relinked after a link taken down by hand when Sushi
+restarted with the unsubscription announced first: a listener now takes down
+the links this agent made that the plan no longer asks for (never another's),
+and the by-hand hold is for that one Sushi only. (2) An
+assignment of what Sushi maps needed a restart, and the owner was asked only
+to save: the `unsaved` refusal said "save first, then make the edit", and the
+assignment was then made again with its restart offer under the strips. The
+page now offers **Save, then assign**, focuses the restart offer, and
+PEDALS offers the restart whenever `GET /midi`'s new `behind` says the
+running map is behind the file; and an assignment of Sushi's mappings is
+tried live first, through elkpy's `connect_cc_to_parameter` and
+`disconnect_cc`, read back from Sushi's own list, with the restart as the
+fallback. The read-back compares ranges and mode too (a blend turned round
+is a live change, not a mapping "still there"), a failed change takes back
+the call in flight, and a Sushi whose list then is not the running config's
+marks it (`_midi_unconfirmed`), so the next switch restarts; PEDALS says
+"Pedal ranges changed. Restart to apply." when a Save moved only ranges, and
+Save, then assign waits for its own save. **That live path is unverified on a
+real Sushi.** (3) A mute set the
+track's `mute`, which Sushi applies after the track's plugins, so after the
+send: only the stem went silent, and C's toggles (cc 22) were in the log and
+not heard (D, on the delay's bypass, worked). A mute is now the channel's send bypassed, by the agent, for every
+control (Sushi has no CC-to-bypass); the send's gain, a volume pedal's, is not
+touched. Chosen over a gain processor before every send (a compiler-owned
+processor that save, switch, panel and page would all have to know) and the
+master's return (every channel at once). CI then found a bypassed send
+still sending in an offline render; on a running Sushi 1.3.0 (its dummy
+frontend, the master recorded by Sushi's `wav_writer`, the bypass set over
+gRPC as the agent sets it) the master goes silent and comes back, the stem
+playing throughout. The difference is Sushi's: the send's bypass is an event
+the audio thread must receive, and the offline frontend never delivers it
+(send_plugin.cpp, offline_frontend.cpp), so an offline render of a bypassed
+send hears it. `test_send_return.py` holds both, with the not-bypassed
+control.
+(4) The heel was 15, and the board comes to rest at 14 to 17 just after a
+move: 35 dB down instead of silent. It is 20 in both machine files. Save,
+Save as and a switch were checked to keep a rig's `midi:` section, and tests
+now hold them to it; nothing there needed fixing. (5) From the laptop: a
+pedal could not be given SWH lcrDelay's `Dry/Wet level`, a parameter Sushi
+names with a slash; a parameter target is now split at its first two slashes,
+the parameter the rest. *(2026-11-23)*
+
 **One Undo for everything, and far less text on the page (#209).** The
 owner: "too much text explaining various decisions … give me an undo button
 and if there does need to be a message about deleting something or
@@ -6948,6 +7006,21 @@ ask; Stop, a restart and the amp's model ask "Stop?", "Restart?", "Restart
 amp?" with Yes and No, and a revert refused for unsaved work "Drop changes?".
 Explanatory paragraphs are gone from the sidebars, panels and results: a
 result says its title and keeps the rest in its `title`; a refusal is cut to
-its first clause (`R.shortSaid`), whole on hover. A channel load (#208's
-channels from other rigs) is a file write with `apply="switch"`: one
-`_history_file` call where it writes. Not run on the rig. *(2026-11-23)*
+its first clause (`R.shortSaid`, which passes over a leading "nothing was
+written: "), whole on hover; a refused result box shows that clause beside
+its title. A channel preset's load is a file write with `apply="switch"`,
+undone by putting the file back and switching into it, as a revert's undo
+is: one `_history_file` call where it writes, which is all #208's channel
+loaded from another rig needs too.
+
+Merged with #210 (the FBV in the rig): a pedal's assignment whose Sushi
+mappings were made live through elkpy is undone the same way, its file put
+back and the mappings taken back live (`_undo_bindings` shares
+`_map_plan`, `_record_running` and `_map_cc_live` with the assignment), the
+restart offered where the forward change needed one. A channel's mute from
+a footswitch, its send bypassed, is a live step like any bypass, said as
+"mute vocal". #210's new words follow the less-text rule: **Save & assign**
+(its title says the rest), PEDALS' "Ranges changed" or "Not playing yet"
+with a one-word **Restart**, "waiting" for the board, "Device" for its
+picker, and the restart confirm "Restart?" with Yes and No. Not run on the
+rig. *(2026-11-24)*

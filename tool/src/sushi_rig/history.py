@@ -12,14 +12,16 @@ merging of a fader's drag are tested with no agent.
 (`Agent._UNDOERS`), so a new kind of action is one record call where it
 happens and one method:
 
-- `live`: a change made through /live or the amp (a knob, a fader, a bypass,
-  a move, a plugin added or removed, an amp parameter or model). It holds
+- `live`: a change made through /live, the amp or a pedal (a knob, a fader,
+  a bypass, a channel's mute, which is its send bypassed (#210), a move, a
+  plugin added or removed, an amp parameter or model). It holds
   the index of its entry in the agent's live log (`indices`, several for a
   fader's drag, see below) and is reversed by the live undo that was always
   there (`POST /live/undo`), which checks the rig is still as the change
   left it.
 - `file`: a write of a rig file (a channel added, an input changed, a pedal
-  assigned, a Save over the running rig's file, a revert, a new rig). It
+  assigned, a Save over the running rig's file, a revert, a channel load, a
+  new rig). It
   holds the file's bytes before the write (`before`, None for a file that
   did not exist) and a digest of what was written (`after`), so the undo
   puts the old bytes back only while the file is still as the write left
@@ -59,6 +61,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Callable
 
+from .rigfile import SEND_SUFFIX
+
 # How far back Undo goes: the newest LIMIT entries are kept.
 LIMIT = 50
 # Changes to one control this close together (seconds) are one step.
@@ -85,7 +89,11 @@ def live_label(entry: dict[str, Any]) -> str:
     if op == "parameters":
         return f"{args.get('processor')}"
     if op == "bypass":
-        return f"{'bypass' if args.get('bypassed') else 'enable'} {args.get('processor')}"
+        processor = str(args.get("processor"))
+        if processor.endswith(SEND_SUFFIX):
+            # A channel's mute is its send bypassed (#210): said as the mute.
+            return f"{'mute' if args.get('bypassed') else 'unmute'} {processor[: -len(SEND_SUFFIX)]}"
+        return f"{'bypass' if args.get('bypassed') else 'enable'} {processor}"
     if op == "move":
         return f"move {args.get('processor')}"
     if op == "add":

@@ -78,10 +78,11 @@ controllers:
       c: {cc: 22, kind: switch, behaviour: single}
       d: {cc: 23, kind: switch, behaviour: single}
       # The pedal is two, by the toe switch's mode: Vol sends CC 7, Wah CC 11.
-      # The heel rests at 8 to 13, never 0 (14 to 17 just after a move): the
-      # agent silences a volume at or below 15.
-      pedal: {cc: 7, kind: expression, range: [15, 127]}
-      wah: {cc: 11, kind: expression, range: [15, 127]}
+      # The heel rests at 8 to 13, never 0, and at 14 to 17 just after a
+      # move: the agent silences a volume at or below 20, so a foot come to
+      # rest just after a move is silent too (#210; 15 left it 35 dB down).
+      pedal: {cc: 7, kind: expression, range: [20, 127]}
+      wah: {cc: 11, kind: expression, range: [20, 127]}
       # The toe switch toggles 127 / 0, one message a press, and flips the
       # pedal between Vol and Wah as it does.
       toe: {cc: 43, kind: switch, behaviour: latching}
