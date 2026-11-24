@@ -136,7 +136,8 @@ and a toe switch under the pedal:
   again once the rig is playing.
 - **C and D** each turn an effect or a channel on and off, as assigned on each
   rig. One press turns it on, the next turns it off. A channel turned off is
-  silent in the monitors; its own recording (its stem) still has it.
+  silent in the monitors; its own recording (its stem) still has it. **Undo**
+  takes a press back, as it does a tap on the page.
 - **The pedal** sweeps a knob, or rides a channel's volume, as assigned on
   each rig. On a volume, the heel is silent and the toe is the channel's own level,
   never louder; half way is about 20 dB quieter. The heel is anywhere the pedal
@@ -169,10 +170,9 @@ and shows the control's name (**C**, **pedal**) once something is. To assign:
    the pedal for a volume or a knob. A and B are never offered: they step rigs.
 3. Pick the control. Pick **none** to take it off again.
 
-If the control you pick is already doing something else on this rig, the page
-asks first, naming what it is on now: **Move C** moves it, **Keep it** leaves
-everything as it was. A control does one thing on a rig, so moving it takes it
-off the other.
+If the control you pick is already doing something else on this rig, it moves
+at once: a control does one thing on a rig, so moving it takes it off the
+other. **Undo**, at the top of the page, puts it back where it was.
 
 What you assign is written into the running rig's file, keeping the file's
 comments, and not committed. A footswitch on an effect or a channel works at
@@ -181,8 +181,9 @@ the rig needs to restart (about five seconds of silence) before it works: the
 page says so and offers **Restart**, and **PEDALS** keeps offering it for as
 long as the file's pedal settings are ahead of what the rig is playing. If you
 have turned knobs since the last save, that restart would lose them, so the
-page offers **Save, then assign**: it saves, assigns, and offers the restart.
-Undo does not take an assignment back: assign again, or pick **none**.
+page offers **Save & assign**: it saves, assigns, and offers the restart.
+**Undo**, at the top of the page, takes an assignment back, as it does any
+change: where the assignment played at once, so does its Undo.
 
 The rig's file says which board its pedals are for. The first assignment on a
 rig fills that in for you when the machine's file describes one board; if it

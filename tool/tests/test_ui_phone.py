@@ -9,6 +9,8 @@ ethernet (`Agent.listen_interfaces`). Not a real phone or LAN.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 pytest.importorskip("aiohttp")
@@ -32,15 +34,20 @@ def test_the_agent_line_names_the_phones_urls_or_says_it_is_this_machines_alone(
         none: R.agentLine({host: '0.0.0.0', port: 8029, network: true, urls: []}, 'localhost:8029'),
         junk: R.agentLine({network: true, urls: [null, {url: 5}]}, 'h'),
       };""")
-    assert out["old"] == {"text": "Agent on localhost:8029. Phone and laptop see the same rig.", "urls": [], "after": ""}
-    assert "for this machine only: a phone cannot reach it" in out["local"]["text"]
-    assert "sushi-rig agent --phone" in out["local"]["text"]
-    assert out["phone"]["text"] == "Agent on 192.168.1.150:8029. On a phone on the same network, open"
+    # A few words on the line (#209); what they mean is its title.
+    assert out["old"] == {"text": "Agent on localhost:8029", "urls": [], "after": "",
+                          "title": "Phone and laptop see the same rig."}
+    assert out["local"]["text"] == "This machine only"
+    assert "for this machine only: a phone cannot reach it" in out["local"]["title"]
+    assert "sushi-rig agent --phone" in out["local"]["title"]
+    assert out["phone"]["text"] == "Phone:"
+    assert out["phone"]["title"].startswith("Agent on 192.168.1.150:8029. On a phone on the same network, open")
     assert out["phone"]["urls"] == [{"url": "http://192.168.1.150:8029/", "label": "Wi-Fi, wlp0s20f3"},
                                     {"url": "http://192.168.1.147:8029/", "label": "ethernet, enx0"}]
-    assert "No password" in out["phone"]["after"]
-    assert "no network address" in out["none"]["text"] and out["none"]["urls"] == []
-    assert out["junk"]["urls"] == [] and "no network address" in out["junk"]["text"]
+    assert "No password" in out["phone"]["title"]
+    assert out["none"]["text"] == "No network" and out["none"]["urls"] == []
+    assert "no network address" in out["none"]["title"]
+    assert out["junk"]["urls"] == [] and "no network address" in out["junk"]["title"]
 
 
 @pytest.fixture
@@ -55,16 +62,20 @@ def test_the_rack_shows_the_phones_url_when_the_agent_listens_on_the_network(bro
     page = Watched(browser, phone_served, "/#rack")
     p = page.page
     line = p.locator("p.agent")
-    expect(line).to_contain_text("On a phone on the same network, open http://192.168.1.150:8029/ (Wi-Fi, wlp0s20f3)"
-                                 " or http://192.168.1.147:8029/ (ethernet, enx00e04c680001).")
-    expect(line).to_contain_text("No password")
-    expect(line.get_by_role("link", name="http://192.168.1.150:8029/")).to_have_attribute(
-        "href", "http://192.168.1.150:8029/")
+    expect(line).to_have_text("Phone: http://192.168.1.150:8029/, http://192.168.1.147:8029/")
+    expect(line).to_have_attribute("title", re.compile("On a phone on the same network.*No password"))
+    wifi = line.get_by_role("link", name="http://192.168.1.150:8029/")
+    expect(wifi).to_have_attribute("href", "http://192.168.1.150:8029/")
+    expect(wifi).to_have_attribute("title", "Wi-Fi, wlp0s20f3")
+    expect(line.get_by_role("link", name="http://192.168.1.147:8029/")).to_have_attribute(
+        "title", "ethernet, enx00e04c680001")
     page.close()
 
 
 def test_the_rack_says_localhost_only_when_it_is(browser, served):
     served.agent.listening = ("127.0.0.1", 8029)
     page = Watched(browser, served, "/#rack")
-    expect(page.page.locator("p.agent")).to_contain_text("for this machine only: a phone cannot reach it")
+    line = page.page.locator("p.agent")
+    expect(line).to_have_text("This machine only")
+    expect(line).to_have_attribute("title", re.compile("for this machine only: a phone cannot reach it"))
     page.close()

@@ -36,6 +36,9 @@ curl localhost:8029/profiles         # the component profiles of tool/examples/p
 curl localhost:8029/live/log         # what was changed through /live, newest last
 curl -X POST localhost:8029/live/undo   # put back what the newest change not yet undone replaced
 curl -X POST localhost:8029/live/undo -d '{"skip": true}'   # give up on the newest one that cannot be
+curl localhost:8029/undo             # what the one Undo would step back next, of any kind (#209)
+curl -X POST localhost:8029/undo     # step it back: a live edit, a rig file write, a Save, a revert, a delete
+curl -X POST localhost:8029/undo -d '{"seq": 12, "restart": false}'   # the page's press: that step only, and ask before a restart
 curl localhost:8029/amp              # the amp as last SENT to Carla: its model, each parameter
 curl localhost:8029/amp/models       # amp/models, each model's rate and whether it can be played
 curl -X POST localhost:8029/amp/parameter -d '{"name": "Output Lvl", "value": -3}'   # dB, clamped and said
@@ -43,7 +46,7 @@ curl -X POST localhost:8029/amp/model -d '{"model": "Some Model.nam"}'   # resta
 curl -X POST localhost:8029/rig/save                                # the running rig into its own rig file, in place (S4)
 curl -X POST localhost:8029/rig/save -d '{"name": "electric-board-2"}'   # save as a new rig, which becomes the running one
 curl localhost:8029/rigs/electric_board/saves                       # the points a rig can be reverted to: its saves, and its file's commits
-curl -X POST localhost:8029/rigs/electric_board/revert -d '{"save": "<an id from saves>"}'   # write one back and play it; "discard": true drops unsaved work
+curl -X POST localhost:8029/rigs/electric_board/revert -d '{"save": "<an id from saves>"}'   # write one back and play it; "discard": true drops unsaved work, "restart": false refuses one that would restart Sushi
 curl localhost:8029/record           # recording, idle, or why recording is off (S7)
 curl -X POST localhost:8029/record/start -d '{"name": "riff-idea"}'   # a take; no name is <rig>-<date>-take-<nn>
 curl -X POST localhost:8029/record/stop                              # finish it: take check's verdict in the answer
@@ -54,9 +57,9 @@ curl localhost:8029/rigs/guitar_vocal/channels                      # a rig file
 curl -X POST localhost:8029/rigs/new -d '{"name": "two-guitars", "channels": [{"name": "clean", "input": "guitar-in", "width": "mono"}, {"name": "dirty", "input": "guitar-in", "width": "stereo", "from": {"rig": "electric_board", "channel": "board"}}]}'
 curl -X POST localhost:8029/rigs/guitar_vocal/channels/add -d '{"name": "keys", "input": "vocal-in", "width": "stereo"}'
 curl -X POST localhost:8029/rigs/guitar_vocal/channels/vocal/input -d '{"input": "guitar-in"}'   # or "width", or both
-curl -X POST localhost:8029/rigs/electric-delay/delete -d '{"dry_run": true}'   # what deleting it would do: the confirm's question
+curl -X POST localhost:8029/rigs/electric-delay/delete -d '{"dry_run": true}'   # what deleting it would do, moving nothing
 curl -X POST localhost:8029/rigs/electric-delay/delete                           # into config/rigs/.deleted/ (#129); never the running rig
-curl -X POST localhost:8029/rigs/electric-delay/restore -d '{"entry": "electric-delay-20261116T101502Z.yaml"}'   # Undo; no entry: the newest
+curl -X POST localhost:8029/rigs/electric-delay/restore -d '{"entry": "electric-delay-20261116T101502Z.yaml"}'   # back from the bin; no entry: the newest
 curl localhost:8029/rigs/bin             # what is in the bin, newest first, and which agent's bin it is
 curl -X POST localhost:8029/rig/channels/vocal/load -d '{"from": {"rig": "string-machine", "channel": "strings"}}'   # writes the rig file, then plays it live where it can
 
@@ -292,7 +295,8 @@ in-memory log of the last 500 (`/live/log`: `at`, `op`, `args`, and the
 
 ### Undo
 
-`POST /live/undo`, with no body, puts back the newest change that is not an
+The page's one Undo button is [One Undo](#one-undo) (#209), which steps back
+any kind of change and calls this for a live one. `POST /live/undo`, with no body, puts back the newest change that is not an
 undo and has not been undone: a parameter to its previous value, a bypass to its
 previous state, a move by the opposite step, an add by removing what it added
 and a remove by adding the plugin back (both under [The library and chain
@@ -868,7 +872,7 @@ curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}' 
   (`409 panel`), as a channel edit is ([above](#new-rigs-and-channel-edits));
   one that plays at once loses nothing and is not, nor is one tried live
   (above): if it falls back, the restart it offers is itself refused until
-  the work is saved or dropped. The page answers `unsaved` with **Save, then
+  the work is saved or dropped. The page answers `unsaved` with **Save &
   assign** (#210): the save, then the same assignment, whose answer offers
   the restart.
 - **Behind the file.** `GET /midi`'s `behind` is `map_behind` of the running
@@ -879,8 +883,11 @@ curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}' 
   Under the lifecycle lock (`busy: "rig file edit"`) and the live lock, as
   the channel edits are; behind [the one guard](#another-sites-page-and-dns-rebinding).
   Never committed: the answer gives what git says of the file. Not in
-  `/live/log` and not undone by Undo, as a channel added is not: assign
-  again. `assignments` in the answer is the file's `midi:` after it.
+  `/live/log`; the one Undo puts the file back ([One Undo](#one-undo)), and
+  the map with it as the assignment applied it: the agent's bindings and
+  Sushi's mappings live where the assignment's were (`_undo_bindings`, by
+  the same `_map_plan` and `_map_cc_live`), else a restart offered.
+  `assignments` in the answer is the file's `midi:` after it.
 
 **Linked.** A listener links its pedal to Sushi's MIDI input, by the ALSA
 names (client `Sushi`), when Sushi maps something of it (the rig's map's
@@ -910,7 +917,8 @@ in a temporary checkout, and the agent's real listener on a fake port
 
 ## Deleting a rig file
 
-What the rack picker's **Delete** and **Undo** call (#129). `POST
+What the rack picker's **Delete** calls (#129); the one Undo puts it back
+([One Undo](#one-undo), #209). `POST
 /rigs/<name>/delete` moves `config/rigs/<name>.yaml` to
 `config/rigs/.deleted/<name>-<stamp>.yaml` (`rigbin.py`; the stamp is the UTC
 second, `-2`, `-3` for a second delete in the same second). Everything that
@@ -966,9 +974,11 @@ committed is then gone for good.
   `programs` when a number moves (`programs_deleted`: each later rig down
   one, `moved` as `{rig, from, to}` with the tables before and after), and
   `note`. `{"dry_run": true}` gives the same answer, and the same refusals,
-  with nothing moved and no lock taken: the page's confirm shows it.
+  with nothing moved and no lock taken (the page's confirm showed it until
+  #209; the page asks no confirm now).
 
-`POST /rigs/<name>/restore {"entry"?}` is Undo: it moves the bin file
+`POST /rigs/<name>/restore {"entry"?}` is what the one Undo does for a
+delete: it moves the bin file
 `entry` back to `config/rigs/<name>.yaml`, or with no entry the newest of
 `name`'s in the bin. Refused (409): `taken` when anything is at that name
 again (never replaced; the binned one stays), `gone` when the bin file is not
@@ -981,14 +991,91 @@ numbers move back, and `note`.
 `entry`, `file`, `deleted_at` and `back` (a rig of that name is in
 `config/rigs/` again, so a restore would be `taken`), and `agent`, a hash of
 this machine's name and the checkout's path, the same across the agent's
-restarts. The page offers each Undo for 15 s after its delete, and only
-while `GET /rigs/bin` says its file is still there and its rig is not back
-(#189; until then it kept the entries in its own storage, `sushi-rig.binned`,
-across reloads, which it now removes and never reads). After that the file
-is moved back by hand: `config/rigs/.deleted/<name>-<stamp>.yaml` to
+restarts. The page no longer reads it: until #209 it offered an Undo of each
+delete for 15 s (#189), and before that kept the entries in its own storage,
+`sushi-rig.binned`, which it now removes and never reads. The one Undo
+reaches a delete while it is among its 50 steps and the agent has not
+restarted; after that the file is moved back by hand: `config/rigs/.deleted/<name>-<stamp>.yaml` to
 `config/rigs/<name>.yaml`, or `POST /rigs/<name>/restore` with its entry. A revert's saves (`.sushi-rig/saves/<name>/`) are
 not touched by a delete, so a rig made later with the same name lists them.
 Nothing of this is recorded as run on the rig machine.
+
+## One Undo
+
+What the page's one Undo button calls (#209). The agent keeps a history of
+what can be put back (`history.py`), newest last, **50 steps deep**, in its
+memory: every page of the agent shares it and a reload keeps it, **an agent
+restart clears it** (as it clears the live log). `GET /undo` says what the
+next step back is (`next`: `seq`, its number; `label`, a few words such
+as "delete clean"; `kind`; `op` for a live one, `act` for another; `can`,
+and `why` when it cannot be), with `depth` and `limit`. `POST /undo` takes
+it back. Its body may be empty, or name the step the page showed (`seq`:
+another page's step, or a change landing since, is **409 `changed`**, with
+`next`, and nothing is undone; the live undo is told which log entry it is
+for, and refuses `changed` too if a newer one landed between its picks),
+`discard` and `restart` (below):
+
+- **`live`**: a change made through `/live`, the amp or a pedal (a
+  footswitch's bypass, and a channel's mute, its send bypassed: "mute
+  vocal"), by its index in the live log, undone by the live undo (`POST /live/undo`'s own code, with its
+  checks that the rig is still as the change left it). Changes to one control
+  within two seconds of each other are **one step** (a drag sends dozens).
+  A switch (`op: "rig"`) drops the live steps, which were another rig's;
+  `POST /live/undo` itself still works, and what it undoes leaves the history.
+- **`file`**: a write of a rig file: a channel added, an input changed, a
+  pedal assigned, a Save over the running rig's own file, a revert, a
+  channel loaded from another rig, a new rig. The bytes before the write are kept, and a digest of what it wrote;
+  the undo puts the bytes back whole (`saves.restore`) only while the file is
+  still as the write left it, and a new rig goes into the bin. Then it does
+  again what the write did to the running rig: a revert's (and a channel
+  load's) **switch** into the file put back (`_revert_switch`; live work not
+  saved since is dropped only when the Undo says `discard`, below); a pedal's
+  **bindings**, live where an assignment's would be, Sushi's mappings too
+  where only they differ (#210, by the assignment's own `_map_cc_live`); an edit that waited for
+  a **restart** needs none while the rig runs as it did when it was written,
+  since the file is what plays again (`how: "file"`), and offers one
+  (`how: "restart"`, `offer: "restart"`) if the rig restarted since. A
+  Save's undo also withdraws its log entry (`withdrawn`), so what it wrote
+  is unsaved again, and gives back the chain edits it had folded in. Another
+  rig's file: `how: "next start"`.
+  What a step does to the running rig is **decided at the Undo**, not at
+  the write: a file that is the running rig's now, in a run other than the
+  write's (restarted, or switched to since), plays what was written, so
+  putting it back offers a restart whatever the write did then. A switch
+  back (a revert's, a channel load's) is **held as a revert is**: with
+  unsaved live work (one a press could not undo still plays) it is **409
+  `unsaved`** (or `panel`), the step kept, until `"discard": true`; with
+  `"restart": false`, one that would restart Sushi (`rigfile.diff` and the
+  state's blockers, as the switch decides it, and the unsaved work a
+  `discard` drops: a plugin it added, removed or moved, or a value whose
+  before Sushi did not report, which `discard_plan` cannot put back live)
+  is **409 `restarts`** with
+  `why`, until `"restart": true`. After the switch the MIDI listener follows
+  the rig, as after a revert. The page sends `restart: false` and asks
+  "Drop changes?" or "Restart?" before sending again.
+- **`bin`**: a delete, put back by the bin's restore.
+- **`none`**: a Save as, recorded so Undo does not step past it as if it had
+  not happened, which it cannot take back (the new rig is the running one).
+
+A step that cannot be put back (the file changed since, the bin entry gone
+or its name taken, a value changed from the panel, a live change whose log
+entries were trimmed past the live log's limit, "too old", a Save as) is
+**409 `cant_undo`**, with `skipped` and `next`, and is dropped: the next
+press goes on to the one before; a press never passes over a step to undo
+an older one. A drag of which only some could be put back is "Partly
+undone". `up`, `down` and `restart` end the live steps, as a switch does:
+they were made to the run that was up. One that changed no run (an `up`
+refused for a rig already running, a restart that failed before taking the
+rig down) leaves them. `busy`, and what Sushi or a write answers (502, 503, 504), leave
+it to be tried again. `nothing_to_undo` with none left. One undo at a time;
+a file's takes the lifecycle lock (`busy: "undo"`) and, for the running
+rig's file, the live lock. **For a new kind of action**, record it where it
+happens: a rig file write with `_history_file(path, before, after, label,
+run=run, apply=...)` after the write, anything else with a `kind` whose
+reversing method is in `Agent._UNDOERS`. A channel load (`POST
+/rig/channels/{channel}/load`, #208) records its write with
+`apply="switch"`, label "load accustomed / board". Not run against a live
+Sushi or on the rig.
 
 ## A channel from another rig
 

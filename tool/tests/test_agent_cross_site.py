@@ -458,6 +458,7 @@ GET_ROUTES = {
     "/machine/roles", "/rigs/x/channels", "/rigs/x/saves", "/rigs/bin",
     "/help", "/help/", "/help/x", "/help/img/x",  # the user guide (#167)
     "/midi",  # the pedals and the running rig's assignments (#191): reads two files and lists config/rigs/
+    "/undo",  # what the one Undo would step back (#209): reads the history and the file or bin entry it names
 }
 
 

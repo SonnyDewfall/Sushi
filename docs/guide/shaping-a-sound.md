@@ -145,11 +145,9 @@ is on. With no rig running, the middle of the rack has
 1. Unlock the page.
 2. Click the plugin's name to open its row. (A slim, bypassed row opens the
    same way.)
-3. At the foot of the row, click **Remove** and its name, for example
-   **Remove overdrive…**. (While the page is locked it reads
-   **Remove overdrive… (locked)**, and clicking it only says the lock is on.)
-4. The row asks whether to take it out. Click **Remove overdrive** to do it,
-   or **Keep**. If you do neither, it stops asking after a few seconds.
+3. At the foot of the row, click **Remove**. It goes at once, with no
+   question. (While the page is locked it reads **Remove (locked)**, and
+   clicking it only says **Locked**.)
 
 The plugin and its settings leave the chain. **Undo** puts it back where it
 was, with the settings it had.
@@ -207,36 +205,50 @@ the change.
 - **Model** changes which amp is playing:
   1. Unlock the page.
   2. Pick a model from the **Model** list.
-  3. Click **Load** and the model's name, or **Cancel**.
+  3. The card asks **Restart amp?**: click **Yes**, or **No**.
 
   The sound cuts out for a moment while the amp restarts (a little over a second
   on the rig); the rest of the rig keeps running. In the list, **(playing)**
   marks the current model and **(cannot be played here)** marks one made for a
   different sample rate.
 
-The card says its values are **what was last sent, not read back**. The amp
-cannot be asked what it is set to, so the page shows what it last told it.
+The values are what the page last sent the amp: it cannot be asked what it is
+set to.
 
 On the stage screen, with the lock off, you get the amp's model name and
 **Output Lvl** only.
 
 ## Take a change back
 
-On the right of the rack, under **SAVE**, the top button names the last change,
-for example **Undo · overdrive · Drive**. Click it to put that change back.
-Click again for the one before.
+**Undo** is at the top of the rack and of the stage screen, beside the lock.
+Hover over it (or long-press on a phone) to see what it would take back, for
+example **Undo overdrive Drive**. Click it to put that change back; beside it
+the page says **Undone:** and the change. Click again for the one before, up to
+50 changes back.
 
 - It takes back knobs, bypasses, moves, plugins added or taken out, volumes and
-  the amp's levels, newest first. A plugin added goes again; a plugin taken out
-  comes back where it was, with its settings.
+  the amp's levels, newest first. One drag of a knob or fader is one change. A
+  plugin added goes again; a plugin taken out comes back where it was, with
+  its settings.
 - It also takes back a change of the amp's model. That restarts the amp, so the
   sound cuts out for a moment, just as the change did.
-- There is no redo.
-- It stops at a rig switch: the button then reads
-  **Nothing to undo past the rig switch**.
-- If the rig has changed since in a way that makes the undo unsafe, a box
-  explains and offers **Skip it**, which gives up on that change so you can undo
-  the one before.
+- On the rack it takes back the rest too: a rig deleted, a channel added, an
+  input changed, a pedal assigned, a **Save** (the file goes back to how it
+  was, and the changes count as unsaved again) and a **Revert**. Where the rig
+  plays that change only after a restart, the page says **restart** and
+  offers **Restart**.
+- On the stage screen it takes back only what you play with (knobs, faders,
+  bypasses): the rest waits for the rack.
+- While the page is **Locked**, it does not take back what the lock stops you
+  doing: adding, removing or moving a plugin, the amp's model, a pedal.
+- It remembers until the agent restarts, so reloading the page keeps it, and
+  your phone and laptop share it.
+- There is no redo. A **Save as** cannot be taken back: delete the new rig
+  instead.
+- If something cannot be taken back (it has changed since, or a rig of that
+  name is there again), hovering over **Undo** says **Can't undo** and why.
+  Clicking it then gives up on that change, and the next click goes on to the
+  one before.
 
 Undo has not yet been tried on the rig itself, only against a stand-in.
 

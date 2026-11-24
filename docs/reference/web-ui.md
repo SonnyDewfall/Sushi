@@ -9,7 +9,7 @@ sushi-rig agent                      # then open http://127.0.0.1:8029/ (the rac
                                      # or http://127.0.0.1:8029/#stage (the stage screen; the default on a phone)
 ```
 
-![The rack as a mixing desk: the master volume in the header; on the left a strip per channel with its input and a volume fader, the board's marked as the open tab's, and the master's strip; in the middle the tabs board, vocal and Master, and under them the board's chain, the overdrive open with its profile's groups and each knob's value as a text field, the bypassed octave a slim row, and the delay; on the right the rigs of config/rigs, Undo, Save with a count of the unsaved changes, Save as, Revert, and the takes](../ui/rack.png)
+![The rack as a mixing desk: the master volume in the header; on the left a strip per channel with its input and a volume fader, the board's marked as the open tab's, and the master's strip; in the middle the tabs board, vocal and Master, and under them the board's chain, the overdrive open with its profile's groups and each knob's value as a text field, the bypassed octave a slim row, and the delay; on the right the rigs of config/rigs, Save with a count of the unsaved changes, Save as, Revert, and the takes](../ui/rack.png)
 
 <img src="../ui/stage.png" alt="The stage screen at phone width: the rig's name and state, the master volume, load and xruns from pw-top, each channel's volume as a fader, one card per plugin with a big bypass switch, and the lock, with start, stop and switch hidden while it is on (taken before #182: no rig dropdown or step buttons; docs/guide/img/stage-phone.png is current)" width="300">
 
@@ -23,8 +23,9 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   name, a small, quiet input line, and its volume as the large part, then a
   strip for the master), **one chain at a time in the middle**, the widest
   part, behind a tab per channel and Master (below), and **the files on the
-  right**: the rig picker, New rig…, Start, Stop and Switch, Undo, Save,
-  Save as…, Revert…, and the takes folder. The **master volume is in the header**,
+  right**: the rig picker, New rig…, Start, Stop and Switch, Save,
+  Save as…, Revert…, and the takes folder. The one **Undo** is in the
+  header, beside the Lock (#209, below). The **master volume is in the header**,
   not in a column. At phone width the columns stack in that order, strips
   first, since volume is what a hand reaches for. A chain is a row of
   plugin cards, each with its knobs: the profile's controls in its groups and
@@ -54,9 +55,70 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   labels that popped in and out). Each knob's text, label and note have a
   size of their own whatever they hold, and the one sign of unsaved work is a
   count on the Save button, in a box that is always there; the itemised list
-  of changes and the per-knob "was" are gone. Undo stays, above Save: it is an
-  action, not a view of history. A browser test compares every element's box
-  before and after four changes.
+  of changes and the per-knob "was" are gone. Undo is an action, not a view
+  of history: one button in the header (#209). A browser test compares every
+  element's box before and after four changes.
+- **One Undo for everything, and few words (#209, 2026-11-23).** The
+  owner's words: "too much text explaining various decisions … give me an
+  undo button and if there does need to be a message about deleting
+  something or overwriting something, make it simple 1-2 words." So:
+  - **One Undo button**, in the header of the rack and of the stage, beside
+    the Lock. It steps back the newest change, whatever it was, and pressed
+    again goes further back, to 50 steps. It reads `GET /undo` with every
+    poll and sends `POST /undo` ([the agent](agent.md#one-undo)). It covers
+    a knob, a fader or a bypass (a drag is one step), a move, a plugin added
+    or removed, an amp parameter or model; a channel added, an input
+    changed, a pedal assigned (rig file writes, put back byte for byte);
+    a Save over the running rig's file; a revert; a new rig (it goes into
+    the bin); a rig deleted (back from the bin). Its `title` (and name, for
+    a screen reader) says what the next press does ("Undo delete clean"),
+    "Nothing to undo", or "Can't undo: …" with the reason, for a step the
+    agent cannot put back (the file changed since, the bin entry gone, a
+    Save as, a live change too old for the live log); pressed then, it says
+    "Can't undo: delete clean", naming the step on the page (a phone shows
+    no title), and the step is dropped, so the next press goes on. A press
+    names the step it was shown (`seq`): one another page, or a change since,
+    put on top is "Changed: press again", not undone in its place. Sushi or
+    the agent not answering is said so ("Sushi not answering", "Timed out",
+    "Agent not answering"). After a press, a few words beside it say what it
+    did ("Undone: delete clean"), for 15 s; where the rig plays the change
+    until a restart, "· restart" and a **Restart** button, which asks
+    **Restart?** with **Yes** and **No**. The history is the agent's, so a
+    reload keeps it and every page shares it; an agent restart clears it.
+  - **The lock.** Locked, the button holds what the lock holds of the change
+    itself: a move, an add, a remove, the amp's model, a pedal's assignment
+    (title "Locked: pedal c"), and the Undo of a revert or a channel load,
+    which switches the rig. A knob, a fader and a bypass are let through,
+    and so are the rack's file edits that are not behind the lock (a
+    channel, an input, a Save, a delete). **On the stage** it is for the live edits: a step of a file
+    or the bin is off there, its title "Undo … on the rack".
+  - **What it replaced.** The live-edit Undo above Save, its "Skip it" after
+    a refusal, and the 15 s "Undo: put back" offers under the rig picker
+    (#129, #189) are gone, and their behaviour is the one button's.
+  - **Confirms.** None is left over what Undo takes back: **Delete** on a
+    rig, **Remove** on a plugin, a point in **Revert…**, and a pedal moved
+    off what it did act at once. What still asks is what cuts the sound or
+    cannot be taken back, in one or two words with **Yes** and **No**:
+    **Stop?** (still a second tap, forgotten after eight seconds),
+    **Restart?** (after an edit, a pedal, a Save as or an Undo that waits
+    for one; and before a revert, or the Undo of a revert or a load, whose
+    switch would restart Sushi: the page sends `restart: false` first and
+    asks on `restarts`), **Restart amp?** (a model change), and **Drop
+    changes?** (a revert, or the Undo of one, that would drop unsaved work,
+    which no Undo brings back).
+    A restart the agent refuses for unsaved work offers **Restart anyway**.
+  - **Text.** Paragraphs explaining choices are gone from the sidebars,
+    panels and results: what is left is a heading, the control, and a short
+    status or error. A result says its title ("Saved electric_board", "Not
+    assigned: C"); everything else it said (the file written, what git
+    says, the agent's reason) is its `title`, for a hover. A refusal says
+    what is wrong beside its title, cut to its first clause (`R.shortSaid`,
+    which passes over a leading "error: ", "nothing was written: " or a
+    repeat of the title), the whole of it in the `title`; so does a take
+    that is not whole ("1 problem"). PEDALS' pedal-map line (#210) is "Not
+    playing yet" or "Ranges changed" with **Restart**, and an assignment
+    refused for unsaved work offers **Save & assign**. The "About …" and
+    Help links stay: the guide keeps the explanations.
 - **A tab per channel, and bypassed plugins minimised (#135, 2026-11-15).**
   The middle column is a tablist: **one tab per channel in the rig's order,
   then Master**, and the open tab's chain under them, nothing of another
@@ -198,10 +260,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   stereo width", the badge's own words), as is a stereo plugin put in front of
   a mono one ("od comes after it and collapses its stereo width"); a width the
   ports table does not give is not guessed. **Remove** is at the foot of an
-  open row ("Remove overdrive…"), behind a confirm built into the row
-  ("Remove overdrive" and "Keep", forgotten after eight seconds), since
-  `confirm()` does not exist in every viewer the page is opened in; a slim
-  row is opened first, as it is to move it. It is never offered on the send,
+  open row, one tap with no confirm (#209: Undo puts the plugin back with its
+  settings); a slim row is opened first, as it is to move it. It is never offered on the send,
   the return or a copy to stereo, none of which is a row. **Moves** are the
   row's ▲ and ▼, as before; the agent steps a mono plugin and its copy as one
   and steps past a neighbour's pair whole, so nothing ever lands between
@@ -353,7 +413,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   through `lifecycle("switch")`, as the list's Switch to did (live or by
   restart, the same notices, busy and refusals); with none up it chooses
   the rig for Start. Shown but off while locked (no border, no arrow), while
-  a command runs, or with no agent. Start and Stop (with its confirm) and
+  a command runs, or with no agent. Start and Stop (with its **Stop?**) and
   the guide's link are one row under the tiles, only unlocked; the busy line
   and any problem there too. The locked header is no taller than before
   #182 (234 px at 320 by 568, against 240), and the same in any font: its
@@ -367,20 +427,20 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   Start and Stop there only while the lock is
   off): pick one and Start it (a rig of channels, headless, since the page
   replaces the panel), Switch to it, or Stop the one that is up, which takes a
-  second tap because it cuts the sound. A switch says whether it was made live
+  second tap because it cuts the sound: **Stop?**, **Yes** or **No**. A switch says whether it was made live
   or by restart, and why. While a command runs, from this page or another,
   nothing else is offered and what is running is said; a refusal shows the
   agent's reason.
 - **The amp.** A card at the top of its channel's tab (above), since the amp
   is in front of the board: the model's name and what it declares, faders for Input and Output in
   dB, Quality shown but not on a fader (it trades CPU for accuracy, not tone),
-  and a model picker that takes a confirm saying the sound cuts out for a
-  moment, refused while locked. Values are labelled as what was last sent,
+  and a model picker that asks **Restart amp?** (**Yes**, **No**), since
+  the sound cuts out for a moment, refused while locked. Values are labelled as what was last sent,
   never as read back. On the stage screen, only the model's name and the
   output level, and only while the lock is off, as Start and Stop are. With
   the panel running, the faders and picker are off and say the panel owns the
   amp.
-- **Save (S4).** In the files column, under Undo: Save writes the
+- **Save (S4).** In the files column: Save writes the
   running rig's own file of `config/rigs/` in place, keeping its comments, and
   is offered whenever a rig that can be saved from here is up, since the
   count on it is only what the agent saw (its title says since when, and
@@ -394,8 +454,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   name, a plugin on the rig the agent did not add, or one gone that it did
   not remove). A Save as whose file waits for a restart (a pedal or a
   channel written for it, #192: the answer's `restart`) says the rig plays
-  as it was loaded until then, with why, and offers **Restart … to play it**
-  behind a confirm, as an edit of the rig's file does. The count then
+  as it was loaded until then, with why, and offers **Restart**, which asks
+  **Restart?**, as an edit of the rig's file does. A Save over the file is a
+  step of the one Undo, which puts the file back as it was and counts what
+  it wrote as unsaved again; a Save as is recorded as a step it cannot take
+  back (#209). The count then
   starts from that save: a change after it, or an undo past it, is unsaved
   again. Allowed while locked, since it changes neither the sound nor the
   structure. Not on the stage screen: saving is not a stage action.
@@ -427,9 +490,9 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   A git that does not answer leaves the saves listed and says why the
   commits are not. "Revert…" lists the saves by time and how long
   ago, the one the file is now marked, then **the file's own commits** (`git
-  log`, read-only, off the agent's loop, with a timeout). Choosing one opens a
-  confirm that **names what is lost**: the unsaved changes playing now, and
-  the file as it stands, unless a save or its commit keeps it. The agent
+  log`, read-only, off the agent's loop, with a timeout). Tapping one
+  **reverts to it at once** (#209: until then a confirm named what was lost;
+  the one Undo now puts the file back, and switches the rig back to it). The agent
   writes the point back **byte for byte** (a plain write, not `write_rig`,
   which merges into the file that is there and so keeps *its* comments, not
   the snapshot's), compiling it first and refusing with the compiler's reason
@@ -437,10 +500,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   live switch** (#112): live where it can be (values, bypasses, plugins added,
   removed or moved), by restart where it must be, and the result says which
   and why. With unsaved live work the agent refuses (409 `unsaved`, as an edit
-  of the file does), and the page's confirm offers "Revert, dropping N unsaved
-  changes"; a refusal for work the page had not counted offers the same as a
-  second tap. The revert's entry in the log is the new baseline: nothing is
-  unsaved after it, and Undo stops there. `GET /rigs/<name>/saves` and `POST
+  of the file does), and the panel asks **Drop changes?** (**Yes** reverts
+  with `discard`). The revert's entry in the log is the new baseline: nothing is
+  unsaved after it, and the live edits before it are another run's: the one
+  Undo goes past them to the revert itself. `GET /rigs/<name>/saves` and `POST
   /rigs/<name>/revert {"save", "discard"?}` are the agent's routes.
 - **New rig, and a channel's input.** "New rig…" under the rack's rig picker
   opens the New rig screen (`#new-rig`): a name, then a channel per row, each
@@ -455,63 +518,34 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   the agent's refusal is shown in place, with the lines to add to the machine
   file when a role is missing. On the rack, each channel's strip shows its input as the running
   rig's file has it, with "Change input", and "Add channel" is under the
-  strips. With no rig of channels up, the column still says CHANNELS AND
-  INPUTS and why nothing can be edited there, and what to do instead (start
-  a rig of channels from the picker, or New rig…, which the picker offers
-  whatever is running): on the rig, a v1 run drew nothing at all, and
-  nothing said why a vocal channel could not be added. Each edit
-  writes the file, says what git says of it, and offers the restart that
-  plays it, which takes a confirm since the sound stops for a few seconds. The
-  edits are not behind the page's lock (they write a file, and the restart is
-  a separate tap); with unsaved changes the rack says Save comes first, and
-  the agent refuses until then. A change made after the edit makes the
-  offered restart refuse too, with the reason in place and "Restart anyway,
-  dropping them" as a second tap. A new rig that moves other rigs' Program
+  strips. With no rig of channels up, the column still says CHANNELS and, in
+  a few words, why nothing can be edited there (the whole reason on hover):
+  on the rig, a v1 run drew nothing at all, and nothing said why a vocal
+  channel could not be added. Each edit writes the file, says what it did in
+  a title (the file and what git says of it on hover), and offers
+  **Restart**, which asks **Restart?** since the sound stops for a few
+  seconds. Each is a step of the one Undo, which puts the file back (#209).
+  The edits are not behind the page's lock (they write a file, and the
+  restart is a separate tap); with unsaved changes the agent refuses until a
+  Save. A change made after the edit makes the offered restart refuse too,
+  with **Restart anyway** as a second tap. A new rig that moves other rigs' Program
   Change numbers says so under Create, with a table of before and after.
   Nothing of this is on the stage screen.
-- **Delete, and Undo (#129).** Each row of the rack's rig picker has a
+- **Delete (#129, #209).** Each row of the rack's rig picker has a
   **Delete** beside the rig's name (the stage's picker has none). On the
-  running rig's row it is off, and a line under the list says why: switch
-  away or stop it first. Which row that is, `GET /rigs` says (`running`, the
-  rig file the agent refuses to delete), and the page reads `/rigs` again
-  whenever `/health`'s run changes, so a switch from a pedal or another page
-  moves it. Delete asks the agent for a dry run (`POST /rigs/<rig>/delete
-  {"dry_run": true}`) and shows a confirm that names the file, says it goes
-  to `config/rigs/.deleted/` and that nothing is committed, says what git
-  holds of it (committed: the `git checkout` that restores it too, and that
-  the changes since the commit are only in the bin when the file differs;
-  not committed: the bin is the only copy), and, only when a Program Change
-  number moves, one line per rig, "electric-delay moves from program 6 to
-  5", under a note on pedal presets. The confirm's Cancel has the focus, so
-  a second Enter deletes nothing; Cancel gives it back to the row's Delete.
-  A refusal that will not pass (the rig became the running one meanwhile)
-  is shown in the confirm with its Delete off; one that may (`busy`, the
-  agent not answering) offers **Try again** in place, which asks again.
-  After a delete, a box under the list says where the file went, and below
-  it each Undo offered, newest first: **Undo: put back** and the rig's name,
-  the newest with the focus, and **×** to forget one. **They go by
-  themselves (#189)**: a delete's or an Undo's outcome that worked, and each
-  Undo, leave 15 s after they are shown (`NOTICE_MS`, `noticesLeft`),
-  except the Undo in flight, which waits for its answer; a refusal stays
-  until its × is pressed. The 15 s are counted on the page's monotonic clock
-  (`performance.now`), not the wall clock an NTP step can move back, by one
-  timer set for the soonest notice due (`nextNoticeIn`) and set again after
-  each pass for the rest. A notice that leaves while it holds the focus (the
-  newest Undo has it after a delete) gives it to its rig's row if the rig is
-  listed, else to the picker's first rig, never to the page's body. **The Undos are this
-  page's only** (at most five): until #189 they were kept in this browser's
-  storage across reloads (`sushi-rig.binned`), and the page now removes that
-  record as it loads and never reads it. One is offered only while `GET
-  /rigs/bin` (read with `/rigs`) says its file is still in the bin and its
-  rig is not back in the picker. Deleting a second rig keeps the first's
-  Undo. A refusal because a file of that name is there again is said and the
-  Undo goes (the binned file stays in `config/rigs/.deleted/`, which the
-  guide says how to move back by hand); one that may pass (busy, no answer)
-  keeps it, offered afresh for 15 s from that refusal. The restored rig's
-  row has the focus. **The × beside an Undo did nothing until
-  #189**: its handler changed the copy of the picker's state that the
-  region's key was made from (`binKey`), not the state, so nothing changed
-  and the key, unchanged, redrew nothing.
+  running rig's row it is off, its `title` saying why: switch away or stop it
+  first. Which row that is, `GET /rigs` says (`running`, the rig file the
+  agent refuses to delete), and the page reads `/rigs` again whenever
+  `/health`'s run changes, so a switch from a pedal or another page moves it.
+  Delete moves the file into `config/rigs/.deleted/` **at once, with no
+  confirm**, and the one Undo puts it back (#209). Until #209 it asked the
+  agent for a dry run and showed a confirm naming the file, what git holds of
+  it and the Program Change numbers that move, then offered an Undo of its
+  own under the list for 15 s (#189); the agent's dry run (`{"dry_run":
+  true}`) is still there for curl. A refusal is said under the list in a few
+  words, the agent's reason on hover, until its × is pressed. The page
+  removes the record its Undos once kept in this browser
+  (`sushi-rig.binned`, `R.RETIRED_KEYS`) as it loads, and never reads it.
 - **A channel from another rig (#208).** Each strip's input line has
   **Load…** beside Change input, which opens a panel in the strip (a group,
   "Load onto board"): a picker, **From**, of every channel of every rig of config/rigs
@@ -519,10 +553,13 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   panel opens), grouped by rig and labelled `rig / channel`, the strip's own
   channel left out; and **Load**. It is behind the lock, as an add or a
   remove is (`lockRefusal(…, "load_channel")`), since it changes the rig's
-  structure. The answer is shown in the panel: live, or the restart and its
-  reasons, and that Revert… goes back; and as notes, the amp ("vocal has no
-  amp: …"), another width, a MIDI mapping that followed its plugin, or one
-  dropped. A refusal a second tap answers offers it, keeping any yes
+  structure. The answer is shown in the panel in a few words (#209): its
+  title ("Loaded accustomed / board onto vocal") and, refused, what is
+  wrong; the rest (live, or the restart and its reasons, that Revert… goes
+  back, and the notes: the amp, another width, a MIDI mapping that followed
+  its plugin, or one dropped) is the box's title. Locked, the panel says
+  "Locked", the lock's words its title. The one Undo puts a load back. A
+  refusal a second tap answers offers it, keeping any yes
   already given: **Load anyway** (`discard`, dropping the unsaved changes),
   **Drop N and load** (`drop_midi`, dropping N MIDI mappings, each mapping listed with
   what it did and why it would do nothing). The call names the rig the
@@ -553,18 +590,16 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   channel's has **On/off** (`mute`) and **Volume**. The master's strip has
   none (its mute and its volume cannot be a pedal's), its units do. Choosing
   sends POST /rig/midi/assign ([the agent](agent.md#assigning-a-pedal));
-  **none** takes the control off. A control in use elsewhere asks first in
-  the panel, naming what it is on (**C is on board/overdrive on/off. Move it
-  to vocal on/off?**, **Move C** or **Keep it**), its select showing the
-  control picked until then; a target losing another control does not ask,
-  since that is what choosing for it means. The badge names its panel
+  **none** takes the control off. A control in use elsewhere is moved at
+  once, with no confirm: the one Undo puts the assignment back (#209; until
+  then it asked **Move C** or **Keep it**). The badge names its panel
   (`aria-controls`), and the focus goes back to it when an assignment closes
   the panel. Behind the
   lock (`lockRefusal(…, "pedal")`): locked, the badge opens to show what is
-  assigned and every select is disabled with the reason under it. A refusal
-  is said in the panel ("Not assigned: …", the compiler's words); what worked
-  is said under **PEDALS**, with **Restart … to play it** and its confirm when
-  the answer is `restart`. After an answer the page reads `GET /midi` again
+  assigned and every select is disabled, with "Locked" under it (the reason
+  on hover). A refusal is said in the panel in a few words (the compiler's
+  on hover); what worked is said under **PEDALS** by its title, with
+  **Restart** and its **Restart?** when the answer is `restart`. After an answer the page reads `GET /midi` again
   (it is otherwise read once a run, kept by `runKey`) and the running rig's
   channels, whose `blended` gives a pedalled volume its "driven by". **PEDALS**,
   under the strips: the device, its state from `/health`'s
@@ -1028,6 +1063,13 @@ real files in a temporary checkout; no Program Change has been sent from a
 pedal after a delete. The 15 s an outcome and its Undo stay (#189) is passed
 on Playwright's fake clock, paused, and a reload, which offers no Undo, is
 Playwright's reload in one browser context.
+
+Not run on the rig (2026-11-23): the one Undo and the cut text (#209).
+Tested in headless Chromium against the agent's real routes over the fake
+rig and a temporary checkout (`test_ui_undo.py`), and the agent's history
+through its routes (`test_agent_undo.py`); a revert's Undo switches through
+the fake's stand-in for the live switch. Not opened on a phone or the touch
+screen, and no step undone on a live Sushi.
 
 Not run on the rig (2026-11-23): a channel from another rig (#208), the
 strip's Load… panel. Tested in headless Chromium against the agent's real

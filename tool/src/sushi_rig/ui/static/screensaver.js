@@ -476,12 +476,14 @@ function drawSettings() {
   channelPick.value = s.channel == null ? "" : String(s.channel);
   channelPick.disabled = !s.input;
   lookPick.value = s.look;
+  // A few words (#209): why it will not start, or what it heard last; the
+  // whole reason on hover.
+  const why = state.error || state.why || "";
   const words = [];
-  if (state.error) words.push(state.error);
-  else if (state.why) words.push(state.why);
-  if (state.pick) words.push(`Heard last: ${R.inputWords(state.pick)}.`);
-  else if (s.on) words.push("The first time it starts, the browser asks to hear an input: allow it.");
-  note.textContent = words.join(" ");
+  if (why) words.push(R.shortSaid(why));
+  if (state.pick) words.push(`Heard: ${R.inputWords(state.pick)}`);
+  note.textContent = words.join(" · ");
+  note.title = why;
   footer.dataset.phase = state.phase;
 }
 

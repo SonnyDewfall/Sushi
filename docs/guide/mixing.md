@@ -80,7 +80,8 @@ says how many plugins are on the master's own chain; click its name to open
 the **Master** tab in the middle and see them. Its volume is the **MASTER**
 fader in the header.
 
-Like any other change, a volume can be taken back with **Undo** and is kept only
+Like any other change, a volume can be taken back with **Undo** (at the top of
+the page; one drag is one step) and is kept only
 when you save: see [Saving and going back](saving.md).
 
 ## Things that may surprise you

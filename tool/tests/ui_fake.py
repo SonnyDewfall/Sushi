@@ -719,7 +719,19 @@ class UiSave:
         Sushi and this does not."""
         import yaml
 
-        if self.rig is None or name != self.state["config_name"]:
+        if self.rig is None:
+            return
+        if name != self.state["config_name"]:
+            # Into another rig of config/rigs/ (#209's review): the state file
+            # names it, and its config is its file's compile, as `up` and the
+            # agent's switch leave them. The fake rig's chains stay as they
+            # are (invented, as the rest of a switch here is).
+            if not (self.root / "config" / "rigs" / f"{name}.yaml").exists():
+                return
+            self.state.update(config_name=name, rig=f"config/rigs/{name}.yaml",
+                              config=(str(self.root / "run" / f"{name}.json") if self.pedals
+                                      else f"/fake/rigs/{name}.json"))
+            self.config = self.compile_running()
             return
         path = self.root / self.state["rig"]
         fresh = rig_of(path)

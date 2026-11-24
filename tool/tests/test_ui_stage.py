@@ -491,7 +491,8 @@ def test_the_dropdown_is_off_while_locked_and_switches_rigs_once_unlocked(browse
     expect(p.get_by_role("button", name="Stop electric_board")).to_be_visible()
     expect(p.get_by_role("button", name=re.compile("^Switch to "))).to_have_count(0)
     rig.select_option("electric-delay")
-    expect(p.locator(".notice")).to_have_text(re.compile(
+    expect(p.locator(".notice")).to_have_text(re.compile(r"^Switched to electric-delay"))
+    expect(p.locator(".notice")).to_have_attribute("title", re.compile(
         r"^Switched to electric-delay live in 0\.4 s: Sushi was not restarted\."))
     expect(p.locator(".stage-head .rig-name")).to_have_text("electric-delay")
     expect(rig).to_have_value("electric-delay")
@@ -499,7 +500,8 @@ def test_the_dropdown_is_off_while_locked_and_switches_rigs_once_unlocked(browse
     # A restart where it must, said as the list said it.
     served.lifecycle.how["accustomed"] = ("restart", [{"code": "amp", "detail": "the amp's settings differ (test)"}])
     rig.select_option("accustomed")
-    expect(p.locator(".notice")).to_have_text(re.compile(
+    expect(p.locator(".notice")).to_have_text(re.compile(r"^Switched to accustomed"))
+    expect(p.locator(".notice")).to_have_attribute("title", re.compile(
         r"^Switched to accustomed by restart in 6\.2 s, because amp: the amp's settings differ \(test\)\."))
     expect(rig).to_have_value("accustomed")
     # Locked again, it is off again.
@@ -531,9 +533,11 @@ def test_a_switch_from_the_dropdown_refused_for_plugins_missing_says_which_and_t
     alert = p.locator(".problem.refused")
     expect(alert).to_contain_text("Not switched to electric-delay", timeout=8000)
     expect(alert).to_be_visible()
-    expect(alert).to_contain_text(f"{detune}: installed in ")
-    expect(alert).to_contain_text("Nothing was changed: electric_board plays on.")
-    expect(alert).to_contain_text("then switch to it again: sushi-rig plugins add")
+    # The few words say what is wrong; the whole refusal is the title (#209).
+    expect(alert.locator("span").first).not_to_have_text("Not switched to electric-delay")
+    expect(alert).to_have_attribute("title", re.compile(re.escape(f"{detune}: installed in ")))
+    expect(alert).to_have_attribute("title", re.compile(re.escape("Nothing was changed: electric_board plays on.")))
+    expect(alert).to_have_attribute("title", re.compile(re.escape("then switch to it again: sushi-rig plugins add")))
     expect(rig).to_have_value("electric_board")
     expect(p.locator(".stage-head .rig-name")).to_have_text("electric_board")
     assert served.lifecycle.calls == [["switch", "electric-delay"]]
@@ -550,7 +554,8 @@ def test_while_a_switch_runs_the_dropdown_is_off_and_says_what_is_running(browse
     expect(p.locator(".stage-rigs .rig-busy")).to_have_text("Switching to electric-delay…")
     expect(rig).to_be_disabled()
     expect(p.get_by_role("button", name="Stop electric_board")).to_be_disabled()
-    expect(p.locator(".notice")).to_contain_text("Switched to electric-delay live", timeout=8000)
+    expect(p.locator(".notice")).to_contain_text("Switched to electric-delay", timeout=8000)
+    expect(p.locator(".notice")).to_have_attribute("title", re.compile("^Switched to electric-delay live"))
     expect(rig).to_be_enabled()
     expect(p.locator(".stage-rigs .rig-busy")).to_have_count(0)
     page.close()
@@ -568,13 +573,14 @@ def test_from_the_stage_a_down_rig_is_chosen_and_started_and_stop_still_asks(bro
         rig.select_option("electric_board")
         assert served.lifecycle.calls == [], "choosing a rig with none up starts nothing"
         p.get_by_role("button", name="Start electric_board").click()
-        expect(p.locator(".notice")).to_contain_text("Started electric_board, headless.", timeout=8000)
+        expect(p.locator(".notice")).to_contain_text("Started electric_board", timeout=8000)
+        expect(p.locator(".notice")).to_have_attribute("title", "Started electric_board, headless.")
         assert served.lifecycle.calls == [["up", "electric_board", "--rig", "--headless"]]
         expect(rig).to_have_value("electric_board")
         p.get_by_role("button", name="Stop electric_board").click()
-        expect(p.locator(".stage-rigs .confirm")).to_contain_text("Stop electric_board? The sound stops")
+        expect(p.locator(".stage-rigs .confirm")).to_have_text("Stop?YesNo")
         assert served.lifecycle.calls == [["up", "electric_board", "--rig", "--headless"]], "one tap stops nothing"
-        p.get_by_role("button", name="Stop now").click()
+        p.locator(".stage-rigs .confirm").get_by_role("button", name="Yes").click()
         expect(p.locator(".stage-head .rig-name")).to_have_text("Rig down")
         assert served.lifecycle.calls[-1] == ["down"]
         page.close()

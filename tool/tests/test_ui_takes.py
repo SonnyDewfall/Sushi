@@ -140,7 +140,8 @@ def test_the_rack_names_the_takes_folder_and_lists_no_takes(browser, record_serv
     p = rack_page.page
     takes = p.locator("section.takes")
     expect(takes.locator("h2")).to_have_text("TAKES")
-    expect(takes.locator(".takes-dir")).to_have_text(f"Takes go in {takes_dir(record_served)}")
+    expect(takes.locator(".takes-dir")).to_have_text(takes_dir(record_served))
+    expect(takes.locator(".takes-dir")).to_have_attribute("title", "Takes go in this folder")
     expect(takes.get_by_role("button", name="Open folder")).to_be_visible()
     expect(takes).not_to_contain_text(FIRST), "no list of the takes"
     expect(takes.locator("li")).to_have_count(0)
@@ -176,7 +177,7 @@ def test_open_folder_opens_the_takes_folder_on_this_machine(browser, record_serv
     p.get_by_role("button", name="Open folder").click()
     said = p.locator(".open-result")
     expect(said).to_contain_text("Opened the takes folder")
-    expect(said).to_contain_text(f"opened {takes_dir(record_served)}")
+    expect(said).to_have_attribute("title", re.compile(re.escape(f"opened {takes_dir(record_served)}")))
     assert json.loads(seen.read_text()) == [takes_dir(record_served)]
     p.clock.run_for(14_000)
     expect(said).to_be_visible()
@@ -193,8 +194,8 @@ def test_open_folder_with_no_opener_installed_says_so_and_stays(browser, record_
     p.get_by_role("button", name="Open folder").click()
     said = p.locator(".open-result")
     expect(said).to_contain_text("Not opened")
-    expect(said).to_contain_text("neither xdg-open nor gio open is installed")
-    expect(said).to_contain_text(f"The takes are in {takes_dir(record_served)}")
+    expect(said).to_have_attribute("title", re.compile(re.escape("neither xdg-open nor gio open is installed")))
+    expect(said).to_have_attribute("title", re.compile(re.escape(f"The takes are in {takes_dir(record_served)}")))
     expect(said).to_have_attribute("role", "alert")
     p.clock.run_for(60_000)
     expect(said).to_be_visible()  # a refusal stays until it is dismissed
@@ -210,7 +211,7 @@ def test_a_phone_sees_the_takes_folder_and_no_open_button(browser, tmp_path):
         phone.agent.folder_opener = lambda: opener
         rack_page = rack(browser, phone, width=390)
         p = rack_page.page
-        expect(p.locator(".takes-dir")).to_have_text(f"Takes go in {takes_dir(phone)}")
+        expect(p.locator(".takes-dir")).to_have_text(takes_dir(phone))
         expect(p.locator("section.takes").get_by_role("button")).to_have_count(0)
         no_sideways_scroll(p)
         # Asked anyway, from the page: the agent refuses a peer that is not this machine.
@@ -233,8 +234,10 @@ def test_a_stop_says_the_take_its_folder_and_its_verdict(browser, record_served)
     p.get_by_role("button", name="Stop", exact=True).click()
     result = p.locator(".record-result")
     expect(result.locator("strong")).to_have_text("Recorded riff-idea")
-    expect(result).to_contain_text("Whole · 5 stems · nothing lost")
-    expect(result.locator(".take-folder")).to_have_text(str(record_served.recorder.takes.resolve() / "riff-idea"))
+    expect(result).to_have_attribute("title", re.compile(r"(^|· )Whole · 5 stems · nothing lost "
+                                                         + re.escape(str(record_served.recorder.takes.resolve() / "riff-idea"))
+                                                         + "$"))
+    expect(result.locator(".said")).to_have_count(0)  # whole: its title says so, and the box's colour
     expect(result).to_have_class(re.compile(r"\bok\b"))
     no_sideways_scroll(p)
     page.close()
@@ -260,8 +263,10 @@ def test_a_broken_take_is_flagged_when_it_stops(browser, record_served):
     expect(result.locator("strong")).to_have_text(f"Recorded {FIRST}")
     expect(result).to_have_class(re.compile(r"\brefused\b"))
     expect(result).to_have_attribute("role", "alert")
-    expect(result).to_contain_text("1 problem: the recorder lost audio 2 time(s), 10.7 ms in all")
-    expect(result.locator(".take-folder")).to_have_text(str(record_served.recorder.takes.resolve() / FIRST))
+    expect(result.locator(".said")).to_have_text(re.compile(r"^(\d+:\d\d · )?1 problem$"))
+    expect(result).to_have_attribute("title", re.compile(
+        re.escape("1 problem: the recorder lost audio 2 time(s), 10.7 ms in all") + ".*"
+        + re.escape(str(record_served.recorder.takes.resolve() / FIRST)) + "$"))
     page.close()
 
 
@@ -274,7 +279,7 @@ def test_a_whole_takes_result_goes_after_15_s_and_a_broken_ones_stays(browser, r
     expect(p.locator(".record-bar h2")).to_have_text("Recording")
     p.get_by_role("button", name="Stop", exact=True).click()
     result = p.locator(".record-result")
-    expect(result).to_contain_text("Whole · 5 stems · nothing lost")
+    expect(result).to_have_attribute("title", re.compile("Whole · 5 stems · nothing lost"))
     p.clock.run_for(14_000)
     expect(result).to_be_visible()
     p.clock.run_for(1_500)
@@ -291,7 +296,8 @@ def test_a_whole_takes_result_goes_after_15_s_and_a_broken_ones_stays(browser, r
     p.get_by_role("button", name="Record", exact=True).click()
     expect(p.locator(".record-bar h2")).to_have_text("Recording")
     p.get_by_role("button", name="Stop", exact=True).click()
-    expect(result).to_contain_text("1 problem: this take was never finished")
+    expect(result.locator(".said")).to_have_text(re.compile(r"^(\d+:\d\d · )?1 problem$"))
+    expect(result).to_have_attribute("title", re.compile(re.escape("1 problem: this take was never finished")))
     p.clock.run_for(60_000)
     expect(result).to_be_visible()  # a take with problems is never gone unread
     expect(result).to_have_attribute("role", "alert")

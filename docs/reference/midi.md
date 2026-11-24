@@ -368,7 +368,7 @@ pedal's mapping, live"); if it does not, every such assignment is the restart.
 
 A restart is refused while the rig holds unsaved changes, and so is an
 assignment that needs one, which the restart would drop: the page offers
-**Save, then assign**, which saves, assigns again and offers the restart. An
+**Save & assign**, which saves, assigns again and offers the restart. An
 assignment that is tried live is not refused for unsaved work: if it falls
 back, the restart it offers asks for the save itself.
 
@@ -381,8 +381,9 @@ volume's and blends' ranges), `"agent"` when the agent's bindings do,
 known, and `"restart": true` when only a restart brings the file's map in
 (null when either cannot be read). The **PEDALS** section offers that restart
 whenever it says so, however the file got ahead (a hand edit, a save, an
-assignment that could not be live); for ranges alone it says **Pedal ranges
-changed. Restart to apply.** A Save does not apply them live.
+assignment that could not be live), in two words, **Not playing yet**, or
+**Ranges changed** for ranges alone, with **Restart**; the whole of it is
+the line's title. A Save does not apply them live.
 
 **The running rig keeps the pedal it started with.** A compiled config with a
 map records its controller (`_meta`'s `midi_controller`), and the listener

@@ -20,6 +20,8 @@ the rig machine, a phone or a pedal.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import yaml
 
@@ -180,15 +182,18 @@ def test_a_channel_of_another_rig_is_loaded_and_the_page_shows_its_plugins(brows
     group.get_by_label("Channel to load onto vocal").select_option(label="spare / lead")
     go = group.get_by_role("button", name="Load", exact=True)
     expect(go).to_be_disabled()  # the page starts locked: a load changes the rig's structure
-    expect(group).to_contain_text("Locked: loading a channel changes the rig's structure")
+    # One word on the page (#209), the lock's own words its title.
+    expect(group.locator(".lock-says")).to_have_text("Locked")
+    expect(group.locator(".lock-says")).to_have_attribute(
+        "title", re.compile("^Locked: loading a channel changes the rig's structure"))
     unlock(p)
     expect(go).to_be_enabled()
-    expect(group).not_to_contain_text("Locked:")
+    expect(group.locator(".lock-says")).to_have_count(0)
     expect(group.locator("label.selector .label")).to_have_text("From")
     go.click()
     result = group.locator(".load-result")
     expect(result).to_contain_text("Loaded spare / lead onto vocal")
-    expect(result).to_contain_text("Played live.")
+    expect(result).to_have_attribute("title", re.compile("^Played live\\. "))
     vocal = rig(files_served)["channels"][1]
     assert [e["name"] for e in vocal["chain"]] == ["vocal_drive", "vocal_echo"]
     assert vocal["chain"][1]["bypassed"] is True and vocal["level"] == -3.0
@@ -215,7 +220,8 @@ def test_a_load_with_unsaved_work_offers_to_drop_it(browser, files_served):
     group.get_by_role("button", name="Load", exact=True).click()
     result = group.locator(".load-result")
     expect(result).to_contain_text("Not loaded: spare / lead onto vocal")
-    expect(result).to_contain_text("not saved")
+    expect(result.locator(".said")).to_contain_text("electric_board is running with 1 change")
+    expect(result).to_have_attribute("title", re.compile("not saved"))
     group.get_by_role("button", name="Load anyway").click()
     expect(result).to_contain_text("Loaded spare / lead onto vocal")
     page.close()
@@ -318,4 +324,29 @@ def test_a_waiting_loads_panel_stays_open_until_its_answer_is_seen(browser, file
     group.get_by_role("button", name="Load anyway").click()
     expect(group.locator(".load-result")).to_contain_text("Loaded spare / lead onto vocal")
     assert page.errors == []
+    page.close()
+
+
+def test_a_load_is_taken_back_by_the_one_undo_held_while_locked(browser, files_served):
+    """#209: the one Undo puts the file back as it was before the load; the
+    lock holds it, as it holds the load (#235's review)."""
+    path = files_served.save.root / "config" / "rigs" / "electric_board.yaml"
+    before = path.read_bytes()
+    page = rack(browser, files_served)
+    p = page.page
+    unlock(p)
+    group = panel(p, "vocal")
+    group.get_by_label("Channel to load onto vocal").select_option(label="spare / lead")
+    group.get_by_role("button", name="Load", exact=True).click()
+    expect(group.locator(".load-result")).to_contain_text("Loaded spare / lead onto vocal")
+    assert path.read_bytes() != before
+    button = p.locator("button.undo")
+    expect(button).to_have_attribute("title", "Undo load spare / lead")
+    p.locator("button.lock").click()  # locked again
+    expect(button).to_be_disabled()
+    expect(button).to_have_attribute("title", "Locked: load spare / lead")
+    unlock(p)
+    button.click()
+    expect(p.locator(".undo-said")).to_have_text("Undone: load spare / lead")
+    assert path.read_bytes() == before
     page.close()

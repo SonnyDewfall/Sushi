@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import urllib.request
 
 import pytest
@@ -375,16 +376,15 @@ def test_a_failure_with_nothing_newer_waiting_shows_the_rig_again(blank):
     assert out == [False, 0.5]
 
 
-def test_a_batched_change_is_unsaved_as_each_parameter_and_named_by_them(blank):
+def test_a_batched_change_is_unsaved_as_each_parameter(blank):
     out = rigjs(blank, """
       const log = {first: 0, log: [{at: '2026-11-16T10:00:00+00:00', op: 'parameters',
         args: {processor: 'hall', parameters: {dry: 0.7, early: 0.5, tail: 0.25}},
         previous: {dry: 0.92, early: 0.16, tail: 0.08}}]};
       const live = {parameter_info: {hall: {dry: {value: 0.7}, early: {value: 0.5}, tail: {value: 0.08}}}};
       const u = R.unsavedChanges(log, live, null);
-      return {items: u.items.map((i) => [i.parameter, i.from, i.to]), said: R.describeEntry(log.log[0])};""")
+      return {items: u.items.map((i) => [i.parameter, i.from, i.to])};""")
     assert out["items"] == [["dry", 0.92, 0.7], ["early", 0.16, 0.5]], "tail is back where it was: not unsaved"
-    assert out["said"] == "hall · dry, early, tail"
 
 
 # --------------------------------------------------------------------------- #
@@ -498,8 +498,10 @@ def test_a_level_sushi_refuses_part_way_puts_back_the_ones_already_set(browser, 
     p = page.page
     slider(p, "hall Mix").focus()
     p.keyboard.press("ArrowUp")
-    expect(p.locator(".problem.refused")).to_contain_text("Sushi would not set early (test)")
-    expect(p.locator(".problem.refused")).to_contain_text("put back dry as it was")
+    refused = p.locator(".problem.refused")
+    expect(refused).to_contain_text("Not changed: hall · mix")
+    expect(refused).to_have_attribute("title", re.compile(re.escape("Sushi would not set early (test)")))
+    expect(refused).to_have_attribute("title", re.compile(re.escape("put back dry as it was")))
     until(lambda: [c[2] for c in hall_calls(hall_served)] == ["dry", "early", "dry"])
     assert levels(hall_served) == pytest.approx(SAVED_LEVELS, abs=1e-12), "all or none: none"
     assert [e for e in live_log(hall_served) if e["args"].get("processor") == "hall"] == [], "nothing logged"

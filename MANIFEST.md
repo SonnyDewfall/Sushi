@@ -7023,3 +7023,100 @@ was copied even from the rig being written (the re-review: read after it,
 a copy from the same rig always said `changed`). (4) A load takes `"rig"`, the rig the page drew, and
 is `409 changed` when another is running by the time the lock is won (a
 Program Change between). Not tried on the rig. *(2026-11-24)*
+
+**One Undo for everything, and far less text on the page (#209).** The
+owner: "too much text explaining various decisions … give me an undo button
+and if there does need to be a message about deleting something or
+overwriting something, make it simple 1-2 words." The agent now keeps a
+history of what can be put back (`history.py`, `GET /undo`, `POST /undo`),
+50 steps deep, in its memory: shared by every page, kept across a reload,
+cleared by an agent restart. A step is a live edit (by its live log index,
+undone by the live undo; a fader's drag within 2 s is one step), a rig file
+write (the bytes before and a digest of what was written: a channel, an
+input, a pedal, a Save over the running rig's file, a revert, a new rig),
+a delete into the bin, or a Save as (recorded, and answered "can't undo").
+Undoing a write puts the bytes back only while the file is as the write left
+it, then does again what the write did to the running rig: a revert's switch,
+a pedal's bindings live, or nothing for an edit that waited for a restart
+the rig has not had (the file is what plays again), else a restart offered.
+A Save's undo withdraws its log entry (`withdrawn`), so what it wrote is
+unsaved again, and gives the chain log back. A step that cannot be put back
+is 409 `cant_undo` and dropped, so the next press goes on.
+
+The page has one **Undo** in each screen's header, beside the Lock: its
+title says what it would take back ("Undo delete clean"), "Nothing to undo"
+or "Can't undo: …"; a press says "Undone: …" for 15 s. Locked, it holds what
+the lock holds of the change itself (a move, an add, a remove, the amp's
+model, a pedal); on the stage it undoes live edits only. The Undo above
+Save, its Skip, and the picker's 15 s "Undo: put back" offers are gone.
+Delete, Remove, a revert point and a pedal moved off what it did no longer
+ask; Stop, a restart and the amp's model ask "Stop?", "Restart?", "Restart
+amp?" with Yes and No, and a revert refused for unsaved work "Drop changes?".
+Explanatory paragraphs are gone from the sidebars, panels and results: a
+result says its title and keeps the rest in its `title`; a refusal is cut to
+its first clause (`R.shortSaid`, which passes over a leading "nothing was
+written: "), whole on hover; a refused result box shows that clause beside
+its title. A channel preset's load is a file write with `apply="switch"`,
+undone by putting the file back and switching into it, as a revert's undo
+is: one `_history_file` call where it writes, which is all #208's channel
+loaded from another rig needs too.
+
+Merged with #210 (the FBV in the rig): a pedal's assignment whose Sushi
+mappings were made live through elkpy is undone the same way, its file put
+back and the mappings taken back live (`_undo_bindings` shares
+`_map_plan`, `_record_running` and `_map_cc_live` with the assignment), the
+restart offered where the forward change needed one. A channel's mute from
+a footswitch, its send bypassed, is a live step like any bypass, said as
+"mute vocal". #210's new words follow the less-text rule: **Save & assign**
+(its title says the rest), PEDALS' "Ranges changed" or "Not playing yet"
+with a one-word **Restart**, "waiting" for the board, "Device" for its
+picker, and the restart confirm "Restart?" with Yes and No. A refusal shown
+under a heading that its words repeat ("Not switched to x: ...") is cut past
+it, and a take that is not whole says "1 problem" on its result. The UI tests
+of the stage, the takes, the phone line, the visualiser's line and the lock
+read the new words, with what was said whole in the element's title. Not run
+on the rig. *(2026-11-24)*
+
+**One Undo, PR #235's review (#209).** Eight findings, fixed. (1) The Undo
+of a revert or a channel load switched the rig and left the MIDI listener
+stopped: it now follows the rig after (`_midi_sync`), as the revert does.
+(2) That switch dropped unsaved live work with no word (a step a press
+could not undo still plays): it is held as a revert is, 409 `unsaved` with
+the step kept, until `"discard": true`; the page asks "Drop changes?". (3)
+What a file step does to the rig is decided at the Undo: a rig running now
+in a run other than the write's (switched to, or restarted, since) plays
+what was written, so putting it back offers a restart. (4) `POST /undo`
+takes `{"seq"}`, the step the page showed: another is 409 `changed`, with
+`next`, and the live undo is told which log entry it is for. (5) Locked,
+the button holds the Undo of a load and of a revert; with `"restart":
+false`, which the page sends, a revert or a switch back that would restart
+Sushi is 409 `restarts` with why, and the page asks "Restart?" first. (6)
+The words beside the button name the step dropped ("Can't undo: delete
+clean") and say when Sushi or the agent did not answer. (7) A press never
+passes over a step to undo an older one: a live step the live log no
+longer holds is `cant_undo` "too old", and a drag put back only in part is
+"Partly undone". (8) `up`, `down` and `restart` end the live steps, as a
+switch does. `ui_fake.UiSave` now follows a switch into another rig of its
+config/rigs/, as the state file does. Not run on the rig. *(2026-11-24)*
+
+**Merged with #208 (channels from other rigs).** The one Undo's step for a
+channel preset's load moved to #208's channel load (`POST
+/rig/channels/{channel}/load`), the same one `_history_file` call where it
+writes, label "load accustomed / board", with its tests in
+`test_agent_channel_load.py`, and the review's fixes apply to it as to a
+revert's (the pedals follow after, unsaved work held). The Load… panel's
+answer is a few words, its notes in its title, and "Locked" with the lock's
+words its title. Not run on the rig. *(2026-11-24)*
+
+**One Undo, PR #235's re-review (#209).** (1) "Restart?" was not asked when
+"Drop changes?" was answered Yes and the work dropped added, removed or
+moved a plugin: `_would_restart` compared the two configs only, and the
+live plan, made against Sushi's reading, refuses such chains as `drifted`
+and restarts. It now counts the dropped work by the switch's own rule
+(`_touched`, `discard_plan`): structural work, or a value whose before Sushi
+did not report, is a restart reason, `discarded`. Still not known before
+the switch: a chain moved from the panel, and a live switch failing
+part-way. (2) Live steps were dropped by any lifecycle command that ran,
+even an `up` refused for a rig already up: now only when it succeeded or the
+run changed (`_run_identity` of `describe_rig`'s answer before and after).
+Not run on the rig. *(2026-11-24)*
