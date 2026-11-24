@@ -1046,7 +1046,10 @@ for, and refuses `changed` too if a newer one landed between its picks),
   unsaved live work (one a press could not undo still plays) it is **409
   `unsaved`** (or `panel`), the step kept, until `"discard": true`; with
   `"restart": false`, one that would restart Sushi (`rigfile.diff` and the
-  state's blockers, as the switch decides it) is **409 `restarts`** with
+  state's blockers, as the switch decides it, and the unsaved work a
+  `discard` drops: a plugin it added, removed or moved, or a value whose
+  before Sushi did not report, which `discard_plan` cannot put back live)
+  is **409 `restarts`** with
   `why`, until `"restart": true`. After the switch the MIDI listener follows
   the rig, as after a revert. The page sends `restart: false` and asks
   "Drop changes?" or "Restart?" before sending again.
@@ -1061,7 +1064,9 @@ entries were trimmed past the live log's limit, "too old", a Save as) is
 press goes on to the one before; a press never passes over a step to undo
 an older one. A drag of which only some could be put back is "Partly
 undone". `up`, `down` and `restart` end the live steps, as a switch does:
-they were made to the run that was up. `busy`, and what Sushi or a write answers (502, 503, 504), leave
+they were made to the run that was up. One that changed no run (an `up`
+refused for a rig already running, a restart that failed before taking the
+rig down) leaves them. `busy`, and what Sushi or a write answers (502, 503, 504), leave
 it to be tried again. `nothing_to_undo` with none left. One undo at a time;
 a file's takes the lifecycle lock (`busy: "undo"`) and, for the running
 rig's file, the live lock. **For a new kind of action**, record it where it

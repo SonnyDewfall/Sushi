@@ -620,3 +620,54 @@ def test_a_revert_that_switches_live_is_not_asked_about(served):
     _, commit = _revert_to_commit(served)
     status, body = call(served, "POST", "/undo", {"restart": False})
     assert status == 200 and body["how"] == "switched", body
+
+
+# ------------------------------------------------------------- PR #235's re-review
+
+def test_a_revert_dropping_a_plugin_added_or_removed_live_says_it_restarts(served):
+    """Re-review 1: "Drop changes?" answered Yes resends `discard: true,
+    restart: false`. A plugin removed live and dropped leaves chains the
+    running config lacks, which the live plan refuses (`drifted`): a
+    restart, so it is `restarts`, asked, not done."""
+    path = rig_file(served)
+    points = call(served, "GET", "/rigs/electric_board/saves")[1]["points"]
+    commit = next(p for p in points if p["kind"] == "commit")
+    assert call(served, "POST", "/live/remove", {"processor": "octave"})[0] == 200
+    before = path.read_bytes()
+    status, body = call(served, "POST", "/rigs/electric_board/revert",
+                        {"save": commit["id"], "discard": True, "restart": False})
+    assert status == 409 and body["code"] == "restarts", body
+    assert [r["code"] for r in body["why"]] == ["discarded"], body["why"]
+    assert path.read_bytes() == before and "octave" not in served.rig.chains["board"], "nothing done"
+
+
+def test_what_a_discard_drops_is_counted_by_the_switchs_own_rule(served):
+    """`_would_restart` with the dropped work, as both the revert and the
+    Undo call it: structural work, or a value whose before Sushi did not
+    report, is a restart; a knob with its before known is put back live."""
+    agent = served.agent
+    run = {"state": served.save.state, "described": served.save.describe()}
+    compiled = served.save.config
+    knob = {"op": "parameter", "args": {"processor": "delay", "parameter": "Feedback", "value": 0.9},
+            "previous": 0.35}
+    # One the next config states no value for, and Sushi gave none before.
+    unknown = {"op": "parameter", "args": {"processor": "delay", "parameter": "Not Stated", "value": 0.5},
+               "previous": None}
+    moved = {"op": "move", "args": {"processor": "delay", "direction": "up"}, "previous": None}
+    assert agent._would_restart(compiled, run, []) == []
+    assert agent._would_restart(compiled, run, [knob]) == []
+    assert [r["code"] for r in agent._would_restart(compiled, run, [moved])] == ["discarded"]
+    assert [r["code"] for r in agent._would_restart(compiled, run, [knob, unknown])] == ["discarded"]
+
+
+def test_a_lifecycle_command_that_changed_nothing_keeps_the_live_steps(served):
+    """Re-review 2: an `up` refused because a rig is already running changes
+    no run, so the live steps stay to be undone."""
+    call(served, "POST", "/live/bypass", {"processor": "delay", "bypassed": True})
+    status, body = call(served, "POST", "/rig/up", {"config_name": "electric_board"})
+    assert status != 200, body
+    nxt = call(served, "GET", "/undo")[1]
+    assert nxt["next"]["label"] == "bypass delay" and nxt["depth"] == 1, nxt
+    status, body = undo(served)
+    assert status == 200 and body["said"] == "Undone: bypass delay", body
+    assert served.rig.bypassed["delay"] is False

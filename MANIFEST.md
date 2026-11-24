@@ -7107,3 +7107,16 @@ writes, label "load accustomed / board", with its tests in
 revert's (the pedals follow after, unsaved work held). The Load… panel's
 answer is a few words, its notes in its title, and "Locked" with the lock's
 words its title. Not run on the rig. *(2026-11-24)*
+
+**One Undo, PR #235's re-review (#209).** (1) "Restart?" was not asked when
+"Drop changes?" was answered Yes and the work dropped added, removed or
+moved a plugin: `_would_restart` compared the two configs only, and the
+live plan, made against Sushi's reading, refuses such chains as `drifted`
+and restarts. It now counts the dropped work by the switch's own rule
+(`_touched`, `discard_plan`): structural work, or a value whose before Sushi
+did not report, is a restart reason, `discarded`. Still not known before
+the switch: a chain moved from the panel, and a live switch failing
+part-way. (2) Live steps were dropped by any lifecycle command that ran,
+even an `up` refused for a rig already up: now only when it succeeded or the
+run changed (`_run_identity` of `describe_rig`'s answer before and after).
+Not run on the rig. *(2026-11-24)*

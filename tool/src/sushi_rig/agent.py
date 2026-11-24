@@ -2308,7 +2308,7 @@ class Agent:
         they were. A restart's check for unsaved work (`restart_refusal`).
         """
         self._refuse_while_busy()
-        ran = False
+        ran, outcome = None, None
         async with self._lock:
             self.busy = command
             try:
@@ -2325,14 +2325,17 @@ class Agent:
                 take = (await self._finish_take(origin or _MidiOrigin("POST", f"/rig/{command}"), command)
                         if command in ("down", "restart") else None)
                 await self._midi_stop(f"stopped while '{command}' runs")
-                ran = True
+                ran = _run_identity(self.describe())
                 outcome, args = await self._lifecycle_steps(steps, fallback)
             finally:
                 self.busy = None
-                if ran:
+                if ran is not None and ((outcome is not None and outcome.ok) or _run_identity(self.describe()) != ran):
                     # The one Undo's live steps (#209) were made to the rig
                     # that was up: after a down, an up or a restart, what is
                     # up is another run, which they must not be undone on.
+                    # A command that did nothing (an `up` refused for a rig
+                    # already running, a restart that failed before taking
+                    # the rig down) leaves the run, and them, as they were.
                     self.history.drop_live()
                 await self._midi_sync()
         return outcome, args, take
@@ -6961,16 +6964,16 @@ class Agent:
                             refusal = revert_refusal(run["state"], self.log)
                             if refusal is not None and not discard:
                                 raise RigFileRefused(*refusal)
+                            if discard:
+                                discarded = unsaved_entries(self.log, since=run["state"].get("started_at"))
                             if restart is False:
-                                restarts = await asyncio.to_thread(self._would_restart, compiled, run)
+                                restarts = await asyncio.to_thread(self._would_restart, compiled, run, discarded)
                                 if restarts:
                                     raise RigFileRefused(
                                         f"nothing was written: reverting {name} restarts Sushi: "
                                         + "; ".join(f"{r['code']}: {r['detail']}" for r in restarts)
                                         + '; revert with "restart": true to go ahead', "restarts",
                                         {"why": restarts})
-                            if discard:
-                                discarded = unsaved_entries(self.log, since=run["state"].get("started_at"))
                             await self._rigfile_thread(request, path, lambda: saves.restore(path, data))
                     else:
                         await self._rigfile_thread(request, path, lambda: saves.restore(path, data))
@@ -7402,14 +7405,14 @@ class Agent:
                         if refusal is not None and not asked["discard"]:
                             raise UndoHeld(refusal[0].replace("a revert replaces", "undoing it replaces")
                                            .replace("revert with discard", "undo with discard"), refusal[1])
+                        discarded = (unsaved_entries(self.log, since=run["state"].get("started_at"))
+                                     if asked["discard"] else [])
                         if asked["restart"] is False:
-                            restarts = await asyncio.to_thread(self._would_restart, compiled, run)
+                            restarts = await asyncio.to_thread(self._would_restart, compiled, run, discarded)
                             if restarts:
                                 raise UndoHeld(f"switching {name} back restarts Sushi: "
                                                + "; ".join(f"{r['code']}: {r['detail']}" for r in restarts),
                                                "restarts", {"why": restarts})
-                        discarded = (unsaved_entries(self.log, since=run["state"].get("started_at"))
-                                     if asked["discard"] else [])
                         await self._rigfile_thread(request, path, put_back)
 
                     def mark(logged: dict[str, Any]) -> None:
@@ -7439,12 +7442,20 @@ class Agent:
                 if switched_at_all:
                     await self._midi_sync()  # the switch stopped the listener; it follows the rig now
 
-    def _would_restart(self, compiled: dict[str, Any], run: dict[str, Any]) -> list[dict[str, str]]:
+    def _would_restart(self, compiled: dict[str, Any], run: dict[str, Any],
+                       discarded: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
         """Why a switch of the running rig into `compiled` would restart
-        Sushi rather than switch live, as `_switch_held` decides it
-        (`rigfile.diff`, then the state's blockers), or [] for a live one.
-        Off the loop. A live switch that fails part-way still restarts:
-        this is what is known before it is tried."""
+        Sushi rather than switch live, as `_switch_held` and `_switch_live`
+        decide it, or [] for a live one: `rigfile.diff` of the two configs,
+        the state's blockers, and the unsaved work `discarded` drops
+        (`discard_plan`'s rule, re-review of PR #235): a plugin it added,
+        removed or moved leaves chains the running config lacks, which the
+        live plan refuses as `drifted`, and a value whose before Sushi did
+        not report cannot be put back live. Off the loop.
+
+        Not known before the switch is tried, so not said: a chain moved from
+        outside the agent (the panel), which the plan reads from Sushi, and a
+        live switch that fails part-way. Both still restart."""
         state = run["state"]
         reasons = [r.as_dict() for r in state_blockers(state)]
         try:
@@ -7456,6 +7467,18 @@ class Agent:
                                                                f"read: {type(exc).__name__}: {exc}"}]
         if isinstance(decided, rigfile.NeedsRestart):
             reasons += [r.as_dict() for r in decided.reasons]
+        elif discarded:
+            _, _, structural = _touched(discarded)
+            if structural:
+                reasons.append({"code": "discarded", "detail": (
+                    "the unsaved work being dropped added, removed or moved a plugin, which cannot be put "
+                    "back live")})
+            else:
+                # The values to put back, by the switch's own rule; with no
+                # reading of Sushi each is a step, which is all that is asked.
+                planned = discard_plan(decided, discarded, compiled, {})
+                if isinstance(planned, rigfile.NeedsRestart):
+                    reasons += [r.as_dict() for r in planned.reasons]
         return reasons
 
     def _withdraw_save(self, entry: dict[str, Any]) -> None:
@@ -8999,6 +9022,14 @@ def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[s
                 "and that restart would drop them: Save first (it writes what is playing into the file), "
                 "then make the edit", "unsaved")
     return None
+
+
+def _run_identity(described: dict[str, Any]) -> tuple:
+    """Which run `describe_rig`'s answer is of: up or not, its rig and when it
+    started, so a lifecycle command that changed nothing is told from one
+    that did (re-review of PR #235). Pure."""
+    return (bool(described.get("running")), described.get("config_name"), described.get("started_at"),
+            described.get("pgid"))
 
 
 def run_changed(before: dict[str, Any], now: dict[str, Any]) -> bool:

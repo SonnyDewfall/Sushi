@@ -373,6 +373,8 @@ def test_an_undo_that_would_drop_unsaved_work_asks_drop_changes_first(browser, s
     p.locator("button.revert-point", has_text="Commit").first.click()
     until(lambda: path.read_bytes() != saved)
     reverted = path.read_bytes()
+    # The revert's answer is in, so the agent is no longer busy with it.
+    expect(undo_button(p)).to_have_attribute("title", "Undo revert electric_board")
     assert p.evaluate("""async () => (await fetch('/live/bypass', {method: 'POST',
         headers: {'content-type': 'application/json'},
         body: JSON.stringify({processor: 'delay', bypassed: true})})).status""") == 200
