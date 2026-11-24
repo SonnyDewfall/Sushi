@@ -57,7 +57,7 @@ from .analysis import (
     band_differences_db,
     band_energies,
     check_finite,
-    estimate_delay,
+    estimate_latency,
     peak_dbfs,
     rms_dbfs,
 )
@@ -134,17 +134,23 @@ def fingerprint(
     through the chain is measured against it. Latency is worth fingerprinting
     separately from tone: a chain that gained 20 ms still nulls perfectly once
     aligned, so a comparison that only looked at spectrum would miss it.
+
+    The delay is the earliest path through the chain (`estimate_latency`),
+    not the strongest. Until 2026-11-24 it was the strongest, and two
+    references held it to the delay pedal's echo or the octave pair's (the
+    gx_detune_ units), where the dry signal was the weaker by 2 and 7 dB:
+    either would have failed on delay alone had the two traded places (#143).
     """
     np = require_numpy()
     arr = np.asarray(rendered)
 
     delay = None
     left = arr[:, 0] if arr.ndim > 1 else arr
-    # A silent left side has no delay to measure, and `estimate_delay` would
+    # A silent left side has no delay to measure, and `estimate_latency` would
     # raise "no correlation" over it: a message about the measurement, where
     # the finding is the silence, which `heard_findings` names (#144).
     if stimulus_samples is not None and _audible(float(rms_dbfs(left))):
-        # Both reduced to their first channel, because `estimate_delay` refuses
+        # Both reduced to their first channel, because `estimate_latency` refuses
         # multichannel input rather than silently reducing it -- and every real
         # render is at least stereo, so without this the delay could never be
         # measured at all. Found by rendering through a passthrough and
@@ -162,7 +168,7 @@ def fingerprint(
         # channel's level is now its own (`channel_rms_dbfs`), so a channel
         # lost or changed is a finding of its own.
         delay = int(
-            estimate_delay(
+            estimate_latency(
                 np.asarray(stimulus_samples)[:, 0] if np.asarray(stimulus_samples).ndim > 1
                 else stimulus_samples,
                 arr[:, 0] if arr.ndim > 1 else arr,

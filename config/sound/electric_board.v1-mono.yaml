@@ -6,7 +6,7 @@ frames: 240000
 measured:
   peak_dbfs: -12.1911
   rms_dbfs: -29.5057
-  delay_samples: 4163
+  delay_samples: 1
   bands:
   - low_hz: 20.0
     high_hz: 80.0
@@ -35,7 +35,9 @@ tolerance:
     non-deterministic one (electric_board, up to 0.0025 dB in a band; electric-octave-up,
     up to 0.0021 dB in peak level). Not fitted to this config''s own spread: a tolerance
     fitted to three calibrations was overtaken by the fourth by five times, so this
-    is set well above all of it instead. Its delay_samples of 4163 is the strongest
-    path through the chain, where every other config measures 0; most likely the delay
-    pedal''s echo outweighing the dry signal, which is unverified, and it would fail
-    this reference on delay alone if the two ever traded places'
+    is set well above all of it instead. Its delay_samples is the earliest path through
+    the chain, the dry signal, 1 sample late (2026-11-24, #143). Until then it held
+    the strongest path, 4163: not the delay pedal''s echo, as was guessed here (lcrDelay
+    at its defaults is fully dry), but each gx_detune_ unit''s delayed copy, with 8323
+    for both in series, either of which would have failed this reference had it traded
+    places with the other or with the dry signal'

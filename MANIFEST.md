@@ -7023,3 +7023,41 @@ was copied even from the rig being written (the re-review: read after it,
 a copy from the same rig always said `changed`). (4) A load takes `"rig"`, the rig the page drew, and
 is `409 changed` when another is running by the time the lock is won (a
 Program Change between). Not tried on the rig. *(2026-11-24)*
+
+**The delay a sound reference holds is the earliest path, not the strongest
+(#143).** Two references held their delay to a path that was not the dry
+signal, with a tolerance of 0, and would have failed on delay alone had the
+paths traded places. Found by rendering one change at a time, here, with Sushi
+1.3.0's release AppImage over this machine's Ubuntu 24.04 packages and the
+two built plugins (the CI image's set; `nulltest --all` on master passed all
+44 checks first). (1) **electric-delay's 19440** (its rig reference and its
+frozen one) **is the delay pedal's echo**: lcrDelay's L, C and R delay all at
+0.15 of 2700 ms, 405 ms, 19440 samples at 48 kHz. Set all three to 0.10 and it
+moves to 12960; bypass the pedal and the strongest path is the dry at 0; 38882
+is the second echo, gone with Feedback at 0.5 (none). The echo outweighs the
+dry by 2 dB (0.169 against 0.135) only since the copy to stereo: lcrDelay's
+delay line is fed `in_l + in_r`, so with both sides fed the echo doubles
+(0.084 in the v1 render and with the copies taken out, the dry the same), and
+at a Dry/Wet of 0.55 instead of 0.61 the dry is the strongest again. (2)
+**electric_board's 4163** (its `.v1-mono` reference and its frozen one, both
+of a board that still has the gx_detune_ pair; the rig's own has measured 1
+since #152) **is not the delay pedal's echo**, as its note guessed: lcrDelay
+at its defaults is fully dry (Dry/Wet 0), and bypassing it changes nothing.
+It is each gx_detune_ unit's delayed copy: bypass both and the strongest is
+the dry at 1; bypass either and 4163 stays and 8323, the two in series, goes.
+The dry was 7 dB under the strongest, with 8323 at 0.77 of it. **The fix:**
+`nulltest.fingerprint` measures the delay with `analysis.estimate_latency`,
+the earliest of `find_delays`' peaks at a lag of 0 or more and at least 0.1 of
+the strongest (`estimate_delay`'s strongest when there is none, as for an
+octave fully wet, whose number is a correlation, not a lag), so the dry and an
+echo can trade places without moving it. Rendered under it, every reference
+measured as before but five, by delay alone: electric-delay's two 19440 to 0
+(the dry at 0.80 of the echo), electric_board's two 4163 to 1 (0.43), and
+`string-machine.strings` 276 to 103, its ensemble's two taps (fully wet, at
+0.86 of each other: the same hazard, not named in #143). Those five values are
+rewritten by hand, every other number and every tolerance as it was, and
+electric_board's note on its delay with them; the two frozen references' new
+sha256 are in `test_rig_fixtures.py`. After: `nulltest --all` here passes all
+44, and the earliest path was the same in four renders of each changed one
+(electric_board's included, gx_detune_ and all). Not yet run in CI's container
+at the time of writing. *(2026-11-24)*

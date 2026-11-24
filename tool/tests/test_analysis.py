@@ -235,6 +235,65 @@ def test_an_echo_at_375_ms_is_found_alongside_the_direct_sound():
     assert [p.gain for p in peaks] == pytest.approx([1.0, 0.5], abs=0.02)  # -6 dB is 0.501
 
 
+def test_the_latency_is_the_earliest_path_whichever_path_is_louder():
+    """The strongest path is a matter of balance: an echo louder than the dry
+    signal is the strongest, and a turn of the mix makes the dry the strongest
+    again. electric-delay's reference held its delay to the echo's 19440
+    samples that way, and failed on delay alone at a Dry/Wet of 0.55 instead
+    of 0.61 (#143). The earliest path is where it was either way."""
+    x = signals.pink_noise(SR, 2.0, -12.0)
+    echo = round(0.375 * SR)
+    dry_louder = x + gain_db(delayed(x, echo), -2.0)
+    echo_louder = gain_db(x, -2.0) + delayed(x, echo)
+    assert analysis.estimate_delay(x, dry_louder).lag_samples == 0
+    assert analysis.estimate_delay(x, echo_louder).lag_samples == echo  # the hazard
+    for wet in (dry_louder, echo_louder):
+        peak = analysis.estimate_latency(x, wet, max_lag_samples=SR)
+        assert peak.lag_samples == 0
+
+
+def test_the_earliest_path_may_be_the_weakest_over_the_floor():
+    # A dry signal 18 dB under an echo is a tenth of it and more, and is still
+    # the first through the chain.
+    x = signals.pink_noise(SR, 2.0, -12.0)
+    wet = gain_db(x, -18.0) + delayed(x, 9000) + gain_db(delayed(x, 4000), -6.0)
+    assert analysis.estimate_latency(x, wet).lag_samples == 0
+
+
+def test_a_path_under_the_floor_is_not_the_first():
+    # 26 dB down is under a tenth: noise-sized next to the path it precedes.
+    x = signals.pink_noise(SR, 2.0, -12.0)
+    wet = gain_db(x, -26.0) + delayed(x, 1000)
+    assert analysis.estimate_latency(x, wet).lag_samples == 1000
+
+
+def test_the_latency_passes_over_a_negative_lag():
+    # Nothing comes out of a chain before it goes in: a peak at a negative lag
+    # is the correlation of an output that is no copy of its input, not a path.
+    x = signals.pink_noise(SR, 1.0, -6.0)
+    ref = delayed(x, 100)
+    test = x + gain_db(delayed(x, 300), -6.0)   # -100 at 1.0, +200 at 0.5
+    assert analysis.estimate_delay(ref, test).lag_samples == -100
+    assert analysis.estimate_latency(ref, test).lag_samples == 200
+
+
+def test_with_no_path_at_or_after_zero_the_latency_is_the_strongest_alignment():
+    # A fully shifted octave has no path at all; the number is then the one
+    # `estimate_delay` gives, held steady by the references that carry it.
+    x = signals.pink_noise(SR, 1.0, -6.0)
+    peak = analysis.estimate_latency(delayed(x, 100), x)
+    assert peak.lag_samples == -100 and peak.gain == pytest.approx(1.0, abs=0.02)
+
+
+def test_the_latency_of_silence_raises_as_the_delay_does():
+    with pytest.raises(ValueError, match="no correlation"):
+        analysis.estimate_latency(signals.pink_noise(SR, 0.1), signals.silence(SR, 0.1))
+    with pytest.raises(ValueError, match="shorter than half"):
+        analysis.estimate_latency(signals.pink_noise(SR, 1.0), signals.pink_noise(SR, 0.1))
+    with pytest.raises(ValueError, match="mono"):
+        analysis.estimate_latency(signals.pink_noise(SR, 0.1, channels=2), signals.pink_noise(SR, 0.1))
+
+
 def test_find_delays_works_on_a_sweep_stimulus_too():
     x = signals.log_sweep(SR, 1.0)
     assert analysis.estimate_delay(x, delayed(x, 321)).lag_samples == 321

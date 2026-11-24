@@ -425,6 +425,50 @@ def estimate_delay(reference, test, *, max_lag_samples: int | None = None) -> De
     return peaks[0]
 
 
+# How strong a path must be, against the strongest, to count as the first one
+# through a chain (`estimate_latency`): `find_delays`' own floor for a peak.
+LATENCY_MIN_RELATIVE_HEIGHT = 0.1
+
+
+def estimate_latency(reference, test, *, max_lag_samples: int | None = None,
+                     min_relative_height: float = LATENCY_MIN_RELATIVE_HEIGHT) -> DelayPeak:
+    """The earliest path of `reference` through to `test`: of `find_delays`'
+    peaks at least `min_relative_height` of the strongest, the one at the
+    smallest lag that is not negative.
+
+    Not the strongest path (`estimate_delay`), because which path is strongest
+    is a matter of balance. electric-delay's echo at 405 ms outweighs its dry
+    signal by 2 dB, so the strongest path is the echo's 19440 samples, and at
+    a Dry/Wet of 0.55 instead of 0.61 it is the dry's 0 (2026-11-24, #143): a
+    latency held to that number fails on a turn of the mix. The first arrival
+    is the chain's latency, whichever path is louder, and stays where it is
+    when the two trade places, as long as the earlier is at least a tenth of
+    the later.
+
+    A negative lag is not a path: nothing comes out of a chain before it goes
+    in. A peak there is the correlation of an output that is not a copy of its
+    input (gx_detune_'s, Rubber Band's shifted octave), so it is passed over.
+    When no peak at a lag of 0 or more reaches the floor, as for an octave
+    fully wet, there is no first path to give, and this is `estimate_delay`'s
+    strongest alignment: a number to hold steady, not a lag.
+
+    Raises as `estimate_delay` does.
+    """
+    ref = _mono(reference, "reference")
+    sig = _mono(test, "test")
+    if 2 * len(sig) < len(ref):
+        raise ValueError(
+            "the test signal is shorter than half the reference, so no lag could be searched"
+        )
+    # Every peak over the floor: the earliest may be the weakest of them.
+    peaks = find_delays(ref, sig, max_lag_samples=max_lag_samples, max_peaks=len(ref) + len(sig),
+                        min_relative_height=min_relative_height)
+    if not peaks:
+        raise ValueError("no correlation between the signals within the allowed lag (is either one silent?)")
+    causal = [peak for peak in peaks if peak.lag_samples >= 0]
+    return min(causal, key=lambda peak: peak.lag_samples) if causal else peaks[0]
+
+
 @dataclass(frozen=True)
 class NullResult:
     """The outcome of subtracting one signal from another.

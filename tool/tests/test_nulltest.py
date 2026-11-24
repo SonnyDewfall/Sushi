@@ -261,6 +261,28 @@ def test_delay_is_measurable_on_a_stereo_render():
     assert fp.delay_samples == 240
 
 
+def test_the_dry_signal_and_an_echo_trading_places_is_no_change_of_delay():
+    """#143: a reference held its delay to whichever path was strongest, and
+    a delay pedal's echo outweighing the dry signal made that the echo's time.
+    The fingerprint's delay is the earliest path, which a change of balance
+    between the two does not move; the change of level still shows."""
+    sweep = _sweep()
+    echo = 2400  # 50 ms
+
+    def later(x, n):
+        out = np.zeros_like(x)
+        out[n:] = x[:len(x) - n]
+        return out
+
+    dry_louder = sweep + 0.7 * later(sweep, echo)
+    echo_louder = 0.7 * sweep + later(sweep, echo)
+    ref, test = _fp(dry_louder, against=sweep), _fp(echo_louder, against=sweep)
+    assert ref.delay_samples == 0 and test.delay_samples == 0
+    findings = compare(ref, test)
+    assert not any(f.check == "delay-changed" for f in findings)
+    assert findings, "the balance moved, and the levels must say so"
+
+
 def test_delay_still_works_on_a_mono_render():
     """A mono render is not special-cased away by the stereo fix."""
     mono = signals.log_sweep(SR, 1.0, level_dbfs=-20.0, channels=1)
