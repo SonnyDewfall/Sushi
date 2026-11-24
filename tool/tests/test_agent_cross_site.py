@@ -229,7 +229,7 @@ GETS = {
     "a fetch with Origin": {"Origin": "http://{name}:{port}", "Sec-Fetch-Mode": "cors"},
     "a script": {"Sec-Fetch-Dest": "script"},
 }
-READS = ["/health", "/rigs", "/doctor", "/live/log", "/takes", "/presets", "/rig", "/", "/ui/app.js",
+READS = ["/health", "/rigs", "/doctor", "/live/log", "/takes", "/rig", "/", "/ui/app.js",
          "/help/", "/help/recording", "/help/img/rack.png",
          # The visualiser's files (#176): the static route's, as app.js is.
          "/ui/screensaver.js", "/ui/visualiser.js", "/ui/visualiser-presets.js", "/ui/visualiser-tap.js",
@@ -411,7 +411,7 @@ def test_every_registered_route_is_behind_the_guard():
     writes = [(m, p) for m, p in routes if m in STATE_CHANGING]
     paths = {path for _, path in writes}
     # Not vacuous: the routes #160 and #162 guarded by hand, and others.
-    assert {"/rigs/x/delete", "/rigs/x/restore", "/rig/channels/x/save-as", "/rig/channels/x/load",
+    assert {"/rigs/x/delete", "/rigs/x/restore", "/rig/channels/x/load",
             "/rig/up", "/rig/down", "/live/parameter", "/rig/save", "/record/start", "/takes/open",
             "/rig/midi/assign",  # #192's pedal assignment
             "/visualiser/tap", "/visualiser/tap/release"} <= paths, paths
@@ -455,7 +455,7 @@ def test_every_registered_route_is_behind_the_guard():
 GET_ROUTES = {
     "/", "/ui", "/ui/", "/ui/app.js", "/health", "/rig", "/doctor", "/live", "/live/log", "/library",
     "/profiles", "/live/plugins", "/rigs", "/rig/load", "/amp", "/amp/models", "/record", "/takes",
-    "/machine/roles", "/rigs/x/channels", "/rigs/x/saves", "/rigs/bin", "/presets",
+    "/machine/roles", "/rigs/x/channels", "/rigs/x/saves", "/rigs/bin",
     "/help", "/help/", "/help/x", "/help/img/x",  # the user guide (#167)
     "/midi",  # the pedals and the running rig's assignments (#191): reads two files and lists config/rigs/
 }

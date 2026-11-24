@@ -11,7 +11,7 @@ cannot be reproduced").
 
 Against the frozen guitar_vocal in a temporary checkout
 (rig_fixtures.frozen_checkout, never config/rigs/), through the agent's
-routes as test_agent_presets.py drives them: the real compile, the real
+routes as test_agent_channel_load.py drives them: the real compile, the real
 capture of `test_agent.RigLive`, `save.save_rig` and `rigfile.write_rig`.
 NOT shown: any of it against a live Sushi.
 """
@@ -26,7 +26,7 @@ pytest.importorskip("aiohttp")
 from sushi_rig import rigfile, yamlmerge  # noqa: E402
 
 from rig_fixtures import FROZEN, frozen  # noqa: E402
-from test_agent_presets import call, make_agent, rig_file, root  # noqa: E402,F401
+from test_agent_channel_load import call, make_agent, rig_file, root  # noqa: E402,F401
 
 
 def comments(text: str) -> list[str]:
@@ -124,7 +124,7 @@ def test_a_flow_style_rig_saves_again_and_again_and_each_save_can_be_updated_by_
 
 
 # --------------------------------------------------------------------------- #
-# The other writers that share the path (#162's presets, revert, new and copy)
+# The other writers that share the path (a channel load, revert, new and copy)
 # --------------------------------------------------------------------------- #
 
 def save_twice(agent, fake, root, rig="guitar_vocal", processor="guitar_delay"):
@@ -142,24 +142,17 @@ def save_twice(agent, fake, root, rig="guitar_vocal", processor="guitar_delay"):
     return texts[-1]
 
 
-def test_a_channel_saved_as_a_preset_and_loaded_back_saves_twice(root):
+def test_a_channel_loaded_onto_a_flow_style_channel_saves_twice(root):
     before = rig_file(root, "guitar_vocal").read_text()
     agent, world, fake, runner = make_agent(root)
-    status, body = call(agent, "POST", "/rig/channels/guitar/save-as", json={"name": "gv-guitar"})
-    assert status == 200, body
-    preset = (root / "config" / "channels" / "gv-guitar.yaml").read_text()
-    assert reproducible(preset)
-    # Saved again over itself, from a rig whose chain is flow style.
     set_value(agent, fake, "guitar_delay", 0.75)
-    status, body = call(agent, "POST", "/rig/channels/guitar/save-as", json={"name": "gv-guitar", "replace": True})
-    assert status == 200, body
-    assert reproducible((root / "config" / "channels" / "gv-guitar.yaml").read_text())
     status, body = call(agent, "POST", "/rig/save", json={})
     assert status == 200, body
     saved = rig_file(root, "guitar_vocal").read_text()
-    # Loaded onto the vocal (`replace_chains`), whose entries are still flow style.
+    # The guitar loaded onto the vocal (`replace_chains`), whose entries are still flow style.
     assert '      - {name: vocal_dynamics, uri: "http://drobilla.net/plugins/mda/Dynamics"}\n' in saved
-    status, body = call(agent, "POST", "/rig/channels/vocal/load", json={"preset": "gv-guitar"})
+    status, body = call(agent, "POST", "/rig/channels/vocal/load",
+                        json={"from": {"rig": "guitar_vocal", "channel": "guitar"}})
     assert status == 200, body
     loaded = rig_file(root, "guitar_vocal").read_text()
     assert reproducible(loaded)

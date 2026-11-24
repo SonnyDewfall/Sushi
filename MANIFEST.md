@@ -6917,3 +6917,29 @@ may take its samples through `patch:`, which Sushi cannot set; the FBV sends
 only CCs, so the spike plays from a keyboard or the MPD218. A section says how
 we would write our own Linux control app for the pickup if one were needed.
 Nothing is built. *(2026-11-23)*
+
+**Presets become channels from other rigs (#208).** The owner: "presets
+shouldn't be their own thing, they should just be the channels from the other
+configs." Channel presets (#127) are gone: `config/channels/` (all seven
+files: string-ensemble, string-octave and synth-lead are channels of the
+string-machine and synth-lead rigs; tremolo, flanger, shimmer and tape-echo
+are in the Library and the pedals rig), `GET /presets`, Save channel as…
+(`POST /rig/channels/<c>/save-as`), the preset as "start from", and the
+`committed_presets` test guard. `POST /rig/channels/<c>/load` now takes
+`{"from": {"rig", "channel"}}`: that channel of that rig's file as it stands,
+its chain, settings, bypass and level, onto a channel of the running rig,
+with everything a preset load had (the same live-or-restart switch, revert
+point, provenance line, `discard`, MIDI following or `drop_midi`, the amp
+and width notes, #188's plugins check before the write), the target's input,
+width and strip its own, and none of the source rig's MIDI map. A missing rig
+or channel is `no_source`. `presets.py` became `channelcopy.py`, keeping the
+names, the MIDI and the amp logic; the provenance line reads `# Chain copied
+from <rig> / <channel> (…)` and replaces an old preset line too. On the page,
+a strip's **Load…** (was Preset…) lists every rig's channels as `rig /
+channel`, grouped by rig, the strip's own left out, and "start from" labels
+them the same way. "Start from" still copies names as written (#125), so two
+copies of one channel in one rig are refused, which a preset allowed. The
+guide `channel-presets.md` is now [Use a channel from another
+rig](docs/guide/channel-from-another-rig.md); the reference, effects,
+string-machine and building-a-rig pages follow. The #127 entries above
+describe what was removed. Not tried on the rig. *(2026-11-23)*

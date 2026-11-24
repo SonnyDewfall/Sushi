@@ -2048,7 +2048,7 @@ class Agent:
         self._rigfile_routes(app)  # the New rig screen's rig files: see its block
         self._revert_routes(app)  # revert to a previous save: see its block
         self._bin_routes(app)  # deleting a rig file into the bin, and Undo (#129): see its block
-        self._preset_routes(app)  # channel presets (#127): see its block
+        self._channel_load_routes(app)  # a channel from another rig (#208): see its block
         self._help_routes(app)  # the user guide at /help/ (#167): see its block
         return app
 
@@ -5932,12 +5932,9 @@ class Agent:
         path = self._rigfile_path(request.match_info["name"])
 
         def edit(raw: dict[str, Any], run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-            amp = raw.get("amp") if isinstance(raw.get("amp"), dict) else None
-            copied, source = self._rigfile_copy(change, (amp or {}).get("model"))
+            copied, source = self._rigfile_copy(change)
             said = {"op": "add_channel", "channel": change["name"], "input": change["input"],
                     "width": change["width"], "from": source}
-            if source and "preset" in source:
-                said["_provenance"] = {change["name"]: self._provenance(source["preset"])}
             return rigedit.with_channel(raw, rigedit.channel_entry(change, copied)), said
 
         answer = await self._rigfile_locked(request, lambda run: self._write_edit(request, run, path, edit))
@@ -5996,21 +5993,13 @@ class Agent:
         await self._rigfile_git_after(answer, answer["path"])
         return {k: v for k, v in answer.items() if k not in ("run", "path")}
 
-    def _rigfile_copy(self, change: dict[str, Any], rig_amp: str | None = None,
-                      ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    def _rigfile_copy(self, change: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """`(copied, said)` for a channel's `from`: its chain and level from
         that rig of config/rigs as the file is now, and where it came from,
         or `(None, None)`. Read from the file as it stands, not from git's
         commit of it: a tone saved and not yet committed is the one the
         player hears, and copying an older one would be the silent kind of
-        wrong. What git says of that file is in the answer (`from`).
-
-        A channel preset (`{"preset"}`, #127) is copied as a load copies
-        it: each plugin named for the new channel, so two channels may start
-        from one preset; its preferred width fills a width the request left
-        out; and `said["amp"]` says whether the amp (`rig_amp`, the rig's)
-        is in front of the channel, and what to say when a preset heard
-        through it lands where it is not."""
+        wrong. What git says of that file is in the answer (`from`)."""
         from . import rigedit
         from .save import file_git_state
 
@@ -6018,8 +6007,6 @@ class Agent:
         if not source:
             return None, None
         root = self._midi_root()
-        if "preset" in source:
-            return self._preset_copy(change, source["preset"], rig_amp)
         if source["rig"] not in midi_listener.program_order(root):
             raise RigFileRefused(f"there is no rig called {source['rig']!r} in config/rigs/ to start "
                                  f"{change['name']} from", "no_source")
@@ -6108,15 +6095,12 @@ class Agent:
                 raise RigFileRefused(f"a rig called {name} already exists ({self._save_shown(path)}): "
                                      "choose another name, or add channels to that one", "taken")
             programs_before = midi_listener.program_order(root)
-            entries, sources, said, provenance = [], [], {}, {}
+            entries, sources, said = [], [], {}
             for change in channels:
                 copied, source = self._rigfile_copy(change)
                 entries.append(rigedit.channel_entry(change, copied))
                 sources.append(source)
-                if source and "preset" in source:
-                    said[change["name"]] = f"channel preset {source['preset']} ({source['file']})"
-                    provenance[change["name"]] = self._provenance(source["preset"])
-                elif source:
+                if source:
                     said[change["name"]] = f"{source['file']}'s {source['channel']}"
             raw = rigedit.new_rig(name, entries, MONITOR_ROLE)
             self._rigfile_compile(raw, run)
@@ -6131,11 +6115,11 @@ class Agent:
                                      "choose another name", "taken") from exc
             try:
                 when = datetime.now(timezone.utc).date().isoformat()
-                problems = write_rig(path, raw, header=rigedit.new_rig_header(when, said), provenance=provenance)
+                write_rig(path, raw, header=rigedit.new_rig_header(when, said))
             except BaseException:
                 path.unlink(missing_ok=True)
                 raise
-            return {"sources": sources, "provenance_note": "; ".join(problems) or None,
+            return {"sources": sources,
                     "programs": programs_moved(programs_before, midi_listener.program_order(root), name)}
 
         try:
@@ -6144,7 +6128,6 @@ class Agent:
             raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
         return {"ok": True, "rig": name, "file": self._save_shown(path), "how": "new", "committed": False,
                 "running": False, "path": path, **({"programs": done["programs"]} if done["programs"] else {}),
-                **({"provenance_note": done["provenance_note"]} if done["provenance_note"] else {}),
                 "channels": [{"name": c["name"], "input": c["input"], "width": c["width"], "from": source}
                              for c, source in zip(channels, done["sources"])]}
 
@@ -6165,14 +6148,11 @@ class Agent:
             if not isinstance(raw, dict):
                 raise RigFileRefused(f"{path.name} is not a rig file", "rig_problem")
             edited, change = edit(raw, run)
-            provenance = change.pop("_provenance", None)
             compiled = self._rigfile_compile(edited, run)
             try:
-                problems = write_rig(path, edited, provenance=provenance)
+                write_rig(path, edited)
             except RigFileError as exc:
                 raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
-            if problems:
-                change["provenance_note"] = "; ".join(problems)
             return {"change": change, "compiled": compiled}
 
         if running:
@@ -6639,7 +6619,7 @@ class Agent:
                          again: str) -> None:
         """`RigFileRefused` (`plugins_missing`) when the running rig `name`,
         about to be switched into `compiled` from its edited file (a revert,
-        a preset load), loads a plugin plugins/ lacks: refused before the
+        a channel load), loads a plugin plugins/ lacks: refused before the
         file is written, in the words a switch is refused in, since the
         switch after the write would refuse it and leave the file changed
         and the rig not (review of PR #198). Off the loop."""
@@ -6659,8 +6639,8 @@ class Agent:
         under the lifecycle lock the caller holds. What it says, as a
         switch's answer does, and `ok: false` with `code: "not_switched"`
         when the rig was not made to play the file that is now written.
-        A channel preset's load (#127) comes this way too, with its own
-        `mark` for the log entry and its own word for what was `done`."""
+        A channel load (#208) comes this way too, with its own `mark` for
+        the log entry and its own word for what was `done`."""
         if mark is None:
             def mark(entry: dict[str, Any]) -> None:
                 entry["args"]["revert"] = said["id"]
@@ -6695,102 +6675,27 @@ class Agent:
     # ======================================================================= #
 
     # ======================================================================= #
-    # Channel presets (#127): GET /presets, POST /rig/channels/{channel}/save-as,
-    # POST /rig/channels/{channel}/load
+    # A channel from another rig (#208): POST /rig/channels/{channel}/load
     # ======================================================================= #
     #
     # Kept in one block, as save's and the rig files' are. Outside it the agent
-    # calls in at `app` (`_preset_routes`). The file, its names and what a load
-    # does to a chain and a MIDI map are presets.py's, pure; what a rig may be
-    # is still the compiler's.
-    #
-    # Save channel as… writes a preset, not a rig file: it captures the
-    # running rig as POST /rig/save does (under the live lock, with the log's
-    # adds and removes, folded by `rigfile.fold_state`) and keeps one
-    # channel of what that fold gives. So a preset holds exactly what a save
-    # of the rig would write for that channel, and never a copy to stereo,
-    # which a fold never writes. It changes nothing of the rig, so it is not
-    # logged, and the count of unsaved changes is not touched.
+    # calls in at `app` (`_channel_load_routes`). What a load does to a chain
+    # and a MIDI map is channelcopy.py's, pure; what a rig may be is still the
+    # compiler's. The source is a channel of a rig in config/rigs/, read from
+    # its file as it stands, as "start from" reads one (`_rigfile_copy`).
 
-    def _preset_routes(self, app) -> None:
-        app.router.add_get("/presets", self.presets_route)
-        app.router.add_post("/rig/channels/{channel}/save-as", self.save_preset_route)
-        app.router.add_post("/rig/channels/{channel}/load", self.load_preset_route)
+    def _channel_load_routes(self, app) -> None:
+        app.router.add_post("/rig/channels/{channel}/load", self.load_channel_route)
 
-    async def presets_route(self, request):
-        """`GET /presets`: the channel presets of config/channels/, each with
-        its width, level, plugins (their base names), the amp it was heard
-        through and where it was saved from, or why it cannot be loaded
-        (`presets.listing`: shape, then the compiler)."""
-        from . import presets
-
-        listed = await asyncio.to_thread(presets.listing, self._midi_root())
-        return web.json_response({"ok": True, "presets": listed, "folder": presets.PRESETS_DIR.as_posix()})
-
-    async def save_preset_route(self, request):
-        """`POST /rig/channels/{channel}/save-as {"name", "replace"?}`: Save
-        channel as…, the running rig's channel `channel` as it plays now,
-        written as `config/channels/<name>.yaml` and not committed.
-
-        The capture is the save's (`_save_target`'s refusals: `no_rig`,
-        `panel`, `v1`; `changed` if the rig changed while this waited) and
-        the fold is the save's (`not_saved` with its reason when the capture
-        is not this rig's file plus the log's edits). The channel's entry of
-        that fold becomes the preset (`presets.from_channel`): its chain,
-        settings and bypass, its level, its width as the preferred width,
-        each plugin under its base name, and `heard_through_amp` when the
-        channel plays from `guitar-in` with the amp running.
-
-        409 `taken` for a preset of that name unless `"replace": true`,
-        which updates that file in place, keeping its comments and its
-        description; `no_channel`; `preset_problem` when the chain would not
-        compile as a preset, nothing written. 200 with `file`, `how`
-        ("new" or "updated"), `preset` (what was written, as `GET /presets`
-        lists one), `committed: false` and `library`."""
-        from . import presets
-
-        try:
-            name, replace = preset_save_request(await self._json_body(request))
-        except AgentError as exc:
-            raise web.HTTPBadRequest(reason=str(exc))
-        channel = request.match_info["channel"]
-        root = self._midi_root()
-        path = presets.preset_path(root, name)
-        self._refuse_while_busy()
-        _, source, _ = await self._save_target(None)
-        async with self._connected(request) as controller:
-            async with self._live_lock:
-                self._refuse_while_busy()
-                state, now, _ = await self._save_target(None)
-                if now != source:
-                    raise _conflict(f"the running rig changed to {now.stem} while this waited, so nothing was "
-                                    "saved: look at the rig and save the channel again", "changed")
-                captured = await self._sushi(request, self.live.snapshot, controller, reading=True)
-                captured, _ = self._save_master(captured)
-                edits = live_edits(self._chain_log, since=state.get("started_at"))
-
-                def work() -> dict[str, Any]:
-                    return self._write_preset(path, name, replace, source, channel, captured, edits, state)
-
-                try:
-                    done = await self._write_off_loop(request, path, work, again="saving the channel again")
-                except RigFileRefused as exc:
-                    raise _conflict(" ".join(str(exc).split()), exc.code)
-        shown = self._save_shown(path)
-        answer = {
-            "ok": True, "file": shown, "how": done["how"], "preset": done["listed"], "channel": channel,
-            "rig": source.stem, "committed": False,
-            "note": (f"{shown} {'was updated in place, with its comments' if done['how'] == 'updated' else 'is new'}; "
-                     "it is not committed. It is a copy: the rig is as it was, and unsaved changes stay unsaved"),
-        }
-        return web.json_response(await self._rigfile_git_after(answer, path))
-
-    async def load_preset_route(self, request):
-        """`POST /rig/channels/{channel}/load {"preset", "discard"?,
-        "drop_midi"?}`: load channel preset `preset` onto the running rig's
-        channel `channel`: its chain replaced by the preset's, each plugin
-        named for the channel (`presets.processor_name`), and its level set to
-        the preset's; its input and width stay its own.
+    async def load_channel_route(self, request):
+        """`POST /rig/channels/{channel}/load {"from": {"rig", "channel"},
+        "discard"?, "drop_midi"?}`: load channel `from.channel` of rig
+        `from.rig` (config/rigs/) onto the running rig's channel `channel`:
+        its chain replaced by the source's, settings and bypass as that file
+        has them, each plugin named for the channel
+        (`channelcopy.processor_name`), and its level set to the source's;
+        its input and width stay its own, and the source rig's MIDI map is
+        not copied.
 
         The rig file is written first, in place with `write_rig` (comments
         kept), and the running rig is then switched to it by the live switch
@@ -6802,34 +6707,36 @@ class Agent:
         (`saves.keep`) unless a save already keeps it, so Revert… goes back.
 
         Refused before anything is written, each a 409 with its reason:
-        `no_rig`, `panel`, `v1` (as a save); `no_preset`, `preset_problem`
-        (one that does not parse or compile); `no_channel`; `name` (a name a
-        load makes that the naming rule refuses); `midi`, when a mapping of
-        the rig's MIDI map would point at nothing (`mappings`: each, with
-        what it was and why), unless `"drop_midi": true`, which drops them
-        and says so (`dropped`), a mapping onto the same plugin under its new
-        name following it (`followed`); `rig_problem`, the compiler's own
-        words (a name another channel has); and `unsaved` while the rig holds
-        live work no save has written, unless `"discard": true`.
+        `no_rig`, `panel`, `v1` (as a save); `no_source` (no such rig in
+        config/rigs/, no such channel in it, or a file that will not read);
+        `no_channel`; `name` (a name a load makes that the naming rule
+        refuses); `midi`, when a mapping of the rig's MIDI map would point at
+        nothing (`mappings`: each, with what it was and why), unless
+        `"drop_midi": true`, which drops them and says so (`dropped`), a
+        mapping onto the same plugin under its new name following it
+        (`followed`); `rig_problem`, the compiler's own words (a name another
+        channel has); `plugins_missing` (#188's check, a plugin plugins/
+        lacks); and `unsaved` while the rig holds live work no save has
+        written, unless `"discard": true`.
 
-        200 with `file`, `preset`, `channel`, `how`, `why`, `names` (each
-        base name and what it is called here), `followed`, `dropped`, `amp`
-        (`presets.amp_note`: whether the amp is in front, and what to say
-        when a preset heard through it lands where it is not), `kept_before`,
-        `library`. 409 `not_switched` (or 504) when the file was written and
-        the rig could not be made to play it, `written: true`.
+        200 with `file`, `from`, `channel`, `how`, `why`, `names` (each base
+        name and what it is called here), `followed`, `dropped`, `amp`
+        (`channelcopy.amp_note`), `width`, `kept_before`, `library`. 409
+        `not_switched` (or 504) when the file was written and the rig could
+        not be made to play it, `written: true`.
 
         Not run against a live Sushi: shown against the fakes of the tests."""
         try:
-            name, discard, drop_midi = preset_load_request(await self._json_body(request))
+            source, discard, drop_midi = channel_load_request(await self._json_body(request))
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
         channel = request.match_info["channel"]
+        name = f"{source['rig']} / {source['channel']}"
         self._refuse_while_busy()
         answer: dict[str, Any]
         path: Path | None = None
         async with self._lock:
-            self.busy = "preset load"
+            self.busy = "channel load"
             try:
                 run = await self._rigfile_run()
                 refusal = save_refusal(run["state"], run["described"])
@@ -6838,7 +6745,7 @@ class Agent:
                 path = run["running"]
                 try:
                     planned = await self._rigfile_thread(
-                        request, path, lambda: self._plan_load(path, name, channel, drop_midi, run))
+                        request, path, lambda: self._plan_load(path, source, channel, drop_midi, run))
                     async with self._live_lock:
                         refusal = load_refusal(run["state"], self.log)
                         if refusal is not None and not discard:
@@ -6854,24 +6761,25 @@ class Agent:
                     raise error
                 shown = self._save_shown(path)
                 answer = {
-                    "ok": True, "rig": path.stem, "file": shown, "preset": name, "channel": channel,
+                    "ok": True, "rig": path.stem, "file": shown, "from": planned["from"], "channel": channel,
                     "written": True, "discarded": dropped_work,
                     "names": planned["names"], "followed": planned["followed"], "dropped": planned["dropped"],
                     "amp": planned["amp"], "width": planned["width"], "kept_before": kept,
                     **({"provenance_note": "; ".join(planned["provenance_problems"])}
                        if planned.get("provenance_problems") else {}),
                 }
-                said = {"id": f"preset:{name}", "what": f"with channel preset {name} loaded onto {channel}"}
+                said = {"id": f"load:{name}", "what": f"with {name} loaded onto {channel}"}
 
                 def mark(entry: dict[str, Any]) -> None:
-                    entry["args"]["preset"] = {"name": name, "channel": channel}
+                    entry["args"]["load"] = {"rig": source["rig"], "channel": source["channel"], "onto": channel}
 
-                answer.update(await self._preset_switch(request, path.stem, said, mark, discarded,
-                                                        ["load", f"{name} onto {path.stem}'s {channel}"]))
+                answer.update(await self._revert_switch(request, path.stem, said, mark=mark,
+                                                        done="written", discarded=discarded,
+                                                        command=["load", f"{name} onto {path.stem}'s {channel}"]))
                 if discarded:
                     answer["discard"] = discard_said(discarded, answer)
                 if not answer.get("ok"):
-                    # The file is the preset's and the rig may not be: the
+                    # The file is the load's and the rig may not be: the
                     # pedals are served from the compiled config the state
                     # file names, which is what is running, never the file.
                     answer["midi_note"] = (
@@ -6887,15 +6795,39 @@ class Agent:
             return web.json_response(answer)
         return web.json_response(answer, status=504 if answer.get("abandoned") else 409)
 
-    def _plan_load(self, path: Path, name: str, channel: str, drop_midi: bool, run: dict[str, Any]) -> dict[str, Any]:
-        """What loading preset `name` onto `channel` writes, decided and
-        compiled before anything is written, or the refusal (`RigFileRefused`).
-        Off the loop."""
+    def _read_source(self, rig: str, channel: str) -> tuple[Any, Path]:
+        """Channel `channel` of rig `rig` of config/rigs/, as its file is now
+        (`channelcopy.source_of`), and that file; or the refusal,
+        `no_source`. The rig is looked up among config/rigs/' names, never
+        made a path as given."""
         import yaml
 
-        from . import presets
+        from . import channelcopy
 
-        preset = self._read_preset(name)
+        root = self._midi_root()
+        if rig not in midi_listener.program_order(root):
+            raise RigFileRefused(f"there is no rig called {rig!r} in config/rigs/", "no_source")
+        path = root / "config" / "rigs" / f"{rig}.yaml"
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            return channelcopy.source_of(raw, rig, channel), path
+        except LookupError as exc:
+            raise RigFileRefused(str(exc), "no_source") from exc
+        except Exception as exc:  # noqa: BLE001 -- a source that will not read is said
+            raise RigFileRefused(f"{path.name} could not be read: {type(exc).__name__}: {exc}", "no_source") from exc
+
+    def _plan_load(self, path: Path, source_ref: dict[str, str], channel: str, drop_midi: bool,
+                   run: dict[str, Any]) -> dict[str, Any]:
+        """What loading `source_ref` onto `channel` writes, decided and
+        compiled before anything is written, or the refusal
+        (`RigFileRefused`). Off the loop."""
+        import yaml
+
+        from . import channelcopy
+        from .save import file_git_state
+
+        source, source_path = self._read_source(source_ref["rig"], source_ref["channel"])
+        name = source.name
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise RigFileRefused(f"{path.name} is not a rig file", "rig_problem")
@@ -6906,14 +6838,14 @@ class Agent:
             raise RigFileRefused(f"{path.stem} has no channel called {channel} (it has: "
                                  f"{', '.join(map(str, names)) or 'none'})", "no_channel")
         old = channels[index]
-        entry = presets.loaded_channel(old, preset)
-        bad = presets.name_problems(channel, preset)
+        entry = channelcopy.loaded_channel(old, source)
+        bad = channelcopy.name_problems(channel, source)
         if bad:
             raise RigFileRefused(f"nothing was written: {'; '.join(bad)}", "name")
         edited = copy.deepcopy(raw)
         edited["channels"][index] = entry
-        midi, followed, orphaned = presets.midi_after_load(raw.get("midi"), channel, old.get("chain") or [],
-                                                           entry["chain"])
+        midi, followed, orphaned = channelcopy.midi_after_load(raw.get("midi"), channel, old.get("chain") or [],
+                                                               entry["chain"])
         dropped: list[dict[str, Any]] = []
         if "midi" in raw:
             edited["midi"] = midi
@@ -6922,23 +6854,26 @@ class Agent:
                 count = f"{len(orphaned)} MIDI mapping{'s' if len(orphaned) != 1 else ''}"
                 raise RigFileRefused(
                     f"nothing was written: loading {name} onto {channel} would leave {count} of {path.stem}'s MIDI "
-                    f"map pointing at nothing: {'; '.join(presets.mapping_said(o) for o in orphaned)}. Load it "
+                    f"map pointing at nothing: {'; '.join(channelcopy.mapping_said(o) for o in orphaned)}. Load it "
                     'dropping them ({"drop_midi": true}), or edit the midi: section by hand first',
                     "midi", {"mappings": orphaned})
-            edited["midi"] = presets.drop_orphaned(midi, orphaned)
+            edited["midi"] = channelcopy.drop_orphaned(midi, orphaned)
             dropped = orphaned
         compiled = self._rigfile_compile(edited, run)
-        self._rigfile_plugins(compiled, path.stem, run, f"given preset {name} on {channel}", "load it again")
+        self._rigfile_plugins(compiled, path.stem, run, f"given {name} on {channel}", "load it again")
         rig_amp = running_amp(run["state"], raw)
         width = None
-        if preset.width != old.get("width"):
-            width = (f"{name} was saved from a {preset.width} channel; {channel} stays {old.get('width')}, "
-                     f"as its input ({old.get('input')}) is: a channel's width is its input's, and the chain is "
-                     "stereo either way")
+        if source.width != old.get("width"):
+            width = (f"{name} is {source.width}; {channel} stays {old.get('width')}, as its input "
+                     f"({old.get('input')}) is")
+        state = file_git_state(self._midi_root(), source_path) or {}
         return {
-            "raw": edited, "preset": preset, "names": {e["name"]: n["name"] for e, n in zip(preset.chain, entry["chain"])},
+            "raw": edited, "source": source,
+            "names": {e["name"]: n["name"] for e, n in zip(source.chain, entry["chain"])},
             "followed": followed, "dropped": dropped, "width": width,
-            "amp": presets.amp_note(preset, channel, str(old.get("input")), rig_amp),
+            "amp": channelcopy.amp_note(source, channel, str(old.get("input")), rig_amp),
+            "from": {"rig": source.rig, "channel": source.channel, "file": self._save_shown(source_path),
+                     "plugins": len(source.chain), "git": state.get("file")},
             "name": name, "channel": channel,
         }
 
@@ -6955,15 +6890,16 @@ class Agent:
         before = path.read_bytes()
         kept, _ = saves.snapshots(root, rig)
         kept_as = saves.kept_as(before, kept, lambda sid: saves.snapshot_bytes(root, rig, sid))
+        source = planned["source"]
         try:
             planned["provenance_problems"] = rigfile.write_rig(
                 path, planned["raw"], replace_chains=(planned["channel"],),
-                provenance={planned["channel"]: self._provenance(planned["name"])})
+                provenance={planned["channel"]: self._provenance(source.rig, source.channel)})
         except rigfile.RigFileError as exc:
             raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
         if kept_as is not None:
             return {"id": kept_as, "how": "kept by that save already"}
-        how = f"before loading channel preset {planned['name']} onto {planned['channel']}"
+        how = f"before loading {planned['name']} onto {planned['channel']}"
         try:
             meta = saves.keep(root, rig, before, {"file": self._save_shown(path), "how": how})
         except Exception as exc:  # noqa: BLE001 -- the load is written; said, as a save's lost snapshot is
@@ -6973,129 +6909,14 @@ class Agent:
             return {"kept": False, "how": how, "why": why}
         return {"id": meta["id"], "at": meta["at"], "how": meta["how"]}
 
-    def _preset_copy(self, change: dict[str, Any], name: str, rig_amp: str | None,
-                     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """`_rigfile_copy`'s answer for a channel that starts from preset
-        `name`, for Add channel and New rig (#125's machinery): the preset's
-        chain named for `change["name"]`, its level, its width where the
-        request gave none, and what to say of it."""
-        from . import presets
-        from .save import SaveError, file_git_state
-
-        try:
-            preset = self._read_preset(name)
-        except SaveError as exc:
-            raise RigFileRefused(str(exc), "no_preset") from exc
-        if change.get("width") is None:
-            change["width"] = preset.width
-        bad = presets.name_problems(change["name"], preset)
-        if bad:
-            raise RigFileRefused(f"nothing was written: {'; '.join(bad)}", "name")
-        copied: dict[str, Any] = {"chain": presets.loaded_chain(preset, change["name"])}
-        if preset.level:
-            copied["level"] = preset.level
-        path = presets.preset_path(self._midi_root(), name)
-        state = file_git_state(self._midi_root(), path) or {}
-        return copied, {"preset": name, "file": self._save_shown(path), "plugins": len(preset.chain),
-                        "width": preset.width, "git": state.get("file"),
-                        "amp": presets.amp_note(preset, change["name"], change["input"], rig_amp)}
-
-    def _provenance(self, name: str) -> str:
-        """The provenance comment a copy of preset `name` leaves above the
-        channel's chain in the rig file (#127, `rigfile.provenance_line`)."""
-        from . import presets
-
-        return rigfile.provenance_line(name, (presets.PRESETS_DIR / f"{name}.yaml").as_posix(),
+    def _provenance(self, rig: str, channel: str) -> str:
+        """The provenance comment a load leaves above the channel's chain in
+        the rig file (`rigfile.provenance_line`)."""
+        return rigfile.provenance_line(rig, channel, f"config/rigs/{rig}.yaml",
                                        datetime.now(timezone.utc).date().isoformat())
 
-    def _read_preset(self, name: str) -> Any:
-        """Preset `name` of config/channels/, checked by the compiler, or the
-        refusal: `no_preset`, `preset_problem`."""
-        from . import presets
-
-        path = presets.preset_path(self._midi_root(), name)
-        if not path.is_file() or path.is_symlink():
-            listed = presets.preset_names(self._midi_root())
-            raise RigFileRefused(f"there is no channel preset called {name} in {presets.PRESETS_DIR.as_posix()}/ "
-                                 f"(there are: {', '.join(listed) or 'none'})", "no_preset")
-        try:
-            preset = presets.load_preset(path)
-        except (OSError, UnicodeDecodeError, presets.PresetError) as exc:
-            problems = exc.problems if isinstance(exc, presets.PresetError) else [f"{type(exc).__name__}: {exc}"]
-            raise RigFileRefused(f"nothing was written: {self._save_shown(path)} cannot be loaded: "
-                                 + "; ".join(problems), "preset_problem") from exc
-        problems = presets.check_preset(preset)
-        if problems:
-            raise RigFileRefused(f"nothing was written: {self._save_shown(path)} would not compile: "
-                                 + "; ".join(problems), "preset_problem")
-        return preset
-
-    async def _preset_switch(self, request, rig: str, said: dict[str, Any], mark,
-                             discarded: list[dict[str, Any]], command: list[str]) -> dict[str, Any]:
-        """The running rig into its file with a preset loaded, by the live
-        switch, as a revert's (`_revert_switch`, in a load's words, and
-        remembered in /health as the load it is)."""
-        return await self._revert_switch(request, rig, said, mark=mark, done="written with the preset loaded",
-                                         discarded=discarded, command=command)
-
-    def _write_preset(self, path: Path, name: str, replace: bool, source: Path, channel: str,
-                      captured: Any, edits: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-        """The preset's file from a capture: the fold, its channel, the file
-        written (`save_preset_route`). Off the loop."""
-        import yaml
-
-        from . import presets
-        from .patchbay import GUITAR_ROLE
-
-        raw = yaml.safe_load(source.read_text(encoding="utf-8"))
-        captured = copy.deepcopy(captured) if isinstance(captured, dict) else {}
-        for values in (captured.get("processors") or {}).values():
-            if isinstance(values, dict):
-                values.pop("properties", None)  # as save_rig: captured properties are not written
-        try:
-            folded = rigfile.fold_state(raw, captured, edits)
-        except rigfile.RigFileError as exc:
-            raise RigFileRefused("nothing was saved: " + "; ".join(exc.problems), "not_saved") from exc
-        entry = next((c for c in folded.get("channels") or [] if isinstance(c, dict) and c.get("name") == channel),
-                     None)
-        if entry is None:
-            names = [c.get("name") for c in folded.get("channels") or [] if isinstance(c, dict)]
-            raise RigFileRefused(f"{source.stem} has no channel called {channel} (it has: "
-                                 f"{', '.join(map(str, names)) or 'none'})", "no_channel")
-        # The amp is in front of every channel on guitar-in while it runs
-        # (`amp.amp_patchbay`): said in the preset, which never carries it.
-        amp = running_amp(state, folded) if entry.get("input") == GUITAR_ROLE else None
-        exists = path.exists()
-        if exists and not replace:
-            raise RigFileRefused(
-                f"a channel preset called {name} already exists ({self._save_shown(path)}): choose another "
-                'name, or replace it ({"replace": true}), which updates that file in place', "taken")
-        description = None
-        if exists:
-            try:
-                description = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("description")
-            except Exception:  # noqa: BLE001 -- a file that will not read is refused by the write below
-                description = None
-        doc = presets.from_channel(entry, name, heard_through_amp=amp, saved_from={"rig": source.stem, "channel": channel},
-                                   description=description if isinstance(description, str) else None)
-        try:
-            preset = presets.parse_preset(doc)
-            problems = presets.check_preset(preset)
-        except presets.PresetError as exc:
-            problems = exc.problems
-        if problems:
-            raise RigFileRefused(f"nothing was saved: {channel}'s chain would not load as a preset: "
-                                 + "; ".join(problems), "preset_problem")
-        when = datetime.now(timezone.utc).date().isoformat()
-        try:
-            presets.write_preset(path, doc, header_text=presets.header(name, when, f"{source.stem}'s {channel}"))
-        except presets.PresetError as exc:
-            raise RigFileRefused("nothing was saved: " + "; ".join(exc.problems), "preset_problem") from exc
-        listed = next((p for p in presets.listing(self._midi_root()) if p["name"] == name), None)
-        return {"how": "updated" if exists else "new", "listed": listed}
-
     # ======================================================================= #
-    # (end of channel presets)
+    # (end of a channel from another rig)
     # ======================================================================= #
 
     # ======================================================================= #
@@ -7916,52 +7737,31 @@ def discard_said(discarded: list[dict[str, Any]], answer: dict[str, Any]) -> dic
                         + (" (a plugin added, removed or moved cannot be put back live)" if structural else "")))}
 
 
-def preset_save_request(body: Any) -> tuple[str, bool]:
-    """`(name, replace)` from Save channel as…'s body, or `AgentError`
-    (400): `name`, checked as `save.validate_name` checks it, since it
-    becomes `config/channels/<name>.yaml`; `replace`, true or absent. A key
-    beside them is refused, as a save's is."""
-    from .save import SaveError, validate_name
-
-    if not isinstance(body, dict) or not set(body) <= {"name", "replace"}:
-        raise AgentError(f'the body of a channel save is {{"name": "<preset>"}}, with "replace": true to '
-                         f"update a preset of that name, not {body!r}")
-    try:
-        name = validate_name(body.get("name"))
-    except SaveError as exc:
-        raise AgentError(str(exc)) from exc
-    replace = body.get("replace", False)
-    if not isinstance(replace, bool):
-        raise AgentError(f"'replace' must be true or false, not {replace!r}")
-    return name, replace
-
-
-def preset_load_request(body: Any) -> tuple[str, bool, bool]:
-    """`(preset, discard, drop_midi)` from a load's body, or `AgentError`
-    (400): `preset`, a name as `save.validate_name` checks it (looked up in
-    config/channels/ by the route, never made a path as given); `discard`
-    and `drop_midi`, true or absent. Anything beside them is refused."""
-    from .save import SaveError, validate_name
-
-    keys = {"preset", "discard", "drop_midi"}
+def channel_load_request(body: Any) -> tuple[dict[str, str], bool, bool]:
+    """`(source, discard, drop_midi)` from a load's body, or `AgentError`
+    (400): `from`, `{"rig", "channel"}`, each text (the rig is looked up in
+    config/rigs/ by the route, never made a path as given); `discard` and
+    `drop_midi`, true or absent. Anything beside them is refused."""
+    keys = {"from", "discard", "drop_midi"}
+    shape = ('the body of a load is {"from": {"rig": "<rig>", "channel": "<channel>"}}, with "discard": true to '
+             'drop unsaved work and "drop_midi": true to drop MIDI mappings it would orphan')
     if not isinstance(body, dict) or not set(body) <= keys:
-        raise AgentError(f'the body of a load is {{"preset": "<name>"}}, with "discard": true to drop unsaved '
-                         f'work and "drop_midi": true to drop MIDI mappings it would orphan, not {body!r}')
-    try:
-        name = validate_name(body.get("preset"))
-    except SaveError as exc:
-        raise AgentError(str(exc)) from exc
+        raise AgentError(f"{shape}, not {body!r}")
+    source = body.get("from")
+    if not isinstance(source, dict) or set(source) != {"rig", "channel"} or not all(
+            isinstance(source[k], str) and source[k].strip() for k in ("rig", "channel")):
+        raise AgentError(f"{shape}, not {body!r}")
     flags = []
     for key in ("discard", "drop_midi"):
         value = body.get(key, False)
         if not isinstance(value, bool):
             raise AgentError(f"{key!r} must be true or false, not {value!r}")
         flags.append(value)
-    return name, flags[0], flags[1]
+    return {"rig": source["rig"], "channel": source["channel"]}, flags[0], flags[1]
 
 
 def load_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[str, str] | None:
-    """`(reason, "unsaved")` when loading a preset onto the running rig must
+    """`(reason, "unsaved")` when loading a channel onto the running rig must
     wait, or None. Pure. A revert's rule (`revert_refusal`, panel aside,
     which the route has refused already): the load writes the rig file and
     plays it, so live work no save has written would be lost by it."""
@@ -7972,7 +7772,7 @@ def load_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[str,
     newest = unsaved[-1]
     count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
     return (f"{name} is running with {count} made through the agent and not saved (the newest: "
-            f"{describe_change(newest)}, at {newest.get('at')}), and loading a preset writes the rig file and "
+            f"{describe_change(newest)}, at {newest.get('at')}), and loading a channel writes the rig file and "
             'plays it: Save first, or load with discard ({"discard": true}) to drop them', "unsaved")
 
 

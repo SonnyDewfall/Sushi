@@ -11,8 +11,6 @@ then.
 ├── config/
 │   ├── rigs/                     the rigs: one file each, channels and a master.
 │   │                             What the web UI starts, switches and saves into
-│   ├── channels/                 channel presets (#127): one channel's chain and
-│   │                             level each, no input; written by Save channel as…
 │   ├── *.json                    the v1 configs, one tone each (`sushi-rig up <name>`
 │   │                             without --rig; electric_board.json is its default)
 │   ├── src/                      hand-authored v1 sources (electric_board,

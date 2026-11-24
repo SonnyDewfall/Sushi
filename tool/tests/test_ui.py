@@ -3211,7 +3211,7 @@ def test_what_a_rig_file_answer_says_and_the_gesture_it_offers(blank):
     """)
     made, start, added, changed, refused = said
     assert made["title"] == "Made two" and made["offer"] == {"op": "switch", "name": "two", "label": "Switch to two"}
-    assert made["text"] == "Wrote config/rigs/two.yaml, a new rig with 2 channels. Chains copied: a from x · board."
+    assert made["text"] == "Wrote config/rigs/two.yaml, a new rig with 2 channels. Chains copied: a from x / board."
     assert made["commit"].startswith("Not committed: a new file git does not track yet, on commit abcdef1")
     assert start == {"op": "start", "name": "two", "label": "Start two"}
     assert added["text"] == ("Wrote config/rigs/board.yaml in place, keeping its comments. board keeps playing as "
@@ -3324,7 +3324,7 @@ def test_the_agents_refusals_of_a_new_rig_are_shown_in_place(browser, files_serv
     p.get_by_label("Rig name").fill("copies")
     p.get_by_role("button", name="Add channel").click()
     for n in (1, 2):
-        p.get_by_label(f"Channel {n} starts from").select_option(label="electric_board · board (3 plugins)")
+        p.get_by_label(f"Channel {n} starts from").select_option(label="electric_board / board")
     p.get_by_role("button", name="Create copies").click()
     expect(refused).to_contain_text("Not made: copies")
     expect(refused).to_contain_text("duplicate name 'overdrive'")

@@ -615,13 +615,12 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
 .strip.open { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .strip .wiring-row { padding: 0; border: none; gap: 6px; }
 .strip .wiring-row .s { font-size: 11px; }
-/* A strip's Preset… panel (#127): Save channel as, and Load onto it. */
-.preset-panel { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--accent); min-width: 0; }
-.preset-panel form, .preset-panel .preset-load { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.preset-panel .selector { min-width: 0; max-width: 100%; }
-.preset-panel .selector select { width: 100%; min-width: 0; }
-.preset-panel .preset-notes { margin: 4px 0 0 16px; font-size: 12px; }
-.preset-panel .save-result { overflow-wrap: anywhere; }
+/* A strip's Load… panel (#208): a channel of another rig onto this one. */
+.load-panel { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--accent); min-width: 0; }
+.load-panel .selector { flex: none; min-width: 0; max-width: 100%; }
+.load-panel .selector select { width: 100%; min-width: 0; }
+.load-panel .load-notes { margin: 4px 0 0 16px; font-size: 12px; }
+.load-panel .save-result { overflow-wrap: anywhere; }
 .strip .wiring-row .rig-act.small { min-height: 36px; padding: 0 10px; font-size: 12px; opacity: .8; }
 .strip .wiring-row.editing { padding: 8px; border: 1px solid var(--accent); }
 .strip-input { font-size: 11px !important; }
@@ -766,7 +765,7 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
 /* ---------------------------------------------------------------- pedals (#192)
    A device control assigned from the rack: a badge beside an effect's on/off
    and by a channel's name, a thumb high, dashed while nothing is on it; its
-   panel a row of its own under the row it belongs to, as a strip's Preset…
+   panel a row of its own under the row it belongs to, as a strip's Load…
    panel is; and the Pedals section under the strips, each control with its
    light. */
 .pedal-slot { display: contents; }

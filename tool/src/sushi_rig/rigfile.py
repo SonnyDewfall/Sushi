@@ -295,18 +295,24 @@ _HEADER = (
 )
 
 
-# The comment a channel preset's copy leaves above a channel's chain (#127):
-# its first line starts so, and any more are its continuation ("#   ...").
-# Replaced by the next load, never stacked.
-PROVENANCE = "# From channel preset "
+# The comment a load leaves above a channel's chain (#208): its first line
+# starts so, and any more are its continuation ("#   ..."). Replaced by the
+# next load, never stacked. A channel preset's line (#127, before #208) is
+# recognised too, so a load replaces that as well.
+PROVENANCE = "# Chain copied from "
+_PROVENANCE_OLD = ("# From channel preset ",)
 _PROVENANCE_MORE = "#   "
 
 
-def provenance_line(preset: str, file: str, when: str) -> str:
+def _is_provenance(row: str) -> bool:
+    row = row.lstrip()
+    return row.startswith(PROVENANCE) or row.startswith(_PROVENANCE_OLD)
+
+
+def provenance_line(rig: str, channel: str, file: str, when: str) -> str:
     """What the provenance comment says, for a channel whose chain and level
-    were copied from channel preset `preset` (in `file`) on `when`."""
-    return (f"{PROVENANCE[2:]}{preset} ({file}), {when}: its chain and level were copied, so editing the "
-            "preset later changes nothing here.")
+    were copied from channel `channel` of rig `rig` (in `file`) on `when`."""
+    return f"{PROVENANCE[2:]}{rig} / {channel} ({file}), {when}. Editing that rig later changes nothing here."
 
 
 def _comment_lines(said: str, column: int) -> list[str]:
@@ -350,7 +356,7 @@ def comments_above_chain(text: str, channel: str) -> list[str]:
         i -= 1
     kept, skipping = [], False
     for row in above:
-        if row.lstrip().startswith(PROVENANCE):
+        if _is_provenance(row):
             skipping = True
             continue
         if skipping and row.lstrip().startswith(_PROVENANCE_MORE):
@@ -417,7 +423,7 @@ def with_provenance(text: str, lines: dict[str, str]) -> tuple[str, list[str]]:
             rows = text.splitlines(keepends=True)
             gone: set[int] = set()
             for i in range(start, line):
-                if rows[i].lstrip().startswith(PROVENANCE):
+                if _is_provenance(rows[i]):
                     gone.add(i)
                     j = i + 1
                     while j < line and rows[j].lstrip().startswith(_PROVENANCE_MORE):
@@ -461,7 +467,7 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str |
     not at all, with its permissions.
 
     `replace_chains` names channels whose chain `rig` replaces whole (a
-    channel preset loaded onto it, #127): their old chain is taken out
+    channel of another rig loaded onto it, #208): their old chain is taken out
     first, with the comments inside it (those written directly above its
     `chain:` key are the channel's, and are put back where they were:
     `comments_above_chain`), and the new one written as a new key, so its
@@ -470,8 +476,8 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str |
     folded into their layout. Every other line of the file is kept as an
     update keeps it.
 
-    `provenance` is `{channel: comment}`: the line naming the channel preset
-    a channel's chain was copied from (#127, `with_provenance`), put above
+    `provenance` is `{channel: comment}`: the line naming the rig's channel
+    a channel's chain was copied from (#208, `with_provenance`), put above
     its `chain:`. What could not be put there is returned, as problems to
     say; the rig is written either way."""
     import os

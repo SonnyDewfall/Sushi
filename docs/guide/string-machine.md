@@ -85,9 +85,10 @@ The two channels' plugins have the same names but for `octave_` in front, and
 each has its own knobs: turn both to keep the two halves alike, or set them
 apart on purpose (a longer hall on the octave, say).
 
-Each channel is also a preset, **string-ensemble** and **string-octave**, to
-put on any rig ([Channel presets](channel-presets.md)). The octave preset is
-meant beside a channel of the plain guitar on the same input.
+Either channel can be put on any rig, as `string-machine / strings` and
+`string-machine / octave` ([Use a channel from another
+rig](channel-from-another-rig.md)). The octave is meant beside a channel of
+the plain guitar on the same input.
 
 ## synth-lead
 
@@ -127,4 +128,4 @@ is the pick's: the renders put it under 10 ms behind the guitar.
   the echoes are and **Repeats** how many come back (see
   [the tape echo](effects.md)).
 
-The channel is also the preset **synth-lead**.
+The channel can be put on any rig, as `synth-lead / lead`.
