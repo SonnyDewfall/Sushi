@@ -1064,9 +1064,11 @@ async function undo(skip = false) {
 // which then is the running rig. The agent writes the file and does not
 // commit it; what it wrote, the commit it sits on, or why it refused, is
 // shown under the buttons. Allowed locked: a save changes neither the sound
-// nor the rig's structure.
+// nor the rig's structure. Its answer (`R.saveOutcome`), or null when a save
+// was already under way and this one did not run, for a caller that goes on
+// only once its own save has been written (Save, then assign).
 async function save(name = null) {
-  if (state.saving) return;
+  if (state.saving) return null;
   state.saving = { name };
   render();
   const call = R.saveCall(name);
@@ -1076,7 +1078,8 @@ async function save(name = null) {
   } finally {
     state.saving = null;
   }
-  state.saveResult = R.saveOutcome(name, answer);
+  const outcome = R.saveOutcome(name, answer);
+  state.saveResult = outcome;
   state.saveRestartConfirm = false;
   if (answer.ok && name) { state.saveAsOpen = false; state.saveAsName = ""; }
   render();
@@ -1086,6 +1089,7 @@ async function save(name = null) {
   // A save-as adds a rig to config/rigs/, which the picker lists.
   if (name) refreshRigs(true).then(render);
   if (state.revert.open) refreshSaves();
+  return outcome;
 }
 
 // RECORD and STOP (S7). Each is one tap, locked or not: recording is a
@@ -3487,7 +3491,7 @@ function pedalSlots(badgeEl, panelEl, t) {
   if (button) button.classList.toggle("lit", on.some((c) => (pu.lights[c] || {}).until > Date.now()));
   const focus = focusedName(panelEl);
   const rebuilt = patch(panelEl, JSON.stringify(open ? [board, t.rows, t.params, pu.confirm && pu.confirm.key === t.key ? [pu.confirm.what, pu.confirm.row, pu.confirm.value] : null,
-    pu.pending, pu.refused && pu.refused.key === t.key ? pu.refused.reason : null, state.locked] : null),
+    pu.pending, pu.refused && pu.refused.key === t.key ? pu.refused.reason : null, state.locked, !!state.saving] : null),
   () => (open ? pedalPanel(board, t) : null));
   if (rebuilt) refocus(panelEl, focus);
 }
@@ -3544,7 +3548,7 @@ function pedalPanel(board, t) {
     busy ? h("p", { class: "sub", role: "status" }, "Assigning…") : null,
     locked ? h("p", { class: "sub lock-says" }, lockIcon(), locked) : null,
     refused ? h("p", { class: "row-said refused", role: "alert" }, refused) : null,
-    refused && pu.refused.saveThen ? h("button", { class: "rig-act primary small save-then", disabled: busy || !!locked,
+    refused && pu.refused.saveThen ? h("button", { class: "rig-act primary small save-then", disabled: busy || !!locked || !!state.saving,
       onclick: () => saveThenAssign(t, pu.refused.saveThen) }, "Save, then assign") : null);
 }
 
@@ -3624,9 +3628,10 @@ async function sendPedal(t, choice) {
 // The unsaved refusal's one step (#210): Save, then the same assignment
 // again, whose answer offers the restart that plays it.
 async function saveThenAssign(t, choice) {
+  if (state.saving) return; // the button is off meanwhile; a click that lands anyway waits for none
   state.pedalUi.refused = null;
-  await save();
-  if (state.saveResult && state.saveResult.ok) await sendPedal(t, choice);
+  const saved = await save();
+  if (saved && saved.ok) await sendPedal(t, choice);
   else render();
 }
 

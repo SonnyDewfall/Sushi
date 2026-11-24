@@ -87,7 +87,7 @@ class FakeWorld:
         return Plan(rig=described.get("config_name"), controller="mpd218", port=PORT_NAME,
                     bindings=parse_bindings(self.raw))
 
-    def open_port(self, name):
+    def open_port(self, name, link=None):
         self.opened.append(name)
         if self.refuse:
             raise self.refuse
@@ -921,7 +921,7 @@ class PedalboardWorld(FakeWorld):
         return midi_listener.Plan(described.get("config_name"),
                                   feeds=feeds + (Feed("fbv", FBV_PORT, fbv, self.fbv_required),))
 
-    def open_port(self, name):
+    def open_port(self, name, link=None):
         if name == self.refuse_port:
             self.opened.append(name)
             raise PortError(f"cannot subscribe to {name!r}: Operation not permitted")

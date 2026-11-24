@@ -195,12 +195,13 @@ it does on this rig: for example **C** board/drive on/off, **D** vocal on/off,
 **pedal** lead volume, with A and B as previous and next rig. Above the list is
 the board's state:
 
-- **listening**: the board is plugged in and the agent is reading it, and has
-  linked it to Sushi, which is what the pedal's volumes and sweeps need;
-- **listening, not linked**: the agent hears the board but Sushi does not, so
-  footswitches work and the pedal's volume or sweep does not. Normal for a
-  moment while a rig comes up; if it stays, hold the pointer on the line to
-  see why;
+- **listening**: the board is plugged in and the agent is reading it, and, on
+  a rig where the pedal has a volume or a sweep, has linked it to Sushi,
+  which is what those need;
+- **listening, not linked**: the pedal has a volume or sweep on this rig, and
+  the agent hears the board but Sushi does not, so footswitches work and the
+  pedal's volume or sweep does not. Normal for a moment while a rig comes up;
+  if it stays, hold the pointer on the line to see why;
 - **not connected**: it is not plugged in, and this rig does not need it;
 - **waiting**: this rig has pedals assigned and the board is not plugged in.
   Plug it in and it is picked up at once.

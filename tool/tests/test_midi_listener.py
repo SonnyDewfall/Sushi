@@ -895,6 +895,9 @@ class FakeAlsa:
         def __init__(self, sender, dest):
             self.connect_sender, self.connect_dest = sender, dest
 
+    class PortSubscribedEvent(PortUnsubscribedEvent):
+        pass
+
     WRITE_PORT = 1
     SYSTEM_ANNOUNCE = (0, 1)
 
@@ -916,6 +919,7 @@ class FakeAlsa:
         # holds them: `aconnect` by hand, or the agent's subscribe_port.
         self.links: list = []
         self.subscribe_calls: list = []
+        self.unsubscribe_calls: list = []
         self.subscribe_error = None
         self.events: queue.Queue = queue.Queue()
         self.subscribed = []
@@ -942,6 +946,10 @@ class FakeAlsa:
                 if alsa.subscribe_error is not None:
                     raise alsa.subscribe_error
                 alsa.links.append((tuple(sender), tuple(dest)))
+
+            def unsubscribe_port(self, sender, dest):
+                alsa.unsubscribe_calls.append((tuple(sender), tuple(dest)))
+                alsa.links.remove((tuple(sender), tuple(dest)))
 
             def create_port(self, name, caps, type):
                 return Port()
@@ -1114,6 +1122,7 @@ def fake_alsa(monkeypatch, pedal=True, sushi=True):
     alsa.ALSAError = type("ALSAError", (Exception,), {"__init__": lambda self, message, errnum: (
         Exception.__init__(self, message), setattr(self, "errnum", errnum))[0]})
     monkeypatch.setitem(sys.modules, "alsa_midi", alsa)
+    monkeypatch.setattr(ml, "_MADE", set())  # the links this process made: none, for each test
     if pedal:
         alsa.ports.append(FBV_ALSA)
     alsa.inputs.append(("sushi-rig agent", "pedals in", 130, 0))
@@ -1143,10 +1152,16 @@ def test_the_pedal_is_linked_to_sushi_by_name_as_the_port_opens(monkeypatch):
     assert alsa.subscribed[-1] == (20, 0), "and the agent still reads the pedal itself"
 
 
-def test_a_port_not_asked_to_link_links_nothing(monkeypatch):
+def test_a_port_not_asked_to_link_links_nothing_and_says_what_alsa_has(monkeypatch):
     alsa = fake_alsa(monkeypatch)
     port = ml.AlsaPort(FBV_NAME)
-    assert alsa.subscribe_calls == [] and port.linked is None and port.link_reason is None
+    assert alsa.subscribe_calls == [] and port.linked is False and port.link_reason == ml.NOT_ASKED
+    # A link by hand is said from ALSA's own list, whoever made it (#210's review).
+    alsa.links.append(((20, 0), (129, 0)))
+    alsa.events.put(FakeAlsa.PortSubscribedEvent((20, 0), (129, 0)))
+    port.read(0.01)
+    assert port.linked is True and "not by this agent" in port.link_reason, port.link_reason
+    assert alsa.unsubscribe_calls == [], "a link the agent did not make is never taken down"
 
 
 def test_a_link_made_by_hand_is_left_alone_and_not_made_twice(monkeypatch):
@@ -1156,6 +1171,9 @@ def test_a_link_made_by_hand_is_left_alone_and_not_made_twice(monkeypatch):
     assert alsa.subscribe_calls == [], "not subscribed a second time"
     assert alsa.links == [((20, 0), (129, 0))]
     assert port.linked is True and "linked already" in port.link_reason
+    # Asked for no link now (a re-plan), it is still not the agent's to take down.
+    again = ml.AlsaPort(FBV_NAME)
+    assert alsa.unsubscribe_calls == [] and again.linked is True
 
 
 def test_a_link_alsa_says_is_already_there_is_linked(monkeypatch):
@@ -1194,7 +1212,7 @@ def test_a_sushi_that_starts_after_the_pedal_is_linked_when_it_appears(monkeypat
     alsa.links.clear()
     alsa.events.put(FakeAlsa.ClientExitEvent(129))
     port.read(0.01)
-    assert port.linked is False and "went away" in port.link_reason
+    assert port.linked is False and "no ALSA MIDI input called 'Sushi'" in port.link_reason
     alsa.inputs.append(("Sushi", "listen:in", 131, 0))
     alsa.events.put(FakeAlsa.ClientStartEvent())
     port.read(0.01)
@@ -1228,6 +1246,92 @@ def test_a_link_taken_down_by_hand_is_not_made_again_by_this_listener(monkeypatc
     assert port.linked is False and len(alsa.subscribe_calls) == 1
 
 
+def test_a_link_taken_down_by_hand_is_seen_without_its_announcement(monkeypatch):
+    """The subscriber list says it, whatever ALSA announces: the next look
+    finds the link gone with Sushi still there, and leaves it down."""
+    alsa = fake_alsa(monkeypatch)
+    port = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    alsa.links.clear()
+    alsa.events.put(FakeAlsa.PortStartEvent())
+    port.read(0.01)
+    assert port.linked is False and "taken down" in port.link_reason
+    assert len(alsa.subscribe_calls) == 1
+
+
+@pytest.mark.parametrize("unsubscribed_first", [True, False])
+def test_a_link_taken_down_by_hand_is_made_again_for_the_next_sushi(monkeypatch, unsubscribed_first):
+    """#210's review (the reviewer's probe): the link taken down by hand,
+    then Sushi restarted under the listener. Whichever ALSA announces first,
+    the link going or Sushi's exit, the next Sushi is linked."""
+    alsa = fake_alsa(monkeypatch)
+    port = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    unsubscribed = FakeAlsa.PortUnsubscribedEvent((20, 0), (129, 0))
+    exits = [FakeAlsa.PortExitEvent(129, 0), FakeAlsa.ClientExitEvent(129)]
+    alsa.links.clear()  # aconnect -d, or Sushi's going
+    if unsubscribed_first:
+        # By hand, seen while Sushi still runs; then Sushi stops.
+        alsa.events.put(unsubscribed)
+        port.read(0.01)
+        assert port.linked is False and "taken down" in port.link_reason
+        alsa.inputs.remove(SUSHI_IN)
+        events = exits
+    else:
+        # Sushi stops, its exit announced before the unsubscription.
+        alsa.inputs.remove(SUSHI_IN)
+        events = exits + [unsubscribed]
+    for event in events:
+        alsa.events.put(event)
+    for _ in range(len(events)):
+        port.read(0.01)
+    alsa.inputs.append(("Sushi", "listen:in", 131, 0))
+    alsa.events.put(FakeAlsa.ClientStartEvent())
+    port.read(0.01)
+    assert port.linked is True and alsa.links == [((20, 0), (131, 0))], port.link_reason
+
+
+def test_a_link_taken_down_by_hand_as_sushi_goes_is_made_for_the_next(monkeypatch):
+    """The other order of the probe: the unsubscription announced while the
+    old Sushi is already gone from the list."""
+    alsa = fake_alsa(monkeypatch)
+    port = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    alsa.links.clear()
+    alsa.inputs.remove(SUSHI_IN)
+    for event in (FakeAlsa.PortUnsubscribedEvent((20, 0), (129, 0)), FakeAlsa.PortExitEvent(129, 0),
+                  FakeAlsa.ClientExitEvent(129)):
+        alsa.events.put(event)
+    for _ in range(3):
+        port.read(0.01)
+    alsa.inputs.append(("Sushi", "listen:in", 131, 0))
+    alsa.events.put(FakeAlsa.ClientStartEvent())
+    port.read(0.01)
+    assert port.linked is True, port.link_reason
+
+
+def test_a_replan_takes_down_only_the_agents_own_link(monkeypatch):
+    """#210's review: a pedal linked at the start and re-planned to no link
+    (its mappings assigned away, or a clash) is unlinked by the next port
+    opened for it, which knows the link as this process's; a link the
+    agent did not make is left, and said as linked."""
+    alsa = fake_alsa(monkeypatch)
+    first = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    first.close()
+    assert alsa.links == [((20, 0), (129, 0))], "the link outlives the port"
+    second = ml.AlsaPort(FBV_NAME)
+    assert alsa.unsubscribe_calls == [((20, 0), (129, 0))] and alsa.links == []
+    assert second.linked is False and "taken down" in second.link_reason, second.link_reason
+    # Linked by hand now: never taken down, and said.
+    alsa.links.append(((20, 0), (129, 0)))
+    third = ml.AlsaPort(FBV_NAME)
+    assert third.linked is True and alsa.links == [((20, 0), (129, 0))]
+    assert "not by this agent" in third.link_reason
+    # Moved to another of Sushi's inputs: the agent's link there, its own here taken down.
+    alsa.links.clear()
+    alsa.inputs.append(("Sushi", "listen:in 2", 129, 1))
+    ml.AlsaPort(FBV_NAME, sushi_port=0).close()
+    moved = ml.AlsaPort(FBV_NAME, sushi_port=1)
+    assert alsa.links == [((20, 0), (129, 1))] and moved.linked is True, moved.link_reason
+
+
 def test_the_listener_says_each_change_of_the_link():
     class LinkingPort(FakePort):
         def __init__(self):
@@ -1257,9 +1361,9 @@ def test_the_listener_says_each_change_of_the_link():
 
 
 def test_each_feed_is_planned_onto_sushis_input_its_mappings_use(tmp_path):
-    """The map's controller to its cc_mappings' port; another controller to
-    port 0, unless it sends a CC those mappings use there, when it is not
-    linked and says why (Sushi maps by CC, not by device)."""
+    """The map's controller to its cc_mappings' port, when it has any; no
+    other controller, and one that sends a CC those mappings use says so
+    (Sushi maps by CC, not by device)."""
     rig = RIG.replace("controller: mpd218", "controller: fbv").replace("  programs: rigs\n", "").replace(
         "{control: pad1, bypass: lead/drive}", "{control: pedal, parameter: lead/drive/Drive}")
     described = rig_files(tmp_path / "a", bindings_=False, machine=FBV_MACHINE, rig=rig)
@@ -1280,11 +1384,25 @@ def test_each_feed_is_planned_onto_sushis_input_its_mappings_use(tmp_path):
     config["midi"] = {"cc_mappings": [mapping]}
     Path(described["config"]).write_text(json.dumps(config))
     mpd, fbv = plan_for(described, tmp_path / "b").feeds
-    assert (mpd.controller, mpd.sushi_port, fbv.controller, fbv.sushi_port) == ("mpd218", 0, "fbv", 0)
+    assert (mpd.controller, mpd.sushi_port, fbv.controller, fbv.sushi_port) == ("mpd218", 0, "fbv", None)
+    assert "not written for it" in fbv.link_reason, fbv.link_reason
     config["midi"] = {"cc_mappings": [dict(mapping, cc_number=20)]}  # the FBV's A sends cc 20
     Path(described["config"]).write_text(json.dumps(config))
     mpd, fbv = plan_for(described, tmp_path / "b").feeds
     assert fbv.sushi_port is None and "its a sends cc 20" in fbv.link_reason, fbv.link_reason
+    # The map's own controller with nothing of Sushi's in its map: no link either.
+    config.pop("midi")
+    Path(described["config"]).write_text(json.dumps(config))
+    mpd, fbv = plan_for(described, tmp_path / "b").feeds
+    assert (mpd.sushi_port, fbv.sushi_port) == (None, None) and "play nothing of it" in mpd.link_reason
+
+
+def test_a_rig_with_no_map_links_no_pedal(tmp_path):
+    """#210's review: the FBV stepping rigs on a rig with no map has rig
+    steps alone, nothing of Sushi's: not linked."""
+    described = rig_files(tmp_path, bindings_=False, machine=FBV_MACHINE, rig=UNMAPPED_RIG)
+    (feed,) = plan_for(described, tmp_path).feeds
+    assert feed.controller == "fbv" and feed.sushi_port is None and feed.link_reason
 
 
 def test_a_map_of_sweeps_on_a_pedal_with_no_steps_is_a_feed_so_it_is_linked(tmp_path):

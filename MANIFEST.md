@@ -6925,12 +6925,19 @@ its own, so Sushi's `cc_mappings` never heard it; Sushi 1.3.0 with `-j` is
 ALSA client `Sushi`, input port 0 `listen:in`, and `aconnect "FBV Express Mk
 II:0" "Sushi:0"` made a volume pedal follow. Each listener's `AlsaPort` now
 makes that link through alsa-midi, by name, at its open, on a hot-plug and
-when a Sushi starts, leaving a link already there alone; `plan_for` gives
-each feed its Sushi input (the map's controller the port its cc_mappings
-use, any other 0 unless one of its CCs is mapped there already), a map of
-sweeps alone is a feed of its own so it is linked, `/health`'s feeds say
-`linked_to_sushi` and why, the PEDALS line says "listening, not linked", and
-`up` with no agent links the rig's pedal once (`link_once`). (2) An
+when a Sushi starts, leaving a link already there alone; `plan_for` links
+only the map's controller, and only when Sushi maps something of it (its
+cc_mappings, on their port), a map of sweeps alone is a feed of its own so it
+is linked, `/health`'s feeds say `linked_to_sushi` (from ALSA's own list),
+`link_wanted` and why, the PEDALS line says "listening, not linked" where a
+link is wanted, and `up` with no agent links the rig's pedal once
+(`link_once`, the same rule). The review found the first version linked every
+pedal it listened to, never took a link down (one made at the start drove a
+mapping an assignment had since made a clash, while `/health` said "not
+linked"), and never relinked after a link taken down by hand when Sushi
+restarted with the unsubscription announced first: a listener now takes down
+the links this agent made that the plan no longer asks for (never another's),
+and the by-hand hold is for that one Sushi only. (2) An
 assignment of what Sushi maps needed a restart, and the owner was asked only
 to save: the `unsaved` refusal said "save first, then make the edit", and the
 assignment was then made again with its restart offer under the strips. The
@@ -6939,17 +6946,32 @@ PEDALS offers the restart whenever `GET /midi`'s new `behind` says the
 running map is behind the file; and an assignment of Sushi's mappings is
 tried live first, through elkpy's `connect_cc_to_parameter` and
 `disconnect_cc`, read back from Sushi's own list, with the restart as the
-fallback. **That live path is unverified on a real Sushi.** (3) A mute set the
+fallback. The read-back compares ranges and mode too (a blend turned round
+is a live change, not a mapping "still there"), a failed change takes back
+the call in flight, and a Sushi whose list then is not the running config's
+marks it (`_midi_unconfirmed`), so the next switch restarts; PEDALS says
+"Pedal ranges changed. Restart to apply." when a Save moved only ranges, and
+Save, then assign waits for its own save. **That live path is unverified on a
+real Sushi.** (3) A mute set the
 track's `mute`, which Sushi applies after the track's plugins, so after the
-send: only the stem went silent, and D's toggles were in the log and not
-heard. A mute is now the channel's send bypassed, by the agent, for every
+send: only the stem went silent, and C's toggles (cc 22) were in the log and
+not heard (D, on the delay's bypass, worked). A mute is now the channel's send bypassed, by the agent, for every
 control (Sushi has no CC-to-bypass); the send's gain, a volume pedal's, is not
 touched. Chosen over a gain processor before every send (a compiler-owned
 processor that save, switch, panel and page would all have to know) and the
-master's return (every channel at once). What a bypassed send does is not in
-the repo's records of Sushi; two slow tests in `test_send_return.py` render
-it, and the track mute's failure, on Sushi 1.3.0 in the rig container.
+master's return (every channel at once). CI then found a bypassed send
+still sending in an offline render; on a running Sushi 1.3.0 (its dummy
+frontend, the master recorded by Sushi's `wav_writer`, the bypass set over
+gRPC as the agent sets it) the master goes silent and comes back, the stem
+playing throughout. The difference is Sushi's: the send's bypass is an event
+the audio thread must receive, and the offline frontend never delivers it
+(send_plugin.cpp, offline_frontend.cpp), so an offline render of a bypassed
+send hears it. `test_send_return.py` holds both, with the not-bypassed
+control.
 (4) The heel was 15, and the board comes to rest at 14 to 17 just after a
 move: 35 dB down instead of silent. It is 20 in both machine files. Save,
 Save as and a switch were checked to keep a rig's `midi:` section, and tests
-now hold them to it; nothing there needed fixing. *(2026-11-23)*
+now hold them to it; nothing there needed fixing. (5) From the laptop: a
+pedal could not be given SWH lcrDelay's `Dry/Wet level`, a parameter Sushi
+names with a slash; a parameter target is now split at its first two slashes,
+the parameter the rest. *(2026-11-23)*

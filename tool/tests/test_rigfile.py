@@ -766,6 +766,21 @@ def test_the_agents_bindings_are_their_own_part_of_the_compiled_state_not_a_proc
     assert "agent" not in plain, "a rig without a map has nothing for the agent"
 
 
+def test_a_parameter_whose_sushi_name_holds_a_slash_is_the_whole_rest_of_the_target():
+    """#210's review: SWH lcrDelay's mix is called "Dry/Wet level" in Sushi
+    (config/electric-delay.json), so a target is split at its first two
+    slashes and the parameter is everything after them."""
+    rig = parse_rig(_midi_rig([{"control": "knob1", "parameter": "lead/hall/Dry/Wet level"}]))
+    (control,) = rig.midi.controls
+    assert control.target == "lead/hall/Dry/Wet level"
+    section, _ = compile_midi(rig, MPD218)
+    (mapping,) = section["cc_mappings"]
+    assert (mapping["plugin_name"], mapping["parameter_name"]) == ("hall", "Dry/Wet level")
+    # A bypass stays channel/plugin exactly: a processor's name has no slash.
+    with pytest.raises(RigFileError, match="bypass must be channel/plugin"):
+        parse_rig(_midi_rig([{"control": "pad1", "bypass": "lead/hall/x"}]))
+
+
 @pytest.mark.parametrize("target", ["lead//Mix", "/hall/Mix", "lead/hall/"])
 def test_a_parameter_target_with_an_empty_segment_is_refused(target):
     with pytest.raises(RigFileError, match="channel/plugin/parameter"):

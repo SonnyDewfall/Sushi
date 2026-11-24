@@ -3497,6 +3497,8 @@ export function pedalBoard(answer, chosen = null) {
     // The running rig's Sushi mappings are behind its file (#210): only a
     // restart loads them, so the Pedals section offers it.
     behindRestart: !!(body.behind && body.behind.restart),
+    // Only the ranges moved (a Save that moved a level, #210's review).
+    behindRanges: !!(body.behind && body.behind.ranges && !body.behind.unconfirmed),
   };
 }
 
@@ -3504,8 +3506,9 @@ export function pedalBoard(answer, chosen = null) {
 // (#210, GET /midi's `behind`), with its offer; null when they do not.
 export function pedalBehind(board) {
   if (!board.ok || !board.behindRestart || !board.rig) return null;
-  return { text: `This file's pedal mappings are not playing yet: Sushi loads them when ${board.rig} restarts.`,
-    offer: { op: "restart", name: board.rig, label: `Restart ${board.rig} to play them` } };
+  const offer = { op: "restart", name: board.rig, label: `Restart ${board.rig} to play them` };
+  if (board.behindRanges) return { text: "Pedal ranges changed. Restart to apply.", offer: { ...offer, label: `Restart ${board.rig}` } };
+  return { text: `This file's pedal mappings are not playing yet: Sushi loads them when ${board.rig} restarts.`, offer };
 }
 
 const PEDAL_WORDS = { bypass: true, mute: true, volume: true, parameter: true, blend: true };
@@ -3586,11 +3589,13 @@ export function pedalDeviceState(health, controller) {
     if (midi.state === "off") return { state: "off", text: `not listened to: ${midi.reason || "no rig is up"}` };
     return { state: midi.state || "unknown", text: midi.problem || "not listened to on this rig" };
   }
-  // Listening, and not linked to Sushi's own MIDI input (#210): what Sushi
-  // maps (a volume, a sweep, a blend) does not hear the pedal, briefly
-  // while a rig comes up, or until the reason (`link`, the title) is put right.
+  // Listening, and not linked to Sushi's own MIDI input though the rig's map
+  // needs it (#210): what Sushi maps (a volume, a sweep, a blend) does not
+  // hear the pedal, briefly while a rig comes up, or until the reason (`link`,
+  // the title) is put right. A pedal Sushi maps nothing of needs no link.
   if (feed.state === "listening") {
-    return feed.linked_to_sushi === false ? { state: "listening", text: "listening, not linked", link: feed.link || null }
+    return feed.linked_to_sushi === false && feed.link_wanted !== false
+      ? { state: "listening", text: "listening, not linked", link: feed.link || null }
       : { state: "listening", text: "listening" };
   }
   if (feed.state === "absent") return { state: "absent", text: "not connected" };

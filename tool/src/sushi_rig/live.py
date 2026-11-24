@@ -522,7 +522,8 @@ def disconnect_live_cc(mapping: dict[str, Any], address: str = DEFAULT_GRPC_ADDR
 
 def read_live_cc(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> list[dict[str, Any]]:
     """Every CC mapping the running Sushi holds, as `{plugin_name,
-    parameter_name, channel, port, cc_number}` in the cc_mappings' own terms
+    parameter_name, channel, port, cc_number, min_range, max_range, mode}` in
+    the cc_mappings' own terms
     (the channel from 0, or "all"): what `Agent._midi_cc_live` checks a live
     mapping against. A processor or parameter it cannot name is said by its
     ids. Unverified: see above."""
@@ -545,6 +546,10 @@ def read_live_cc(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) ->
                 "parameter_name": parameters.get(connection.parameter_id, f"parameter {connection.parameter_id}"),
                 "channel": channel - 1 if 1 <= channel <= 16 else "all",
                 "port": connection.port, "cc_number": connection.cc_number,
+                # Compared within a tolerance (float32 on the wire): a range
+                # Sushi holds wrongly is not the mapping asked for (#210's review).
+                "min_range": float(connection.min_range), "max_range": float(connection.max_range),
+                "mode": "relative" if connection.relative_mode else "absolute",
             })
         return out
 

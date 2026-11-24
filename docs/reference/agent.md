@@ -882,13 +882,16 @@ curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}' 
   `/live/log` and not undone by Undo, as a channel added is not: assign
   again. `assignments` in the answer is the file's `midi:` after it.
 
-**Linked.** Each listener links its pedal to Sushi's MIDI input, by the
-ALSA names (client `Sushi`), at its start, when the pedal is plugged in and
-when a Sushi starts; a link already there is left as it is. `/health`'s
-`agent.midi.feeds` say `linked_to_sushi` and `link` (why), and each change is
-a line on stderr: [MIDI](midi.md#linking-the-pedals-to-sushi-210). Without the
-agent no link is kept; `up` with no agent (and `--direct`) links the rig's own
-pedal once.
+**Linked.** A listener links its pedal to Sushi's MIDI input, by the ALSA
+names (client `Sushi`), when Sushi maps something of it (the rig's map's
+controller, with cc_mappings), at its start, when the pedal is plugged in and
+when a Sushi starts; a link already there is left as it is, and one this
+agent made that the plan no longer asks for is taken down, never one it did
+not make. `/health`'s `agent.midi.feeds` say `linked_to_sushi` (from ALSA's
+list), `link_wanted` and `link` (why), and each change is a line on stderr:
+[MIDI](midi.md#linking-the-pedals-to-sushi-210). Without the agent no link is
+kept; `up` with no agent (and `--direct`) links the rig's own pedal once, by
+the same rule.
 
 **Heard.** `/health`'s `agent.midi.seen` is the last message from each
 control of each device the listener reads, bound to anything or not:

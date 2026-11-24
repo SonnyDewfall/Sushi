@@ -119,6 +119,7 @@ ALSA_NAMES = (
     "SequencerClient.event_input",
     "SequencerClient.close",
     "SequencerClient.subscribe_port",
+    "SequencerClient.unsubscribe_port",
     "SequencerClient.list_port_subscribers",
     "Port.connect_from",
     "PortInfo",
@@ -835,13 +836,17 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
     other source makes one, so that its pedal is linked to Sushi and said
     missing).
 
-    Each feed is linked to Sushi's MIDI input (#210, `Feed.sushi_port`): the
-    required controller to the port its cc_mappings use (the map's `port`,
-    0 without one), any other to port 0, unless one of its controls sends a
-    CC the running config's cc_mappings already map on that port on an
-    overlapping channel. Sushi maps a CC by number and channel, not by which
-    device sent it, so that controller would move the other's mapping: it
-    is not linked, and `link_reason` says why. That controller is the compiled
+    A feed is linked to Sushi's MIDI input (#210, `Feed.sushi_port`) only
+    when Sushi maps something of it: the required controller, when the
+    running config's cc_mappings (all of them its own, the map's) are not
+    empty, to the input they use (the map's `port`, 0 without one). Every
+    other feed is not linked, `link_reason` saying why: a controller whose
+    only bindings are rig steps or the agent's (a bypass, a mute, a heel)
+    needs nothing of Sushi's input, and one that sends a CC the map has Sushi
+    use (`_clash`) would move that mapping too, since Sushi maps a CC by
+    number and channel, not by device (#210's review: every feed was linked,
+    and a link made at the start stayed after an assignment made it a
+    clash). That controller is the compiled
     config's (`_meta`'s `rigfile.MIDI_CONTROLLER`), not the rig file's as it
     is now, which may have been edited for the next restart (#192's
     review). A config with nothing of a map in it (no bindings for the agent,
@@ -950,22 +955,28 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
     out = []
     for c, (port, b) in feeds.items():
         heard = _heard_by(by_controller.get(c))
-        sushi_port = (own_port if type(own_port) is int else 0) if c == required else 0
-        reason = None if c == required else _clash(c, heard, mappings, sushi_port, name)
-        out.append(Feed(c, port, b, c == required, *heard,
-                        sushi_port=None if reason else sushi_port, link_reason=reason))
+        if c == required and mappings:
+            sushi_port, reason = (own_port if type(own_port) is int else 0), None
+        elif c == required:
+            sushi_port, reason = None, (f"not linked to Sushi: {name}'s map has Sushi play nothing of it (no "
+                                        "volume, sweep or blend), so it needs no link")
+        else:
+            sushi_port = None
+            reason = _clash(c, heard, mappings, name) or (
+                f"not linked to Sushi: {name}'s map is not written for it, so Sushi plays nothing of it")
+        out.append(Feed(c, port, b, c == required, *heard, sushi_port=sushi_port, link_reason=reason))
     return Plan(rig_name, feeds=tuple(out), running=rig_name or name, rig_problem=rig_problem)
 
 
 def _clash(controller: str, heard: tuple[tuple[tuple[str, str, int], ...], int | None],
-           mappings: Sequence[dict[str, Any]], sushi_port: int, rig: str) -> str | None:
-    """Why `controller`, which the running rig's map is not written for, is
-    not linked to Sushi's input `sushi_port`, or None: one of its controls
-    sends a CC the rig's cc_mappings map there on an overlapping channel."""
+           mappings: Sequence[dict[str, Any]], rig: str) -> str | None:
+    """Why `controller`, which the running rig's map is not written for, must
+    not be linked to Sushi even by hand, or None: one of its controls sends
+    a CC the rig's cc_mappings map, on an overlapping channel. Sushi maps a
+    CC by number, channel and input, not by device, so linked to that input
+    it would move that mapping too."""
     controls, channel = heard
     for mapping in mappings:
-        if mapping.get("port", 0) != sushi_port:
-            continue
         on = mapping.get("channel")
         if channel is not None and isinstance(on, int) and on != channel:
             continue
@@ -973,7 +984,7 @@ def _clash(controller: str, heard: tuple[tuple[tuple[str, str, int], ...], int |
             if kind == "cc" and number == mapping.get("cc_number"):
                 return (f"not linked to Sushi: its {control} sends cc {number}, which {rig}'s map has Sushi "
                         f"drive {mapping.get('plugin_name')}'s {mapping.get('parameter_name')} with on its MIDI "
-                        f"input {sushi_port}, so it would move that too")
+                        f"input {mapping.get('port', 0)}, so it would move that too")
     return None
 
 
@@ -1071,6 +1082,32 @@ def sushi_input(listed: Sequence[tuple[str, int, int]], index: int) -> tuple[int
     return clients[0], inputs[index]
 
 
+# What `AlsaPort` says of a pedal it was not asked to link and that is not
+# linked: the agent shows the plan's reason in its place (`Feed.link_reason`).
+NOT_ASKED = "not linked, and not asked to be"
+
+# The links between a pedal and Sushi's input that this process made
+# (#210's review), as `(pedal, Sushi input)` ALSA addresses: the only links
+# the agent ever takes down. One made by hand, by `up --direct` (another
+# process), or by an agent before this one, is left as it is. ALSA keeps no
+# record of who subscribed a port to another, so this is kept here, shared by
+# every `AlsaPort` of the process: a listener replaced by the next (a re-plan,
+# a switch) leaves its links to the one after it, which knows them as its own.
+_MADE: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+_MADE_LOCK = threading.Lock()
+
+
+def _made(source: tuple[int, int], dest: tuple[int, int]) -> bool:
+    with _MADE_LOCK:
+        return (tuple(source), tuple(dest)) in _MADE
+
+
+def _forget(keep: Callable[[tuple[int, int], tuple[int, int]], bool]) -> None:
+    with _MADE_LOCK:
+        for link in [link for link in _MADE if not keep(*link)]:
+            _MADE.discard(link)
+
+
 class AlsaPort:
     """The controller's port, read through the ALSA sequencer (alsa-midi).
 
@@ -1092,19 +1129,31 @@ class AlsaPort:
 
     **The link to Sushi (#210).** Sushi's `cc_mappings` (sweeps, volumes,
     blends) act only on what reaches Sushi's own MIDI input, and the patchbay
-    links audio alone, so with `sushi_port` given this also subscribes Sushi's
+    links audio alone, so with `sushi_port` given this subscribes Sushi's
     input number `sushi_port` (`sushi_input`) to the pedal, as `aconnect
     "<pedal>" "Sushi:0"` does: by name, whenever the pedal is attached and
-    Sushi is listed, so at the open, when the pedal is plugged in, and when a
-    Sushi starts (the announcements). A link already there (`aconnect` by
-    hand, or the agent's before a restart of its listener) is left as it is,
-    never made twice or taken down; one taken down by hand while both are
-    still there is not made again until the next listener (`up`, a restart
-    or a switch). The link outlives the listener: it is the pedal's and
-    Sushi's, and goes when either does. `linked` is None without
-    `sushi_port`, else whether the link is there, and `link_reason` says why.
-    The manual link made the volume pedal follow on the laptop (2026-11-23);
-    this code has run only against a stand-in for alsa-midi.
+    Sushi is listed. What there is is read from ALSA's own lists each time
+    (`_links`): at the open, and at every announcement while the pedal is
+    attached (a client or port starting or going, a subscription made or
+    taken down), so `linked` says what the subscriber list says, whoever made
+    the link.
+
+    - A link already there is left as it is and not made twice.
+    - A link this process made (`_MADE`) to any input of Sushi's but the one
+      asked for, `sushi_port` None included, is taken down: a re-plan that no
+      longer links the pedal, or links it elsewhere, unlinks it. No other link
+      is ever taken down, so one made by hand stays, and is said as linked.
+    - The link asked for, taken down by hand while that Sushi is still there,
+      is not made again for that Sushi (`_by_hand`, its client number): a
+      Sushi that goes, or a Sushi of another client number, lifts it, so the
+      next Sushi is linked whichever ALSA announces first, the link going
+      or Sushi going (#210's review).
+
+    The link outlives the port: it is the pedal's and Sushi's, and goes when
+    either does. `linked` is whether the pedal reaches an input of Sushi's,
+    and `link_reason` says which and who made it, or why not. The manual
+    link made the volume pedal follow on the laptop (2026-11-23); this code
+    has run only against a stand-in for alsa-midi.
     """
 
     def __init__(self, name: str, sushi_port: int | None = None):
@@ -1118,10 +1167,10 @@ class AlsaPort:
         self._source: Any = None
         self.absence: str | None = None
         self._sushi_port = sushi_port
-        self._sushi: tuple[int, int] | None = None  # Sushi's input, while linked
-        self._by_hand = False  # the link was taken down by hand: not made again by this listener
-        self.linked: bool | None = None if sushi_port is None else False
-        self.link_reason: str | None = None if sushi_port is None else "not linked yet: opening the port"
+        self._linked_to: tuple[int, int] | None = None  # the input asked for, while seen linked
+        self._by_hand: int | None = None  # the Sushi whose link asked for was taken down by hand
+        self.linked: bool = False
+        self.link_reason: str = "not linked yet: opening the port"
         try:
             self._client = alsa_midi.SequencerClient(CLIENT_NAME)
         except alsa_midi.ALSAError as exc:
@@ -1154,63 +1203,89 @@ class AlsaPort:
             self._unlinked("not linked: the pedal is not plugged in")
             return
         self._port.connect_from(source)
-        self._source, self.absence = source, None
-        self._link()
+        self._source, self.absence = tuple(source), None
+        self._links()
 
     def _unlinked(self, reason: str) -> None:
-        if self._sushi_port is not None:
-            self.linked, self.link_reason, self._sushi = False, reason, None
+        self.linked, self.link_reason, self._linked_to = False, reason, None
 
-    def _link(self) -> None:
-        """Link the pedal to Sushi's input, unless it is already (#210)."""
-        if self._sushi_port is None or self._source is None or self._by_hand:
-            return
-        a = self._alsa
+    def _links(self) -> None:
+        """Take the pedal's links to Sushi to what is asked, from ALSA's own
+        lists, and say what there is then (#210)."""
+        a, source = self._alsa, tuple(self._source)
         try:
             listed = [(p.client_name, p.client_id, p.port_id)
                       for p in self._client.list_ports(output=True, type=a.PortType.ANY)]
-            target = sushi_input(listed, self._sushi_port)
-        except LinkProblem as exc:
-            self._unlinked(f"not linked: {exc}")
-            return
-        where = f"{self.name} to Sushi's MIDI input {self._sushi_port} ({target[0]}:{target[1]})"
-        try:
             held = {tuple(s.addr) for s in
-                    self._client.list_port_subscribers(self._source, type=a.SubscriptionQueryType.READ)}
-            if tuple(target) in held:
-                how = "linked already, by hand or by an earlier listener, and left as it is"
-            else:
-                self._client.subscribe_port(self._source, target)
-                how = "linked by the agent"
+                    self._client.list_port_subscribers(source, type=a.SubscriptionQueryType.READ)}
         except a.ALSAError as exc:
-            if getattr(exc, "errnum", None) != -errno.EBUSY:  # EBUSY: subscribed already
-                self._unlinked(f"not linked: linking {where} failed: {exc}")
-                return
-            how = "linked already, by hand or by an earlier listener, and left as it is"
-        self.linked, self.link_reason, self._sushi = True, f"{how}: {where}", tuple(target)
+            self._unlinked(f"not linked: ALSA would not list the ports or the pedal's links: {exc}")
+            return
+        sushis = sorted({client for name, client, _ in listed if name == SUSHI_CLIENT})
+        inputs = {client: sorted(port for _, c, port in listed if c == client) for client in sushis}
 
-    def _gone(self, event: Any) -> None:
-        """What an announcement says of the link while the pedal is attached."""
-        a, sushi = self._alsa, self._sushi
-        if isinstance(event, (a.ClientStartEvent, a.PortStartEvent)):
-            if not self.linked:
-                self._link()  # a Sushi starting, most likely
-            return
-        if sushi is None:
-            return
-        if isinstance(event, a.ClientExitEvent) and event.addr.client_id == sushi[0] or \
-                isinstance(event, a.PortExitEvent) and tuple(event.addr) == sushi:
-            # Sushi has gone (a restart under the agent's feet): the next one
-            # is linked when it starts, whatever was done by hand before.
-            self._by_hand = False
-            self._unlinked("not linked: Sushi's MIDI input went away (Sushi stopped); linked again when it starts")
-        elif isinstance(event, a.PortUnsubscribedEvent) and tuple(event.connect_sender) == tuple(self._source) \
-                and tuple(event.connect_dest) == sushi:
-            # Taken down by hand (`aconnect -d`) is the player's choice, and not
-            # undone; taken down by Sushi going, its exit follows, above.
-            self._by_hand = True
-            self._unlinked("not linked: the link was taken down (by hand?), and is left down until the rig is "
-                           "next brought up, restarted or switched")
+        def where(dest: tuple[int, int]) -> str:
+            index = inputs.get(dest[0], []).index(dest[1]) if dest[1] in inputs.get(dest[0], []) else "?"
+            return f"{self.name} to Sushi's MIDI input {index} ({dest[0]}:{dest[1]})"
+
+        # What this process made and is gone (the pedal or Sushi went, or it
+        # was taken down by hand) is forgotten; the link asked for, gone
+        # while its Sushi is still there, was taken down by hand.
+        _forget(lambda src, dest: src != source or dest in held)
+        if self._linked_to is not None and self._linked_to not in held and self._linked_to[0] in sushis:
+            self._by_hand = self._linked_to[0]
+        if self._by_hand is not None and self._by_hand not in sushis:
+            self._by_hand = None  # that Sushi has gone: the next one is linked
+        target, problem, how = None, None, None
+        if self._sushi_port is not None:
+            try:
+                target = tuple(sushi_input(listed, self._sushi_port))
+            except LinkProblem as exc:
+                problem = str(exc)
+        said: list[str] = []
+        for dest in sorted(d for d in held if d[0] in sushis and d != target and _made(source, d)):
+            try:
+                self._client.unsubscribe_port(source, dest)
+            except a.ALSAError as exc:
+                said.append(f"taking the agent's own link {where(dest)} down failed: {exc}")
+                continue
+            held.discard(dest)
+            _forget(lambda src, d, gone=dest: (src, d) != (source, gone))
+            said.append(f"the agent's own link {where(dest)} taken down, as it is not asked for now")
+        if target is not None and target[0] == self._by_hand and target not in held:
+            problem = ("the link was taken down (by hand?), and is left down while that Sushi runs; it is "
+                       "made again for the next Sushi, or when the rig is next brought up, restarted or switched")
+        elif target is not None and target in held:
+            how = ("linked by the agent" if _made(source, target)
+                   else "linked already, not by this agent, and left as it is")
+        elif target is not None:
+            try:
+                self._client.subscribe_port(source, target)
+            except a.ALSAError as exc:
+                if getattr(exc, "errnum", None) != -errno.EBUSY:  # EBUSY: subscribed already
+                    problem = f"linking {where(target)} failed: {exc}"
+                else:
+                    how = "linked already, not by this agent, and left as it is"
+                    held.add(target)
+            else:
+                with _MADE_LOCK:
+                    _MADE.add((source, target))
+                held.add(target)
+                how = "linked by the agent"
+        others = sorted(d for d in held if d[0] in sushis and d != target)
+        self._linked_to = target if target is not None and target in held else None
+        if self._linked_to is not None:
+            self.linked, self.link_reason = True, f"{how}: {where(target)}"
+        elif others:
+            self.linked = True
+            self.link_reason = (f"linked, not by this agent, and left as it is: {where(others[0])}"
+                                + (f"; not linked as asked: {problem}" if problem else ""))
+        elif problem is not None:
+            self.linked, self.link_reason = False, f"not linked: {problem}"
+        else:
+            self.linked, self.link_reason = False, NOT_ASKED
+        if said:
+            self.link_reason += " (" + "; ".join(said) + ")"
 
     def read(self, timeout: float) -> bytes | None:
         a = self._alsa
@@ -1218,6 +1293,11 @@ class AlsaPort:
             event = self._client.event_input(prefer_bytes=True, timeout=timeout)
         except a.ALSAError as exc:
             raise PortError(f"reading the controller failed: {exc}") from exc
+        if isinstance(event, a.ClientExitEvent):
+            # A client gone takes its links with it: what this process made
+            # from or to it is not there to take down.
+            gone = getattr(getattr(event, "addr", None), "client_id", None)
+            _forget(lambda src, dest: gone not in (src[0], dest[0]))
         if self._source is None:
             if isinstance(event, (a.ClientStartEvent, a.PortStartEvent)):
                 try:
@@ -1236,9 +1316,11 @@ class AlsaPort:
             self._source = None
             self.absence = "the controller's port went away: was it unplugged?"
             self._unlinked("not linked: the pedal is not plugged in")
-        elif self._sushi_port is not None and event is not None:
+        elif event is not None:
+            # Any other announcement (a Sushi starting or going, a link made or
+            # taken down, by hand or by Sushi going): the lists say what now.
             try:
-                self._gone(event)
+                self._links()
             except a.ALSAError as exc:
                 self._unlinked(f"not linked: {exc}")
         return None
@@ -1287,9 +1369,10 @@ class Listener:
         on_link: Callable[[bool, str], None] | None = None,
     ) -> None:
         self.port_name = port_name
-        # Sushi's MIDI input to link the pedal to (#210), or None: passed to
-        # `open_port` only when given, so a port opener that links nothing
-        # needs no argument for it.
+        # Sushi's MIDI input to link the pedal to (#210), or None. `open_port`
+        # is called as `open_port(name)` for None and `open_port(name, link)`
+        # otherwise; an opener must take both (`World.open_port`'s AlsaPort
+        # does), since which a feed gets is `plan_for`'s to say.
         self.link = link
         self.on_link = on_link
         self.open_port = open_port
@@ -1398,15 +1481,9 @@ def link_once(described: dict[str, Any], root: Path, *, open_port: Callable[...,
         return [f"pedals not linked to Sushi: the rig's files could not say which pedal ({exc})"]
     if isinstance(planned, Off):
         return []
-    try:
-        config = json.loads(Path(described["config"]).read_text())
-    except (KeyError, TypeError, OSError, ValueError):
-        config = {}
-    if not ((config.get("midi") or {}).get("cc_mappings") if isinstance(config, dict) else None):
-        return []
     said = []
     for feed in planned.feeds:
-        if not feed.required or feed.sushi_port is None:
+        if feed.sushi_port is None:  # `plan_for`'s rule, the agent's too: Sushi maps nothing of it
             continue
         try:
             port = open_port(feed.port, feed.sushi_port)

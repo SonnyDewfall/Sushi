@@ -181,16 +181,155 @@ def test_a_tracks_mute_does_not_reach_the_master(tmp_path, direct):
 
 @needs_sushi
 @pytest.mark.slow
-def test_a_bypassed_send_sends_nothing_and_its_channel_still_plays(tmp_path, direct):
-    """The mute the agent now plays (#210): the channel's send bypassed. The
-    master's return gets nothing of the channel, and the channel's own
-    output (its stem) is untouched. NOT YET RUN: there is no Sushi where this
-    was written; this job is where it first runs, and if a bypassed send
-    still sends, the mute is wrong and this says so."""
-    bypassed = {"processor": "channel_send", "bypassed": True}
-    master_only = render(tmp_path, "send-bypassed",
-                         with_state(through_master(master_first=False, channel_output=False), bypassed))
-    assert np.max(np.abs(master_only[SETTLED:])) < EXACT, "the master heard a bypassed send"
-    both = render(tmp_path, "send-bypassed-both",
-                  with_state(through_master(master_first=False, channel_output=True), bypassed))
-    assert np.max(np.abs(both[SETTLED:] - direct[SETTLED:])) < EXACT, "the channel's own output changed"
+def test_offline_a_send_not_bypassed_reaches_the_master(tmp_path, direct):
+    """The control for the bypass tests: the same send, with its bypass
+    stated false in `initial_state` as a bypassed one's is stated true,
+    reaches the master as it is, so a silence below means the bypass and
+    not a send that never connected."""
+    config = with_state(through_master(master_first=False, channel_output=False),
+                        {"processor": "channel_send", "bypassed": False})
+    rendered = render(tmp_path, "send-not-bypassed", config)
+    assert np.max(np.abs(rendered[SETTLED:] - direct[SETTLED:])) < EXACT
+
+
+@needs_sushi
+@pytest.mark.slow
+def test_offline_a_bypassed_send_still_sends_so_a_render_cannot_show_a_mute(tmp_path, direct):
+    """What CI found on 8a798de (#210's review): rendered offline, a send
+    bypassed in `initial_state` reaches the master at full level, for as
+    long as the render runs (10 s, checked by hand). Not the send ignoring
+    its bypass: Sushi 1.3.0's `SendPlugin::set_bypassed` posts a
+    `SetProcessorBypassEvent` to the event dispatcher and only applies it
+    when that arrives on the audio thread (send_plugin.cpp, `process_event`),
+    and the offline frontend's blocking loop never delivers it (it plays
+    only the config's own `events`, offline_frontend.cpp). An LV2 plugin
+    sets its bypass directly, which is why a bypassed plugin renders as one.
+    On a running Sushi the event does arrive, and the send goes silent:
+    the running test below. Held here so that a Sushi whose offline
+    renders do apply it says so, and the two tests can become one."""
+    config = with_state(through_master(master_first=False, channel_output=False),
+                        {"processor": "channel_send", "bypassed": True})
+    rendered = render(tmp_path, "send-bypassed-offline", config)
+    assert np.max(np.abs(rendered[SETTLED:] - direct[SETTLED:])) < EXACT, (
+        "a send bypassed offline no longer sends: an offline render can now show a mute")
+
+
+# --------------------------------------------------------------------------- #
+# The mute on a running Sushi: the send's bypass set over gRPC while it plays
+# --------------------------------------------------------------------------- #
+
+# A block of the recordings, for saying what the master did in it: 100 ms.
+BLOCK = SR // 10
+
+
+def running_config(tmp_path, sine) -> dict:
+    """A channel playing `sine` (Sushi's own wav_streamer, looping) into its
+    send, then a wav_writer recording the channel after the send (its stem);
+    the master's return, then a wav_writer recording what the master hears.
+    Both recordings start with the engine, so their frames line up."""
+    channel = {"name": "channel", "channels": 2, "inputs": [], "outputs": [], "plugins": [
+        {"uid": "sushi.testing.wav_streamer", "name": "channel_src", "type": "internal"},
+        {"uid": "sushi.testing.send", "name": "channel_send", "type": "internal"},
+        {"uid": "sushi.testing.wav_writer", "name": "stem_rec", "type": "internal"}]}
+    master = {"name": "master", "channels": 2, "inputs": [], "outputs": [], "plugins": [
+        {"uid": "sushi.testing.return", "name": "master_return", "type": "internal"},
+        {"uid": "sushi.testing.wav_writer", "name": "master_rec", "type": "internal"}]}
+    record = lambda name: {"processor": name, "properties": {"destination_file": str(tmp_path / name)},  # noqa: E731
+                           "parameters": {"recording": 1.0}}
+    return {"host_config": {"samplerate": SR}, "tracks": [channel, master], "initial_state": [
+        {"processor": "channel_send", "properties": {"destination_name": "master_return"}},
+        {"processor": "channel_src", "properties": {"file": str(sine)}, "parameters": {"loop": 1.0, "playing": 1.0}},
+        record("stem_rec"), record("master_rec")]}
+
+
+def what_the_master_did(master, stem) -> list[str]:
+    """Each 100 ms block where the stem plays, as the master had it: "copy"
+    (the stem exactly), "muted" (nothing), or "between" (a bypass ramping),
+    with runs of one kind said once and the "between"s left out. A block
+    where the stem itself is silent says nothing: the streamer leaves a gap
+    after its first loop, and may fall behind a frontend running faster
+    than real time, which is the streamer's and not the mute's."""
+    said: list[str] = []
+    for start in range(0, min(len(master), len(stem)) - BLOCK + 1, BLOCK):
+        m, s = master[start:start + BLOCK], stem[start:start + BLOCK]
+        if np.max(np.abs(s)) < 0.25:
+            continue
+        kind = ("copy" if np.max(np.abs(m - s)) < EXACT else
+                "muted" if np.max(np.abs(m)) < EXACT else "between")
+        if kind != "between" and (not said or said[-1] != kind):
+            said.append(kind)
+    return said
+
+
+@needs_sushi
+@pytest.mark.slow
+def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(tmp_path):
+    """The mute the agent plays (#210), as the agent plays it: Sushi 1.3.0
+    running (its dummy frontend, which processes on its own thread, faster
+    than real time), the send's bypass set and cleared over gRPC by
+    `live.set_live_bypass`, the call the agent's mute makes, while a sine
+    plays. The master is the stem exactly until the bypass, nothing at all
+    while it holds, and the stem exactly again once it is cleared; the stem
+    plays throughout. Seen with the release AppImage by hand first
+    (2026-11-23): 23 s of audio silent on the master, then back."""
+    import glob
+    import socket
+    import subprocess
+    import time
+
+    pytest.importorskip("elkpy")
+    from sushi_rig import live, signals
+
+    seconds = np.arange(SR) / SR
+    sine = tmp_path / "sine.wav"
+    signals.write_wav(sine, np.stack([0.5 * np.sin(2 * np.pi * 440 * seconds)] * 2, axis=1), SR)
+    config = tmp_path / "running.json"
+    config.write_text(json.dumps(running_config(tmp_path, sine)))
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    address = f"localhost:{port}"
+    proc = subprocess.Popen([str(SUSHI), "-d", "-c", str(config), f"--grpc-address={address}"],
+                            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 20
+        while True:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    break
+            except OSError:
+                assert proc.poll() is None, f"Sushi exited {proc.returncode} before its gRPC answered"
+                assert time.monotonic() < deadline, "Sushi's gRPC never answered"
+                time.sleep(0.1)
+        time.sleep(0.5)  # playing, not muted: the control
+        assert live.read_live_bypass("channel_send", address)["bypassed"] is False
+        live.set_live_bypass("channel_send", True, address)
+        assert live.read_live_bypass("channel_send", address)["bypassed"] is True
+        time.sleep(0.5)  # muted
+        live.set_live_bypass("channel_send", False, address)
+        time.sleep(0.5)  # un-muted
+        for name in ("stem_rec", "master_rec"):
+            live.set_live_parameter(name, "recording", 0.0, address)
+        time.sleep(0.3)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(5)
+    (master_file,) = glob.glob(str(tmp_path / "master_rec*.wav"))
+    (stem_file,) = glob.glob(str(tmp_path / "stem_rec*.wav"))
+    master = signals.read_wav(master_file).samples
+    stem = signals.read_wav(stem_file).samples
+    assert len(master) > 4 * SR, f"too little was recorded to say anything ({len(master)} frames)"
+    said = what_the_master_did(master, stem)
+    assert said[:1] == ["copy"], f"the send did not reach the master before the mute: {said}"
+    assert "muted" in said, f"the master heard a bypassed send: {said}"
+    assert said == ["copy", "muted", "copy"], f"the send did not come back once un-bypassed: {said}"
+    # A "muted" block is one where the stem plays and the master has none of
+    # it: the stem going on through the mute is in the count.
+    muted = sum(1 for start in range(0, min(len(master), len(stem)) - BLOCK + 1, BLOCK)
+                if np.max(np.abs(stem[start:start + BLOCK])) >= 0.25
+                and np.max(np.abs(master[start:start + BLOCK])) < EXACT)
+    assert muted >= 5, f"only {muted} blocks of the stem playing with the master silent"

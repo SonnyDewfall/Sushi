@@ -113,6 +113,10 @@ AGENT_BINDINGS = "_midi_agent"
 # while it runs (a pedal assigned for the next restart) cannot change which
 # pedal the running rig needs, or which port its bindings are read from.
 MIDI_CONTROLLER = "midi_controller"
+# Set in a running config by the agent (#210's review) when a live change to
+# Sushi's CC mappings failed and Sushi's list could not be shown to be the
+# config's again: why, as text. Never compiled; `diff` restarts on it.
+MIDI_UNCONFIRMED = "_midi_unconfirmed"
 # Where the compiled config records each track's machine roles, for `diff`.
 WIRING = "_wiring"
 SEND_UID = "sushi.testing.send"
@@ -175,7 +179,7 @@ UNTYPED_TAKES = {"cc": _BINDINGS, "note": ("bypass", "mute")}
 # them (#192), and in the parser's refusals.
 TARGET_SHAPES = {
     "blend": "a list of two channel names",
-    "parameter": "channel/plugin/parameter",
+    "parameter": "channel/plugin/parameter (the parameter as Sushi names it, a slash and all)",
     "mute": "a channel name",
     "bypass": "channel/plugin",
     "volume": "a channel name, not the master",
@@ -804,7 +808,9 @@ def _parse_midi(raw: Any, problems: list[str]) -> MidiMap | None:
                 span = (float(value[0]), float(value[1]))
         shapes = {
             "blend": isinstance(target, list) and len(target) == 2 and all(isinstance(t, str) for t in target),
-            "parameter": isinstance(target, str) and target.count("/") == 2 and all(target.split("/")),
+            # The parameter is everything after the plugin: Sushi's own names
+            # may hold a slash (SWH lcrDelay's "Dry/Wet level", #210's review).
+            "parameter": isinstance(target, str) and target.count("/") >= 2 and all(target.split("/", 2)),
             "mute": isinstance(target, str) and bool(target),
             "volume": isinstance(target, str) and bool(target),
             "bypass": isinstance(target, str) and target.count("/") == 1 and all(target.split("/")),
@@ -1202,7 +1208,7 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
             problems.append(f"midi: {control.control!r} sends a note, which cannot sweep a {control.binding}")
             continue
         if control.binding == "parameter":
-            _, plugin, parameter = control.target.split("/")
+            _, plugin, parameter = control.target.split("/", 2)
             mappings.append(mapping(plugin, parameter, *control.range, number))
         elif control.binding == "volume":
             level = levels[control.target]
@@ -1936,6 +1942,7 @@ RESTART_REASONS = {
     "host": "the host config (sample rate, MIDI inputs) is read only when Sushi starts",
     # elkpy's connect_cc_to_parameter may make this live; unverified, see above.
     "midi": "Sushi's midi section (cc_mappings) is loaded only with the config",
+    "midi_unconfirmed": "a live change to Sushi's CC mappings failed, and what Sushi holds now is not known",
     "config_section": "a section of the config the live operations do not reach differs",
     "amp": "the amp's model differs, or one rig has an amp and the other not: Carla loads a model "
            "only when it starts, and is started, with the patchbay wired through it, only with the rig",
@@ -2208,11 +2215,13 @@ def diff(
 
     # -- what Sushi takes only at load, and what the agent cannot reach -------
     handled = {"tracks", "initial_state", "host_config", "midi", "_amp", WIRING,
-               "_meta", AGENT_BINDINGS}
+               "_meta", AGENT_BINDINGS, MIDI_UNCONFIRMED}
     if running.get("host_config") != next_config.get("host_config"):
         need("host", f"host config {running.get('host_config')} is {next_config.get('host_config')} in the next rig")
     if (running.get("midi") or {}) != (next_config.get("midi") or {}):
         need("midi", "the cc_mappings (Sushi's midi section) differ, and Sushi loads them only with the config")
+    if running.get(MIDI_UNCONFIRMED):
+        need("midi_unconfirmed", f"the running rig's CC mappings are not known: {running[MIDI_UNCONFIRMED]}")
     for key in sorted((set(running) | set(next_config)) - handled):
         # `_meta` is provenance and `_midi_agent` is the agent's own listener,
         # which follows the next rig on its own; anything else unknown is
