@@ -34,7 +34,9 @@ tolerance:
   level_db: 0.0001
   delay_samples: 0
   note: 'measured: two renders of this config were identical to the 0.0001 dB this
-    file is written at'
+    file is written at. Its delay_samples, 103, is the leading edge of a tap of the
+    ensemble, which is fully wet (Dry gain 0) and whose delay lines its LFOs move;
+    a change in it may be the LFOs'' phase, not the chain''s latency (#143)'
 made_from:
   rig: string-machine.yaml
   hash: 1c92aea15439c0068ee680ffe69d8ce32c89008b906b5a987a644e22ecf39ca2

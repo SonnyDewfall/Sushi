@@ -508,8 +508,8 @@ def _nulltest(args: argparse.Namespace) -> int:
     import yaml
 
     from .nulltest import (
-        ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, compare, from_dict, keep_wider, made_from_of,
-        played_findings, rig_findings, staleness, to_dict,
+        ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, compare, delay_margin_warnings, delay_margins, from_dict,
+        keep_wider, made_from_of, played_findings, rig_findings, staleness, to_dict,
     )
     from .paths import checkout_root
     from .render import (
@@ -562,6 +562,16 @@ def _nulltest(args: argparse.Namespace) -> int:
     def write_reference(path: Path, fp, tolerance, made) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(yaml.dump(to_dict(fp, tolerance, made), default_flow_style=False, sort_keys=False))
+
+    def say_delay_margins(label: str, fp) -> None:
+        # How near the delay written came to another answer (#143): every
+        # reference made says it, and one within a margin of the floor warns,
+        # since its delay could move between renders with nothing changed.
+        margins = delay_margins(fp)
+        if margins is not None:
+            print(f"   {margins}")
+        for warning in delay_margin_warnings(fp):
+            print(f"{label}: WARNING, {warning}", file=sys.stderr)
 
     def committed_tolerance(ref_file: Path):
         if not ref_file.exists():
@@ -703,6 +713,7 @@ def _nulltest(args: argparse.Namespace) -> int:
                             f"delay {tolerance.delay_samples} samples "
                             f"-> {ref_file.relative_to(root)}"
                         )
+                        say_delay_margins(label, fp)
                         for note in retried[already:]:
                             print(f"   {note}")
                         continue
@@ -744,6 +755,7 @@ def _nulltest(args: argparse.Namespace) -> int:
                                 where = args.candidates / ref_file.name
                                 write_reference(where, fp, keep_wider(measured, tolerance),
                                                 MadeFrom(target.name, current))
+                                say_delay_margins(label, fp)
                             stale.append(f"{ref_name}: {why}"
                                          + (f"; candidate {where}" if where is not None else ""))
                             print(

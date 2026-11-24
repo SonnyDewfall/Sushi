@@ -267,22 +267,98 @@ def test_a_path_under_the_floor_is_not_the_first():
     assert analysis.estimate_latency(x, wet).lag_samples == 1000
 
 
-def test_the_latency_passes_over_a_negative_lag():
+def test_the_latency_passes_over_a_weaker_negative_lag():
     # Nothing comes out of a chain before it goes in: a peak at a negative lag
-    # is the correlation of an output that is no copy of its input, not a path.
+    # under the strongest is leakage of the estimate, not a path.
     x = signals.pink_noise(SR, 1.0, -6.0)
     ref = delayed(x, 100)
-    test = x + gain_db(delayed(x, 300), -6.0)   # -100 at 1.0, +200 at 0.5
-    assert analysis.estimate_delay(ref, test).lag_samples == -100
+    test = gain_db(x, -6.0) + delayed(x, 300)   # -100 at 0.5, +200 at 1.0
     assert analysis.estimate_latency(ref, test).lag_samples == 200
 
 
-def test_with_no_path_at_or_after_zero_the_latency_is_the_strongest_alignment():
+def test_with_the_strongest_at_a_negative_lag_the_latency_is_that_peak():
     # A fully shifted octave has no path at all; the number is then the one
-    # `estimate_delay` gives, held steady by the references that carry it.
+    # `estimate_delay` gives, and a peak at 0 or later over the floor does not
+    # replace it (review of PR #237).
     x = signals.pink_noise(SR, 1.0, -6.0)
     peak = analysis.estimate_latency(delayed(x, 100), x)
     assert peak.lag_samples == -100 and peak.gain == pytest.approx(1.0, abs=0.02)
+    test = x + gain_db(delayed(x, 300), -10.0)  # -100 at 1.0, +200 at 0.32
+    assert analysis.estimate_latency(delayed(x, 100), test).lag_samples == -100
+
+
+def _sweep_and_octave(semitones_ratio):
+    """The references' 5 s log sweep and a pitch-shifted copy of it, made by
+    scaling the sweep's analytic phase: 2 for an octave up, 0.5 for down."""
+    x = signals.log_sweep(SR, 5.0, 20.0, 20000.0, level_dbfs=-20.0).reshape(-1)
+    n = len(x)
+    spectrum = np.fft.fft(x)
+    h = np.zeros(n)
+    h[0] = 1
+    h[1:n // 2] = 2
+    h[n // 2] = 1
+    analytic = np.fft.ifft(spectrum * h)
+    shifted = np.abs(analytic) * np.sin(semitones_ratio * np.unwrap(np.angle(analytic)))
+    band = np.fft.rfft(shifted)
+    band[np.fft.rfftfreq(n, 1 / SR) > 20000] = 0
+    return x, np.fft.irfft(band, n)
+
+
+OCTAVE_SECONDS = 5.0 * math.log(2) / math.log(1000.0)  # 0.502 s: a log sweep's octave
+
+
+def test_a_fully_wet_octave_up_into_a_reverb_holds_the_strongest_peak():
+    """The review of PR #237: electric-octave's octave and string-machine's
+    are a shifter fully wet into a reverb. The octave up peaks at a negative
+    lag, and the reverb's tail spreads the correlation past lag 0; looking
+    for the first peak at 0 or later found the tail, at a lag set by its
+    decay (14 samples in this one), where the strongest stays put."""
+    x, up = _sweep_and_octave(2.0)
+    latency = 3421
+    up = delayed(up, latency)
+    rng = np.random.default_rng(3)
+    length = int(SR * 1.5)
+    tail = rng.standard_normal(length) * 10 ** (-3 * np.arange(length) / length) * 0.2
+    tail[0] = 1.0
+    size = 1 << (len(up) + length - 1).bit_length()
+    wet = np.fft.irfft(np.fft.rfft(up, size) * np.fft.rfft(tail, size), size)[:len(up)]
+    strongest = analysis.estimate_delay(x, wet)
+    assert strongest.lag_samples == pytest.approx(-round(OCTAVE_SECONDS * SR) + latency, abs=5)
+    found = analysis.find_latency(x, wet)
+    assert any(p.lag_samples >= 0 and abs(p.gain) >= 0.1 * abs(strongest.gain)
+               for p in analysis.find_delays(x, wet, max_peaks=10 ** 6)), "the tail must reach the floor"
+    assert found.peak == strongest
+
+
+def test_a_fully_wet_octave_down_reads_as_a_positive_lag():
+    # The other side of the same arithmetic, documented rather than mended:
+    # an octave down is the sweep an octave's time earlier, so its strongest
+    # peak is at a positive lag and is taken for a latency.
+    x, down = _sweep_and_octave(0.5)
+    assert analysis.estimate_latency(x, down).lag_samples == pytest.approx(
+        round(OCTAVE_SECONDS * SR), abs=5)
+
+
+def test_the_latency_says_how_near_it_came_to_another_answer():
+    x = signals.pink_noise(SR, 2.0, -12.0)
+    clear = analysis.find_latency(x, gain_db(x, -2.0) + delayed(x, 9000))
+    assert clear.peak.lag_samples == 0 and clear.near_floor() == []
+    assert clear.ratio == pytest.approx(0.79, abs=0.02)
+
+    # The dry 16 dB under the echo: chosen, but at 0.16 of the strongest.
+    close = analysis.find_latency(x, gain_db(x, -16.0) + delayed(x, 9000))
+    assert close.peak.lag_samples == 0
+    assert any("near the floor" in why for why in close.near_floor())
+
+    # A dry 22 dB under it is not chosen, but sits under the floor.
+    under = analysis.find_latency(x, gain_db(x, -22.0) + delayed(x, 9000))
+    assert under.peak.lag_samples == 9000 and under.earlier == pytest.approx(0.079, abs=0.01)
+    assert any("an earlier peak" in why for why in under.near_floor())
+
+    # A negative lag close behind the strongest could take the answer over.
+    rival = analysis.find_latency(delayed(x, 100), x + gain_db(delayed(x, 300), -1.0))
+    assert rival.peak.lag_samples == -100 and rival.rival == pytest.approx(0.89, abs=0.02)
+    assert any("overtaking" in why for why in rival.near_floor())
 
 
 def test_the_latency_of_silence_raises_as_the_delay_does():

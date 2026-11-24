@@ -39,14 +39,17 @@ period, and exact zeros for the rest of the period. With **one** connection
 into the same port the whole period arrives. At a period of 64 the fault is
 gone.
 
-Nothing reports it: no xrun, nothing in Sushi's log at its default level, and
-the signal that does arrive is correctly aligned, so at a period of 256 it
-reads as the input at a quarter of its level.
+Nothing in Sushi's log says so at its default level (we did not record xruns
+in these runs), and the signal that does arrive is correctly aligned, so at a
+period of 256 it reads as the input at a quarter of its level.
 
 ### How to reproduce
 
-1. A Sushi config with one mono track (an empty chain is enough) whose input
-   is engine channel 0 and whose output is engine channel 0.
+1. A Sushi config with a mono track with an empty chain, whose input is
+   engine channel 0 and whose output is engine channel 0. (We ran it with two
+   such tracks, each with an empty chain and a send to a third, master,
+   track, using Sushi's internal send and return; we expect one track alone
+   to show it too, but have not run that.)
 2. Under PipeWire with `pipewire-jack`, force the period:
    `pw-metadata -n settings 0 clock.force-quantum 256` (or start the client
    with `PIPEWIRE_QUANTUM=256/48000`).
@@ -57,8 +60,12 @@ reads as the input at a quarter of its level.
    that client and record it.
 5. Look at the recording frame by frame, aligned to the period: within every
    period, frames 0 to 63 hold A + B, and frames 64 to 255 are exactly 0.0.
-6. Disconnect B, leaving one connection: the whole period arrives. Set the
-   period to 64: with both connections, the whole period arrives.
+6. With one connection into the input, the whole period should arrive: our
+   control, in the same runs, was a second Sushi input fed by A alone (our
+   `audio_input_0`; the doubly fed one was `audio_input_1`), which arrived
+   whole at every period. We did not disconnect B from the doubly fed input
+   to see it recover. At a period of 64, with both connections, the whole
+   period arrived (measured, below).
 
 These steps are the shape of what we ran, not a script we ran as written. We
 measured it with a test client written for our rig (Python, `JACK-Client`

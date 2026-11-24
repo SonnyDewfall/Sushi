@@ -7070,3 +7070,38 @@ measurement, the source line as #81 recorded it (`jack_frontend.cpp:345`,
 `jack_port_get_buffer(port, AUDIO_CHUNK_SIZE)` per chunk, not re-read) and
 the rig's workaround (a probe track on an input nothing else feeds). Not
 posted: its link goes here and in #143 once it is. *(2026-11-24)*
+
+**The earliest-path delay: the review of PR #237 (#143).** Seven findings.
+(1) **A strongest peak at a negative lag is the answer**, and no path at 0 or
+later is looked for against it. Before, a fully wet octave up (negative: on a
+log sweep an octave reads as 24083 samples, less the shifter's latency) into a
+reverb fell through to the first tail peak at 0 or later over the floor, at a
+lag set by the tail (simulated: 14 to 3349 samples); the two octave references'
+own tails were 0.059 and 0.073 of the strongest, under the 0.1 floor by a
+factor of two at most. Measured here, as before. (2) **`--calibrate` says each
+delay's margins** (`analysis.Latency`, `nulltest.delay_margins`): the chosen
+path's share of the strongest, the strongest earlier peak under the floor,
+and the strongest rival that would change the answer by overtaking; and warns
+when one is within a factor of two of the floor (0.05 to 0.2) or a rival at
+0.8. Measured on all 44: synth-lead 138 and pedals 3 are the strongest
+paths, nothing earlier, rivals 0.061 and none; `string-machine.strings` 103
+is 0.857 of the strongest (276), rival 0.726 (at -4); electric_board's 1 is
+0.43 (rival 0.23), electric-delay's 0 is 0.80. **The two octaves warn**: each
+has a second peak at 0.985 (electric-octave) and 0.975 (string-machine) of
+the strongest, so their -19380 and -20277 sit on a near tie, as they did
+before this change; renders are identical twice over, so nothing flips
+between runs, but a small change of the octave's sound could move them by
+hundreds of samples. Not changed here. (3) string-machine.strings' note says
+its 103 is the leading edge of a modulated tap, which its LFOs move;
+`estimate_latency`'s docstring says the same of a chorus fully wet. (4)
+`tests/rig_fixtures.py` names the two frozen references changed. (5)
+`selftest.measure_delay` takes the earliest path too: through electric-delay's
+chain the strongest is the echo, 76 quanta late. `null_test(align=True)`
+keeps the strongest, which is the alignment it needs. (6) The Elk draft claims
+no xrun count, which that run did not record, says the one-track repro was not
+run in that form, and gives its single-link control as the second input fed by
+A alone, not a disconnect. (7) The docstring no longer gives gx_detune_ as a
+source of negative lags (it gave delayed copies, at 4163), and says an octave
+down fully wet peaks at +24083 plus the latency and reads as one (tested on a
+synthetic shift). After: `nulltest --all` passes all 44 here, and
+`--calibrate --all` in a copy wrote every delay as committed. *(2026-11-24)*

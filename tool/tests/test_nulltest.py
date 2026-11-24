@@ -11,6 +11,8 @@ comparison, and a real render would tell us nothing extra about that.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 np = pytest.importorskip("numpy")
@@ -281,6 +283,33 @@ def test_the_dry_signal_and_an_echo_trading_places_is_no_change_of_delay():
     findings = compare(ref, test)
     assert not any(f.check == "delay-changed" for f in findings)
     assert findings, "the balance moved, and the levels must say so"
+
+
+def test_a_delay_near_the_floor_is_said_and_takes_no_part_in_comparing():
+    """The review of PR #237: a reference whose earliest path sits near the
+    0.1 floor could change its delay between renders with nothing else
+    changed, so making one says so (`delay_margin_warnings`, printed by
+    `--calibrate`). The margins are the fingerprint's alone: not written,
+    and not compared."""
+    sweep = _sweep()
+
+    def later(x, n):
+        out = np.zeros_like(x)
+        out[n:] = x[:len(x) - n]
+        return out
+
+    clear = _fp(sweep + 0.7 * later(sweep, 2400), against=sweep)
+    assert nulltest.delay_margin_warnings(clear) == []
+    assert "1.000 of the strongest" in nulltest.delay_margins(clear)
+
+    near = _fp(0.15 * sweep + later(sweep, 2400), against=sweep)
+    assert near.delay_samples == 0
+    warnings = nulltest.delay_margin_warnings(near)
+    assert warnings and warnings[0].startswith("delay 0: ")
+
+    assert "latency" not in str(to_dict(near, PROVISIONAL)["measured"])
+    assert dataclasses.replace(near, latency=None) == near
+    assert nulltest.delay_margin_warnings(_fp(sweep)) == [] and nulltest.delay_margins(_fp(sweep)) is None
 
 
 def test_delay_still_works_on_a_mono_render():

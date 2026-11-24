@@ -426,15 +426,97 @@ def estimate_delay(reference, test, *, max_lag_samples: int | None = None) -> De
 
 
 # How strong a path must be, against the strongest, to count as the first one
-# through a chain (`estimate_latency`): `find_delays`' own floor for a peak.
+# through a chain (`find_latency`): `find_delays`' own floor for a peak.
 LATENCY_MIN_RELATIVE_HEIGHT = 0.1
+
+# Where a measured latency is close enough to changing its answer to be said
+# when a reference is made of it (`Latency.near_floor`): a chosen path under
+# `LATENCY_NEAR_ABOVE` of the strongest, or an earlier peak at
+# `LATENCY_NEAR_BELOW` of it or more, is within a factor of two of the floor;
+# a rival at `LATENCY_NEAR_RIVAL` of the strongest could overtake it.
+LATENCY_NEAR_BELOW = 0.05
+LATENCY_NEAR_ABOVE = 0.2
+LATENCY_NEAR_RIVAL = 0.8
+
+
+@dataclass(frozen=True)
+class Latency:
+    """What `find_latency` chose, and how near it came to choosing otherwise.
+
+    `peak` is the answer and `strongest` the strongest peak of all. The other
+    three are each a peak's |gain| against the strongest's: `ratio`, the
+    answer's own (1.0 when it is the strongest); `earlier`, the strongest peak
+    at a lag of 0 or more, earlier than the answer, that is under the floor,
+    which would become the answer if it rose past it (0.0 when there is none,
+    and when the answer is a negative lag, which no earlier peak can replace);
+    and `rival`, the strongest peak that would change the answer by becoming
+    the strongest: one at a negative lag, or, when the answer is at a negative
+    lag already, any other (0.0 when there is none).
+    """
+
+    peak: DelayPeak
+    strongest: DelayPeak
+    ratio: float
+    earlier: float
+    rival: float
+
+    def near_floor(self) -> list[str]:
+        """Each way this answer is near changing, in words; empty when none."""
+        near = []
+        if self.ratio < LATENCY_NEAR_ABOVE:
+            near.append(f"the path chosen, at {self.peak.lag_samples}, is {self.ratio:.3f} of the strongest, "
+                        f"near the floor of {LATENCY_MIN_RELATIVE_HEIGHT}")
+        if self.earlier >= LATENCY_NEAR_BELOW:
+            near.append(f"an earlier peak is {self.earlier:.3f} of the strongest, near the floor of "
+                        f"{LATENCY_MIN_RELATIVE_HEIGHT}, and would be chosen above it")
+        if self.rival >= LATENCY_NEAR_RIVAL:
+            near.append(f"another peak is {self.rival:.3f} of the strongest, and would change the answer "
+                        f"by overtaking it")
+        return near
+
+
+def find_latency(reference, test, *, max_lag_samples: int | None = None,
+                 min_relative_height: float = LATENCY_MIN_RELATIVE_HEIGHT) -> Latency | None:
+    """The earliest path of `reference` through to `test`, with its margins
+    (`Latency`), or None when nothing correlates. See `estimate_latency`."""
+    ref = _mono(reference, "reference")
+    sig = _mono(test, "test")
+    if 2 * len(sig) < len(ref):
+        raise ValueError(
+            "the test signal is shorter than half the reference, so no lag could be searched"
+        )
+    # Every peak down to the margin under the floor: the earliest over it may
+    # be the weakest of those, and the ones under it are the margin. Taking
+    # the weaker ones too changes no choice over the floor, since peaks are
+    # taken strongest first.
+    low = min(min_relative_height, LATENCY_NEAR_BELOW)
+    peaks = find_delays(ref, sig, max_lag_samples=max_lag_samples, max_peaks=len(ref) + len(sig),
+                        min_relative_height=low)
+    if not peaks:
+        return None
+    strongest = peaks[0]
+    top = abs(strongest.gain)
+
+    def share(peak: DelayPeak) -> float:
+        return abs(peak.gain) / top
+
+    over = [peak for peak in peaks if share(peak) >= min_relative_height]
+    if strongest.lag_samples < 0:
+        # No path is first: the answer is the strongest, and only another
+        # peak overtaking it changes that.
+        return Latency(strongest, strongest, 1.0, 0.0, max((share(p) for p in peaks[1:]), default=0.0))
+    chosen = min((peak for peak in over if peak.lag_samples >= 0), key=lambda peak: peak.lag_samples)
+    earlier = [share(p) for p in peaks
+               if 0 <= p.lag_samples < chosen.lag_samples and share(p) < min_relative_height]
+    rival = [share(p) for p in peaks if p.lag_samples < 0]
+    return Latency(chosen, strongest, share(chosen), max(earlier, default=0.0), max(rival, default=0.0))
 
 
 def estimate_latency(reference, test, *, max_lag_samples: int | None = None,
                      min_relative_height: float = LATENCY_MIN_RELATIVE_HEIGHT) -> DelayPeak:
     """The earliest path of `reference` through to `test`: of `find_delays`'
     peaks at least `min_relative_height` of the strongest, the one at the
-    smallest lag that is not negative.
+    smallest lag that is not negative. `find_latency` gives its margins too.
 
     Not the strongest path (`estimate_delay`), because which path is strongest
     is a matter of balance. electric-delay's echo at 405 ms outweighs its dry
@@ -442,31 +524,38 @@ def estimate_latency(reference, test, *, max_lag_samples: int | None = None,
     a Dry/Wet of 0.55 instead of 0.61 it is the dry's 0 (2026-11-24, #143): a
     latency held to that number fails on a turn of the mix. The first arrival
     is the chain's latency, whichever path is louder, and stays where it is
-    when the two trade places, as long as the earlier is at least a tenth of
-    the later.
+    when a dry signal and an echo trade places, as long as the earlier is at
+    least a tenth of the later. A modulated path is another matter: a chorus
+    fully wet has no dry, and its first arrival is the leading edge of a tap
+    whose delay its LFO moves, so a change in it may be the LFO's phase and
+    not the chain's latency (string-machine's ensemble, 103 samples).
 
     A negative lag is not a path: nothing comes out of a chain before it goes
-    in. A peak there is the correlation of an output that is not a copy of its
-    input (gx_detune_'s, Rubber Band's shifted octave), so it is passed over.
-    When no peak at a lag of 0 or more reaches the floor, as for an octave
-    fully wet, there is no first path to give, and this is `estimate_delay`'s
-    strongest alignment: a number to hold steady, not a lag.
+    in. When the strongest peak is at one, this is that peak, as
+    `estimate_delay` gives it, and no path at 0 or later is looked for against
+    it: a number to hold steady, not a lag. An octave up does this. On a log
+    sweep a pitch shift reads as a time shift, since the sweep reaches each
+    frequency's octave a fixed time later (0.502 s, 24083 samples, for the
+    references' 5 s sweep over 20 Hz to 20 kHz), so an octave up fully wet
+    peaks at -24083 plus the shifter's latency: -19380 for electric-octave's,
+    with Rubber Band's. Looking past it for the first peak at 0 or more would
+    find a reverb's tail after the shifter instead, at a lag set by the tail
+    (review of PR #237, simulated; the two octave references' own tails come
+    to 0.059 and 0.073 of the strongest, under the floor but within a factor
+    of two of it). An octave **down** fully wet peaks at +24083 plus the
+    latency, which is not negative, and is read as a latency: a number to hold
+    steady too, though it looks like a lag. Weaker peaks at negative lags,
+    where the strongest is not, are leakage of the estimate around a
+    nonlinearity, which the board and guitar_vocal show at -38165 and the
+    like, and are passed over.
 
     Raises as `estimate_delay` does.
     """
-    ref = _mono(reference, "reference")
-    sig = _mono(test, "test")
-    if 2 * len(sig) < len(ref):
-        raise ValueError(
-            "the test signal is shorter than half the reference, so no lag could be searched"
-        )
-    # Every peak over the floor: the earliest may be the weakest of them.
-    peaks = find_delays(ref, sig, max_lag_samples=max_lag_samples, max_peaks=len(ref) + len(sig),
-                        min_relative_height=min_relative_height)
-    if not peaks:
+    found = find_latency(reference, test, max_lag_samples=max_lag_samples,
+                         min_relative_height=min_relative_height)
+    if found is None:
         raise ValueError("no correlation between the signals within the allowed lag (is either one silent?)")
-    causal = [peak for peak in peaks if peak.lag_samples >= 0]
-    return min(causal, key=lambda peak: peak.lag_samples) if causal else peaks[0]
+    return found.peak
 
 
 @dataclass(frozen=True)
