@@ -167,10 +167,9 @@ and shows the control's name (**C**, **pedal**) once something is. To assign:
    the pedal for a volume or a knob. A and B are never offered: they step rigs.
 3. Pick the control. Pick **none** to take it off again.
 
-If the control you pick is already doing something else on this rig, the page
-asks first, naming what it is on now: **Move C** moves it, **Keep it** leaves
-everything as it was. A control does one thing on a rig, so moving it takes it
-off the other.
+If the control you pick is already doing something else on this rig, it moves
+at once: a control does one thing on a rig, so moving it takes it off the
+other. **Undo**, at the top of the page, puts it back where it was.
 
 What you assign is written into the running rig's file, keeping the file's
 comments, and not committed. A footswitch on an effect, or a momentary
@@ -178,8 +177,8 @@ footswitch on a channel, works at once. The pedal on a volume or a knob, and a
 latching footswitch on a channel, need the rig to restart (about five seconds
 of silence) before they work: the page says so and offers **Restart**. If you
 have turned knobs since the last save, that restart would lose them, so the
-page asks you to save first. Undo does not take an assignment back: assign
-again, or pick **none**.
+page asks you to save first. **Undo** takes an assignment back, as it does
+any change.
 
 The rig's file says which board its pedals are for. The first assignment on a
 rig fills that in for you when the machine's file describes one board; if it

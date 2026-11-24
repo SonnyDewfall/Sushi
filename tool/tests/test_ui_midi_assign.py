@@ -260,8 +260,8 @@ def test_a_pedal_on_a_parameter_from_the_effects_row_offers_the_restart(browser,
     expect(result).to_contain_text("It plays when electric_board restarts")
     assert midi_of(s)["controls"] == [{"control": "pedal", "parameter": "board/overdrive/Drive"}]
     expect(summary(p, "pedal")).to_have_text("board/overdrive/Drive")
-    result.get_by_role("button", name="Restart electric_board to play it").click()
-    p.locator("section.pedals").get_by_role("button", name="Restart now").click()
+    result.get_by_role("button", name="Restart").click()
+    p.locator("section.pedals").get_by_role("group", name="Restart?").get_by_role("button", name="Yes").click()
     until(lambda: ["restart"] in s.lifecycle.calls)
     page.close()
 
@@ -441,7 +441,7 @@ def test_a_save_as_whose_file_waits_for_a_restart_says_so_and_offers_it(browser,
         result = p.locator(".save-result.ok")
         expect(result).to_contain_text("Saved as foo")
         expect(result).to_contain_text("It plays as it was loaded until it restarts (")
-        result.get_by_role("button", name="Restart foo to play it").click()
-        p.locator("section.save").get_by_role("button", name="Restart now").click()
+        result.get_by_role("button", name="Restart").click()
+        p.locator("section.save").get_by_role("group", name="Restart?").get_by_role("button", name="Yes").click()
         until(lambda: ["restart"] in s.lifecycle.calls)
         page.close()

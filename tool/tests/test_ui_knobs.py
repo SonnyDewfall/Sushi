@@ -200,21 +200,13 @@ def test_the_revert_list_says_when_and_how_long_ago(blank):
                  {id: 'commit:' + 'a'.repeat(40), kind: 'commit', sha: 'a'.repeat(40), at: '2026-11-03T12:00:00Z', subject: 'Tune it'}]}};
       const rows = R.revertRows(answer, now, (iso) => iso.slice(11, 16));
       return {rows: rows.rows.map((r) => [r.title, r.sub, r.current]), notes: rows.notes,
-        first: R.revertConfirm(rows.rows[1], answer, 0, 'electric_board', (iso) => iso.slice(11, 16)),
-        unsaved: R.revertConfirm(rows.rows[1], answer, 2, 'electric_board'),
-        changed: R.revertConfirm(rows.rows[2], {ok: true, body: {...answer.body, current: {kept_as: null, git: 'changed'}}}, 0, 'electric_board'),
         call: [R.revertCall('electric_board', 's1'), R.revertCall('electric_board', 's1', true)],
         ago: [R.agoText('2026-11-06T11:59:30Z', now), R.agoText('2026-11-06T10:00:00Z', now), R.agoText('x', now)]};""")
     assert out["rows"] == [["Saved 11:55", "5 min ago", True], ["Saved 09:00", "3 h ago", False],
                            ["Commit aaaaaaa", "Tune it · 3 days ago", False]]
     assert out["notes"] == ["The newest 50 saves of electric_board are kept, in .sushi-rig/saves/electric_board/, which git ignores."]
-    first = out["first"]
-    assert first["title"] == "Revert electric_board to the save of 09:00 (3 h ago)?"
-    assert first["lost"] == ["Nothing of the file: as it is now it is kept as the save of 11:55, so you can come back to it."]
-    assert first["go"] == "Revert now" and first["discard"] is False and "live where it can be" in first["plays"]
-    assert out["unsaved"]["lost"][0] == "2 unsaved changes playing now, made since the last save."
-    assert out["unsaved"]["go"] == "Revert, dropping 2 unsaved changes" and out["unsaved"]["discard"] is True
-    assert out["changed"]["lost"] == ["The file as it is now: it is in no save or commit (it changed since, by an edit or by hand), so it is lost."]
+    # The confirm that named what a revert lost (`revertConfirm`) is gone (#209):
+    # a revert is one tap, and the one Undo puts the file back.
     assert out["call"] == [{"path": "/rigs/electric_board/revert", "json": {"save": "s1"}},
                            {"path": "/rigs/electric_board/revert", "json": {"save": "s1", "discard": True}}]
     assert out["ago"] == ["just now", "2 h ago", None]
@@ -484,7 +476,7 @@ def test_the_master_volume_is_on_the_racks_header_and_saved_as_the_masters_level
         p.keyboard.press("Enter")
         until(lambda: abs(served.rig.info["master"]["gain"]["value"] - 111 / 144) < 1e-6)
         unsaved_count(p, 1)
-        expect(p.locator("button.undo")).to_have_text("Undo · master · gain")
+        expect(p.locator("button.undo")).to_have_attribute("title", "Undo master gain")
         # The wheel, a notch at a time, and down to off.
         fader = master.get_by_role("slider", name="Master volume")
         box = fader.bounding_box()
@@ -549,7 +541,7 @@ def test_the_rack_is_a_mixing_desk_strips_left_chains_middle_files_right(browser
     # The master's strip opens its chain's tab (test_ui_tabs.py); its volume is the header's.
     master = p.locator('nav.channels .strip-master')
     expect(master.get_by_role("button", name="master")).to_have_attribute("aria-controls", "rack-panel")
-    expect(master).to_contain_text("Its volume is the master's, in the header.")
+    expect(master.locator(".master-says")).to_have_attribute("title", "The mix. Its volume is the master's, in the header.")
     expect(master.get_by_role("slider")).to_have_count(0)
     board = strips.first
     expect(board.get_by_role("textbox", name="board volume value")).to_have_value("0.0 dB")
@@ -649,9 +641,10 @@ def test_the_inputs_say_why_with_no_rig_and_new_rig_is_there(browser):
     with Served(lifecycle=UiLifecycle(up=None)) as served:
         page = Page(browser, served.url + "/#rack")
         p = page.page
-        expect(p.locator(".strips")).to_contain_text("CHANNELS AND INPUTS")
-        expect(p.locator(".inputs-why")).to_have_text(
-            "No rig is running: start a rig of channels from the picker to add a channel or change an input, or use New rig…")
+        expect(p.locator(".strips")).to_contain_text("CHANNELS")
+        expect(p.locator(".inputs-why")).to_have_text("No rig is running")
+        expect(p.locator(".inputs-why")).to_have_attribute(
+            "title", "No rig is running: start a rig of channels from the picker to add a channel or change an input, or use New rig…")
         expect(p.get_by_role("link", name="New rig…")).to_be_visible()
         master = p.get_by_role("group", name="Master volume")
         expect(master.get_by_role("slider")).to_be_disabled()
@@ -669,17 +662,18 @@ def test_the_inputs_say_why_for_a_v1_run_and_new_rig_is_there(browser):
     with Served(lifecycle=lifecycle, describe=v1) as served:
         page = Page(browser, served.url + "/#rack")
         p = page.page
-        expect(p.locator(".inputs-why")).to_have_text(
-            "guitar_vocal is a v1 config (started with `sushi-rig up` without `--rig`), which has no rig file to edit: "
+        expect(p.locator(".inputs-why")).to_have_attribute(
+            "title", "guitar_vocal is a v1 config (started with `sushi-rig up` without `--rig`), which has no rig file to edit: "
             "start it from the picker, or make a rig with New rig…")
         expect(p.get_by_role("link", name="New rig…")).to_be_visible()
         page.close()
 
 
 def test_revert_is_refused_with_unsaved_work_and_allowed_dropping_it(browser):
-    """Save, change, save, change; revert to the first: the page counts the
-    unsaved change and names it in the confirm, the agent writes the first
-    save back byte for byte, and the result says how the rig was switched."""
+    """Save, change, save, change; revert to the first: the agent refuses for
+    the unsaved change and the page asks "Drop changes?" (#209: in place of a
+    confirm naming what was lost); Yes writes the first save back byte for
+    byte, and the result says how the rig was switched."""
     from sushi_rig import saves
 
     with Served(save=True) as served:
@@ -702,25 +696,19 @@ def test_revert_is_refused_with_unsaved_work_and_allowed_dropping_it(browser):
         p.get_by_role("button", name="Revert…").click()
         rows = p.locator(".revert-point")
         expect(rows).to_have_count(3)  # two saves and the commit
-        expect(rows.nth(0)).to_contain_text("the file now")
+        expect(rows.nth(0)).to_contain_text("now")
         expect(rows.nth(2)).to_contain_text("Commit")
         rows.nth(1).click()
-        confirm = p.locator(".revert-confirm")
-        expect(confirm).to_contain_text("Revert electric_board to the save of")
-        expect(confirm).to_contain_text("1 unsaved change playing now, made since the last save.")
-        expect(confirm).to_contain_text("kept as the save of")
-        # The agent decides too: asked without discard, it refuses.
-        status = p.evaluate("""async (id) => (await fetch('/rigs/electric_board/revert',
-          {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({save: id})})).status""",
-                            rows.nth(1).get_attribute("data-point"))
-        assert status == 409
+        # The agent refuses without discard, and nothing is written.
+        confirm = p.get_by_role("group", name="Drop changes?")
+        expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
         assert rig_path.read_bytes() != first, "refused: nothing written"
-        confirm.get_by_role("button", name="Revert, dropping 1 unsaved change").click()
+        confirm.get_by_role("button", name="Yes").click()
         result = p.locator(".save-result.ok")
         expect(result).to_contain_text("Reverted electric_board")
-        expect(result).to_contain_text("byte for byte")
-        expect(result).to_contain_text("switched to it live")
-        expect(result).to_contain_text("The unsaved changes were dropped.")
+        expect(result).to_have_attribute("title", re.compile("byte for byte"))
+        expect(result).to_have_attribute("title", re.compile("switched to it live"))
+        expect(result).to_have_attribute("title", re.compile("The unsaved changes were dropped."))
         assert rig_path.read_bytes() == first
         listed, _ = saves.snapshots(served.save.root, "electric_board")
         assert saves.snapshot_bytes(served.save.root, "electric_board", listed[-1]["id"]) == first
@@ -1018,14 +1006,14 @@ def test_a_half_typed_volume_survives_a_master_chain_change(browser):
         page = rack_page(browser, served)
         p = page.page
         master = p.locator("nav.channels .strip-master")
-        expect(master).to_contain_text("0 plugins on its chain")
+        expect(master).to_contain_text("0 plugins")
         field = p.locator("nav.channels").get_by_role("textbox", name="vocal volume value")
         field.click()
         p.keyboard.type("-12")
         handle = field.element_handle()
         answer = post(served, "/live/add", {"track": "master", "uri": MDA_DELAY, "name": "bus_delay"})
         assert answer["ok"], answer
-        expect(master).to_contain_text("1 plugin on its chain")  # drawn in place
+        expect(master).to_contain_text("1 plugin")  # drawn in place
         assert handle.evaluate("(e) => e.isConnected && document.activeElement === e"), "not rebuilt"
         expect(field).to_have_value("-12")
         p.keyboard.press("Enter")

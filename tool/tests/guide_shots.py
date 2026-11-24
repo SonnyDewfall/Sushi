@@ -89,7 +89,8 @@ def shots(browser) -> list[str]:
         time.sleep(SETTLE)
         shoot(page, "rack.png")
 
-        # Saving and going back: two saves, a change since, and a point chosen.
+        # Saving and going back: two saves, a change since, and the list open
+        # (a point tapped reverts at once since #209, so none is tapped).
         drive = "article.unit[data-unit=overdrive] input.value-field"
         typed(page, drive, "0.8")
         page.click("button.save-main")
@@ -101,10 +102,9 @@ def shots(browser) -> list[str]:
         page.click(".save-result button.dismiss")
         page.click("button.revert-open")
         page.wait_for_selector(".revert-point")
-        page.locator(".revert-point").nth(1).click()
         time.sleep(SETTLE)
         page.set_viewport_size({"width": 1280, "height": 1100})
-        shoot(page, "save-and-revert.png", clip=span(page, ".changes", ".save-note"))
+        shoot(page, "save-and-revert.png", clip=span(page, ".changes", ".revert"))
         context.close()
 
         # Building a rig: the New rig screen, two channels drafted.

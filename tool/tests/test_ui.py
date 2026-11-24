@@ -26,7 +26,7 @@ import pytest
 pytest.importorskip("aiohttp")
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
-from sushi_rig.agent import Agent, pick_undo, UndoBarrier  # noqa: E402
+from sushi_rig.agent import Agent  # noqa: E402
 from sushi_rig.library import load_profiles, PROFILES_DIR  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
 from sushi_rig.ui import UI_DIR, panel_profile, panel_profiles  # noqa: E402
@@ -652,27 +652,15 @@ def test_a_remove_undone_after_a_save_is_unsaved_as_an_add(blank):
         {"kind": "added", "processor": "delay", "track": "board", "source": None}]
 
 
-@pytest.mark.parametrize("log, first", [
-    ([], 0),
-    ([entry("parameter", {"processor": "a", "parameter": "x", "value": 1}, 0)], 0),
-    ([entry("parameter", {}, 0), entry("bypass", {}, False), entry("undo", {"of": "bypass"}, True, undoes=8)], 7),
-    ([entry("move", {}, []), entry("stale", {"of": "move"}, None, stale=0), entry("parameter", {}, 0), entry("undo", {}, 0, undoes=2)], 0),
-    ([entry("parameter", {}, 0), entry("rig", {"rig": "b"}, "a")], 0),
-    ([entry("rig", {"rig": "b"}, "a"), entry("bypass", {}, True)], 3),
-    ([entry("parameter", {}, 0), entry("save", {"file": "config/rigs/a.yaml"}, "config/rigs/a.yaml")], 2),
-    ([entry("save", {"file": "config/rigs/a.yaml"}, "config/rigs/a.yaml")], 0),
-    ([entry("rig", {"rig": "b"}, "a"), entry("save", {}, None)], 0),
-    ([entry("parameter", {}, 0), entry("save", {}, None), entry("undo", {}, 0, undoes=5)], 5),
-])
-def test_the_undo_the_page_offers_is_the_one_the_agent_would_make(blank, log, first):
-    try:
-        expected = pick_undo(log, first)
-        expected = None if expected is None else {"index": expected[0]}
-    except UndoBarrier:
-        expected = {"barrier": True}
-    got = rigjs(blank, """const n = R.nextUndo(arg);
-      return n === null ? null : n.barrier ? {barrier: true} : {index: n.index};""", {"log": log, "first": first})
-    assert got == expected
+def test_a_save_undo_took_back_is_no_baseline(blank, served):
+    """#209: a save the one Undo took back (`withdrawn`) put its file back as
+    it was, so what came before it is unsaved again, and it is not the last
+    save; the agent's own walk (`since_baseline`) skips it alike."""
+    live = served.rig.snapshot(served.rig.connect())  # Drive 0.62
+    drive = entry("parameter", {"processor": "overdrive", "parameter": "Drive", "value": 0.62}, 0.4, 10)
+    saved = {**entry("save", {"file": "config/rigs/electric_board.yaml", "how": "updated"}, "x", 12), "withdrawn": True}
+    assert len(unsaved(blank, [drive, saved], live)["items"]) == 1
+    assert rigjs(blank, "return R.lastSave(arg);", {"log": [saved], "first": 0}) is None
 
 
 # -- saving (S4) -------------------------------------------------------------------
@@ -818,7 +806,6 @@ def test_the_last_save_is_the_newest_save_in_the_log(blank):
     log = [entry("save", {"file": "a"}, None, 10), entry("parameter", {}, 0, 11), entry("save", {"file": "b"}, None, 12)]
     assert rigjs(blank, "return R.lastSave(arg);", {"log": log, "first": 0}) == {"file": "b", "at": at(12)}
     assert rigjs(blank, "return R.lastSave(arg);", {"log": log[1:2], "first": 0}) is None
-    assert rigjs(blank, "return R.describeEntry(arg);", log[0]) == "save to a"
 
 
 # -- the rig's state, and the lock -------------------------------------------------
@@ -950,7 +937,7 @@ def test_the_rack_shows_the_open_chain_as_a_row_of_cards_with_the_profiles_contr
     expect(overdrive).to_contain_text("GxTubeScreamer · profile")
     expect(rack.get_by_role("slider", name="overdrive BYPASS")).to_have_count(0)
     # No profile: every parameter, in a plain list, the read-only one said so.
-    expect(rack.locator('.unit[data-unit="delay"]')).to_contain_text("no profile: every parameter")
+    expect(rack.locator('.unit[data-unit="delay"]')).to_contain_text("no profile")
     expect(rack.locator('.unit[data-unit="delay"]').get_by_role("slider")).to_have_count(6)
     # The octave is bypassed, so a slim row: opened, its read-only one says so.
     rack.locator('.unit[data-unit="octave"] button.name').click()
@@ -993,7 +980,7 @@ def test_a_refused_change_shows_the_agents_reason_and_the_rigs_value(rack, serve
     rack.keyboard.press("ArrowUp")
     alert = rack.locator(".problem.refused")
     expect(alert).to_contain_text("Not changed: delay · Feedback")
-    expect(alert).to_contain_text("Sushi would not set Feedback (test)")
+    expect(alert).to_have_attribute("title", re.compile(re.escape("Sushi would not set Feedback (test)")))
     expect(rack.locator('.unit[data-unit="delay"] .knob[data-control$="Feedback"] .note')).to_have_text("refused: Sushi would not set Feedback (test)")
     # Back to the rig's value, with the reason beside it: not a silent revert.
     expect(feedback).to_have_attribute("aria-valuetext", "0.35")
@@ -1006,18 +993,18 @@ def test_bypass_and_undo_are_one_tap_each(rack, served):
     rack.get_by_role("button", name="Bypass overdrive").click()
     expect(rack.get_by_role("button", name="Turn on overdrive")).to_be_visible()
     until(lambda: served.rig.bypassed["overdrive"] is True)
-    changes = rack.locator("aside.changes")
     unsaved_count(rack, 1)
-    undo = changes.get_by_role("button", name="Undo · bypass overdrive")
+    # The one Undo, in the header (#209), named for what it would take back.
+    undo = rack.get_by_role("button", name="Undo bypass overdrive")
     undo.click()
     until(lambda: served.rig.bypassed["overdrive"] is False)
     unsaved_count(rack, 0)
-    expect(rack.locator(".notice")).to_contain_text("Undone: bypass overdrive")
+    expect(rack.locator(".undo-said")).to_have_text("Undone: bypass overdrive")
 
 
 def test_reordering_is_refused_while_locked_and_works_once_unlocked_deliberately(rack, served):
     rack.get_by_role("button", name="Move delay up (locked)").click()
-    expect(rack.locator(".problem.refused")).to_contain_text("Locked: reordering changes the rig's structure")
+    expect(rack.locator(".problem.refused")).to_have_attribute("title", re.compile(re.escape("Locked: reordering changes the rig's structure")))
     assert served.rig.writes() == []
     lock = rack.locator("button.lock")
     lock.click()
@@ -1032,6 +1019,14 @@ def test_reordering_is_refused_while_locked_and_works_once_unlocked_deliberately
 
 
 # -- a plugin added or removed from outside the page (#32: the library screen to come) --
+
+def unlock(p):
+    """The page's lock off, by its two taps."""
+    lock = p.locator("button.lock")
+    lock.click()
+    lock.click()
+    expect(lock).to_have_text("Lock off · editing")
+
 
 def post(served, path, body):
     """A request the way a library screen would make it, from outside the page."""
@@ -1060,14 +1055,16 @@ def test_an_added_plugin_is_unsaved_as_added_and_one_tap_undoes_it(browser, edit
     answer = post(served, "/live/add", {"track": "board", "uri": "http://drobilla.net/plugins/mda/Delay",
                                         "name": "slap", "after": "overdrive"})
     assert answer["ok"] and answer["chain"] == ["overdrive", "slap", "octave", "delay", "board_send"]
-    changes = p.locator("aside.changes")
     unsaved_count(p, 1)
     expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "slap", "octave", "delay"])
-    undo = changes.get_by_role("button", name="Undo · add slap")
+    # #209: the lock holds the undo of an add, as it holds the add.
+    expect(p.get_by_role("button", name="Locked: add slap")).to_be_disabled()
+    unlock(p)
+    undo = p.get_by_role("button", name="Undo add slap")
     undo.click()
     until(lambda: served.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
     unsaved_count(p, 0)
-    expect(p.locator(".notice")).to_contain_text("Undone: add slap")
+    expect(p.locator(".undo-said")).to_have_text("Undone: add slap")
     expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "octave", "delay"])
     page.close()
 
@@ -1079,13 +1076,13 @@ def test_a_removed_plugin_is_unsaved_as_removed_and_its_undo_brings_it_back_as_i
     p.wait_for_selector(".unit")
     post(served, "/live/bypass", {"processor": "octave", "bypassed": False})
     post(served, "/live/remove", {"processor": "octave"})
-    changes = p.locator("aside.changes")
     # Its bypass is no change of its own while it is gone: the remove says it.
     unsaved_count(p, 1)
     expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "delay"])
-    changes.get_by_role("button", name="Undo · remove octave").click()
+    unlock(p)  # #209: the lock holds the undo of a remove, as it holds the remove
+    p.get_by_role("button", name="Undo remove octave").click()
     until(lambda: served.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
-    expect(p.locator(".notice")).to_contain_text("Undone: remove octave")
+    expect(p.locator(".undo-said")).to_have_text("Undone: remove octave")
     # Back with its values (Octaves at -1, not its default 0) and the bypass it had.
     expect(slider(p, "octave Octaves")).to_have_attribute("aria-valuetext", "−1.00")
     expect(p.get_by_role("button", name="Bypass octave")).to_be_visible()
@@ -1106,7 +1103,8 @@ def test_a_mono_plugin_added_is_one_card_and_one_change_and_its_copy_is_not_show
     unsaved_count(p, 1)
     p.get_by_role("tab", name="vocal").click()
     expect(p.locator("#t-vocal .unit button.name")).to_have_text(["vocal_delay", "grit"])
-    p.locator("aside.changes button.undo").click()
+    unlock(p)  # #209: the lock holds the undo of an add
+    p.locator("button.undo").click()
     until(lambda: served.rig.chains["vocal"] == ["vocal_delay", "vocal_send"])
     unsaved_count(p, 0)
     page.close()
@@ -1144,7 +1142,7 @@ def test_a_rig_that_is_down_looks_down(browser):
         page = Page(browser, served.url + "/#rack")
         expect(page.page.locator(".rig-name")).to_have_text("Rig down")
         expect(page.page.locator(".status")).to_have_text("No rig is running.")
-        expect(page.page.locator(".empty")).to_contain_text("nothing is running in Sushi")
+        expect(page.page.locator(".empty")).to_have_attribute("title", re.compile("[Nn]othing is running in Sushi"))
         expect(page.page.locator(".unit")).to_have_count(0)
         page.close()
 
@@ -1207,7 +1205,9 @@ def test_the_stage_fits_a_phone_and_every_target_takes_a_thumb(stage):
 
 def test_on_stage_one_tap_bypasses_and_one_opens_the_knobs_lock_on(stage, served):
     expect(stage.locator("button.lock")).to_have_text("Locked")
-    expect(stage.locator(".lock-note")).to_contain_text("Add, remove and reorder are off while locked")
+    # The note under the cards that said what the lock holds is gone (#209):
+    # the Lock button and the guide say it.
+    expect(stage.locator(".lock-note")).to_have_count(0)
     # Start and stop are not there to be tapped at all while locked; the rig
     # dropdown is there, and off (#182).
     expect(stage.get_by_role("combobox", name="Rig")).to_be_disabled()
@@ -1226,7 +1226,7 @@ def test_on_stage_one_tap_bypasses_and_one_opens_the_knobs_lock_on(stage, served
 def test_the_stage_shows_the_agents_last_error(stage, served):
     served.rig.refuse["octave"] = "Sushi did not confirm the bypass (test)"
     stage.get_by_role("button", name="Turn on octave").click()
-    expect(stage.locator(".problem.agent")).to_contain_text("Sushi did not confirm the bypass (test)")
+    expect(stage.locator(".problem.agent")).to_have_attribute("title", re.compile(re.escape("Sushi did not confirm the bypass (test)")))
     expect(stage.locator(".problem.refused")).to_contain_text("Not changed: octave")
 
 
@@ -1294,9 +1294,9 @@ def test_a_crashed_child_is_on_both_screens_as_loudly_as_the_last_error(browser,
     served.agent.supervisor.problems.append({"kind": "stuck", "at": "2026-11-02T21:09:00+00:00",
                                              "message": "the rig's group would not stop: pids 1, 2 are left"})
     crash = p.locator(".problem.agent", has_text="The tuner (fmit) exited")
-    expect(crash).to_contain_text("sound is unaffected")
-    expect(crash).to_contain_text("Restart the rig to bring it back")
-    expect(p.locator(".problem.agent", has_text="The rig's supervisor")).to_contain_text("would not stop")
+    expect(crash).to_have_attribute("title", re.compile(re.escape("sound is unaffected")))
+    expect(crash).to_have_attribute("title", re.compile(re.escape("Restart the rig to bring it back")))
+    expect(p.locator(".problem.agent", has_text="The rig's supervisor")).to_have_attribute("title", re.compile("would not stop"))
     expect(p.locator(".problem.page", has_text="in an earlier run")).to_have_count(1)
     # The same element, and so the same weight, the last error is given.
     assert crash.evaluate("(e) => getComputedStyle(e).backgroundColor") == \
@@ -1316,7 +1316,7 @@ def gxts9_info():
 @pytest.mark.parametrize("how", ["config_name", "started_at", "rig switch in the log"])
 def test_a_rig_with_the_same_names_and_another_plugin_gets_that_plugins_profile(rack, served, how):
     delay = rack.locator('.unit[data-unit="delay"]')
-    expect(delay).to_contain_text("no profile: every parameter")
+    expect(delay).to_contain_text("no profile")
     with served.rig.lock:  # the agent reads the rig from its worker threads
         served.rig.classes["delay"] = {"uri": GXTS9, "uid": None, "type": "lv2"}
         served.rig.info["delay"] = gxts9_info()
@@ -1373,7 +1373,7 @@ def test_profile_problems_are_shown_once_and_not_fetched_for_again(browser, tmp_
         page.page.on("request", lambda r: asked.append(r.url) if r.url.endswith("/profiles") else None)
         page.page.clock.install()
         page.page.goto(served.url + "/#rack")
-        expect(page.page.locator(".problem.page")).to_contain_text("bad.yaml: Drive's group is not a name")
+        expect(page.page.locator(".problem.page")).to_have_attribute("title", re.compile(re.escape("bad.yaml: Drive's group is not a name")))
         advance(page.page, 15)
         assert len(asked) == 1, "a loader problem is not a failed fetch"
         expect(page.page.locator('.unit[data-unit="overdrive"]')).to_contain_text("GxTubeScreamer \u00b7 profile")
@@ -1407,7 +1407,7 @@ def test_profiles_and_names_that_fail_to_arrive_are_asked_for_again_and_hold_not
     page.page.goto(served.url + "/#rack")
     # The rig shows while the library is still being built (the open tab's chain).
     expect(page.page.locator(".unit")).to_have_count(3)
-    expect(page.page.locator(".problem.page")).to_contain_text("profiles folder unreadable (test)")
+    expect(page.page.locator(".problem.page")).to_have_attribute("title", re.compile(re.escape("profiles folder unreadable (test)")))
     held[0].abort()
     advance(page.page, 12)
     assert calls == {"profiles": 2, "library": 2}
@@ -1606,7 +1606,7 @@ def test_a_live_that_fails_while_the_rig_is_up_is_still_the_error_it_is(browser)
         status = page.page.locator(".status")
         expect(status).to_have_text("Up, but Sushi did not answer: Sushi stopped answering (test)")
         expect(status).to_have_class(re.compile(r"\btone-down\b"))
-        expect(page.page.locator(".problem.agent")).to_contain_text("Sushi stopped answering (test)")
+        expect(page.page.locator(".problem.agent")).to_have_attribute("title", re.compile(re.escape("Sushi stopped answering (test)")))
         assert "/live" in page.asked
         assert any("502" in line for line in page.console), page.console
         page.close()
@@ -1633,7 +1633,7 @@ def test_a_rig_is_started_from_the_picker_headless_and_busy_is_shown_meanwhile(b
         expect(p.locator(".rig-busy")).to_have_text("Starting electric_board…")
         expect(p.get_by_role("button", name="Start electric_board")).to_be_disabled()
         expect(p.locator(".rig-name")).to_have_text("electric_board")  # the agent's busy line meanwhile
-        expect(p.locator(".notice")).to_contain_text("Started electric_board, headless.", timeout=8000)
+        expect(p.locator(".notice")).to_have_attribute("title", re.compile(re.escape("Started electric_board, headless.")), timeout=8000)
         assert world.calls == [["up", "electric_board", "--rig", "--headless"]]
         expect(p.locator(".rig.up")).to_have_text("electric_boardup now")
         expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"])
@@ -1654,7 +1654,7 @@ def test_a_refused_start_shows_the_agents_reason_and_nothing_starts(browser):
         p.get_by_role("button", name="Start electric-delay").click()
         alert = p.locator(".problem.refused")
         expect(alert).to_contain_text("Not started: electric-delay")
-        expect(alert).to_contain_text("error: no machine file for this host (test)")
+        expect(alert).to_have_attribute("title", re.compile(re.escape("error: no machine file for this host (test)")))
         expect(p.locator(".rig-name")).to_have_text("Rig down")
         assert world.calls == [["up", "electric-delay", "--rig", "--headless"]]
         page.close()
@@ -1683,9 +1683,9 @@ def test_a_start_refused_for_plugins_missing_from_plugins_says_which_and_the_fix
         alert = p.locator(".problem.refused")
         expect(alert).to_contain_text("Not started: electric-delay")
         expect(alert).to_be_visible()
-        expect(alert).to_contain_text(f"{calf}: installed in ")
-        expect(alert).to_contain_text("Nothing was started. To fix it, run this, then start the rig again: "
-                                      "sushi-rig plugins add")
+        expect(alert).to_have_attribute("title", re.compile(re.escape(f"{calf}: installed in ")))
+        expect(alert).to_have_attribute("title", re.compile(re.escape("Nothing was started. To fix it, run this, then start the rig again: "
+                                                                      "sushi-rig plugins add")))
         expect(p.locator(".rig-name")).to_have_text("Rig down")
         page.close()
 
@@ -1694,8 +1694,9 @@ def test_stop_takes_a_confirm_because_it_cuts_the_sound(browser, served):
     page = rack_page(browser, served)
     p = page.page
     p.get_by_role("button", name="Stop electric_board").click()
-    expect(p.locator(".confirm")).to_contain_text("Stop electric_board? The sound stops until a rig is started again.")
-    p.get_by_role("button", name="Cancel").click()
+    # One word since #209, with Yes and No; still a second tap.
+    expect(p.locator(".confirm")).to_have_text("Stop?YesNo")
+    p.locator(".confirm").get_by_role("button", name="No").click()
     expect(p.locator(".confirm")).to_have_count(0)
     p.get_by_role("button", name="Stop electric_board").click()
     assert served.lifecycle.calls == [], "one tap stops nothing"
@@ -1712,7 +1713,8 @@ def test_a_switch_made_live_says_so(browser, served):
     p = page.page
     p.locator(".rig", has_text="electric-delay").click()
     p.get_by_role("button", name="Switch to electric-delay").click()
-    expect(p.locator(".notice")).to_have_text(re.compile(
+    expect(p.locator(".notice")).to_have_text(re.compile(r"^Switched to electric-delay"))
+    expect(p.locator(".notice")).to_have_attribute("title", re.compile(
         r"^Switched to electric-delay live in 0\.4 s: Sushi was not restarted\."))
     expect(p.locator(".rig-name")).to_have_text("electric-delay")
     expect(p.locator(".rig.up")).to_have_text("electric-delayup now")
@@ -1726,7 +1728,7 @@ def test_a_switch_made_by_restart_says_why(browser, served):
     p = page.page
     p.locator(".rig", has_text="accustomed").click()
     p.get_by_role("button", name="Switch to accustomed").click()
-    expect(p.locator(".notice")).to_have_text(re.compile(
+    expect(p.locator(".notice")).to_have_attribute("title", re.compile(
         r"^Switched to accustomed by restart in 6\.2 s, because amp: the amp's settings differ \(test\)\."))
     expect(p.locator(".rig-name")).to_have_text("accustomed")
     page.close()
@@ -1790,12 +1792,12 @@ def test_the_racks_empty_message_follows_the_rig_through_a_start_that_fails(brow
         page = rack_page(browser, served)
         p = page.page
         empty = p.locator(".rack .empty")
-        expect(empty).to_contain_text("Choose one under RIGS to start it")
+        expect(empty).to_have_attribute("title", re.compile("Choose one under RIGS to start it"))
         p.locator(".rig", has_text="electric-delay").click()
         p.get_by_role("button", name="Start electric-delay").click()
-        expect(empty).to_have_text("The rig is changing; the rack comes back when it is up.")
+        expect(empty).to_have_attribute("title", "The rig is changing; the rack comes back when it is up.")
         expect(p.locator(".problem.refused")).to_contain_text("Not started: electric-delay", timeout=8000)
-        expect(empty).to_contain_text("Choose one under RIGS to start it")
+        expect(empty).to_have_attribute("title", re.compile("Choose one under RIGS to start it"))
         page.close()
 
 
@@ -1914,8 +1916,6 @@ def test_unsaved_amp_changes_are_what_was_sent_against_what_the_first_replaced(b
                 {"log": log, "live": served.rig.snapshot(0), "amp": amp})
     assert [(i["kind"], i.get("name"), i["from"], i["to"]) for i in got] == [
         ("amp", "Output Lvl", -3.0, 2.0), ("amp_model", None, "amp/models/Clean Room.nam", "amp/models/Edge.nam")]
-    assert rigjs(blank, "return [R.describeEntry(arg[0]), R.describeEntry(arg[1])];", [log[0], log[4]]) == \
-        ["amp · Output Lvl", "amp model Edge"]
     without = rigjs(blank, "return R.unsavedChanges({log: arg.log, first: 0}, arg.live, null).items;",
                     {"log": log, "live": served.rig.snapshot(0)})
     assert without == [], "no amp read: not said either way"
@@ -1938,7 +1938,6 @@ def test_the_rack_shows_the_amp_with_its_model_faders_and_quality_not_on_one(bro
     p = page.page
     card = p.locator(".amp-card")
     expect(card.locator(".amp-model")).to_have_text("Clean Room")
-    expect(card).to_contain_text("values are what was last sent, not read back")
     expect(card.get_by_role("slider")).to_have_count(2)
     expect(p.get_by_role("slider", name="amp Input Lvl")).to_have_attribute("aria-valuetext", "0.0 dB")
     expect(p.get_by_role("slider", name="amp Output Lvl")).to_have_attribute("aria-valuetext", "−3.0 dB")
@@ -1965,7 +1964,7 @@ def test_an_amp_fader_is_sent_to_carla_marked_unsaved_and_undone(browser, amp_se
     expect(p.locator(".amp-card")).not_to_contain_text("was −3.0")
     unsaved_count(p, 1)
     undo = p.locator("button.undo")
-    expect(undo).to_have_text("Undo · amp · Output Lvl")
+    expect(undo).to_have_attribute("title", "Undo amp Output Lvl")
     undo.click()
     until(lambda: amp_served.amp.carla.values()["Output Lvl"] == -3.0)
     expect(output).to_have_attribute("aria-valuetext", "−3.0 dB")
@@ -2025,25 +2024,25 @@ def test_the_model_is_changed_only_unlocked_and_after_a_confirm_that_warns_of_th
     p = page.page
     picker = p.get_by_role("combobox", name="Amp model")
     expect(picker).to_be_disabled()
-    expect(p.locator(".amp-picker")).to_contain_text("Locked: changing the amp's model cuts the sound")
+    expect(picker).to_have_attribute("title", re.compile("^Locked: changing the amp's model cuts the sound"))
     lock = p.locator("button.lock")
     lock.click()
     lock.click()
     expect(picker).to_be_enabled()
-    expect(p.locator(".amp-picker")).to_contain_text("the sound cuts out for a moment")
     # The option's own property: Playwright's to_be_disabled reads an
     # option as enabled whatever its attribute (seen with 1.63).
     expect(picker.locator("option[value='Slow Tape.nam']")).to_have_js_property("disabled", True)
     picker.select_option("Edge.nam")
-    confirm = p.get_by_role("group", name="Confirm the model change")
-    expect(confirm).to_contain_text("Load Edge? Changing the model restarts the amp: the sound cuts out for a moment")
+    # Two words since #209 (the warning was a sentence): Yes and No.
+    confirm = p.get_by_role("group", name="Restart amp?")
+    expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
     assert amp_served.amp.restarts == [], "nothing until the confirm"
-    confirm.get_by_role("button", name="Load Edge").click()
+    confirm.get_by_role("button", name="Yes").click()
     until(lambda: amp_served.amp.restarts)
     (restart,) = amp_served.amp.restarts
     assert restart["model"] == "amp/models/Edge.nam" and restart["override"] == "Edge.nam"
     assert restart["values"] == {"Input Lvl": 0.0, "Output Lvl": -3.0, "Quality": 1.0}
-    expect(p.locator(".notice")).to_contain_text("the amp now plays Edge.nam. The sound stopped")
+    expect(p.locator(".notice")).to_have_attribute("title", re.compile("the amp now plays Edge.nam. The sound stopped"))
     expect(p.locator(".amp-card .amp-model")).to_have_text("Edge")
     unsaved_count(p, 1)
     page.close()
@@ -2059,10 +2058,10 @@ def test_a_model_change_that_failed_says_so_and_whether_the_old_one_is_back(brow
     lock.click()
     lock.click()
     p.get_by_role("combobox", name="Amp model").select_option("Edge.nam")
-    p.get_by_role("button", name="Load Edge").click()
+    p.get_by_role("group", name="Restart amp?").get_by_role("button", name="Yes").click()
     alert = p.locator(".problem.refused")
     expect(alert).to_contain_text("Amp model not changed: Edge")
-    expect(alert).to_contain_text("Carla exited as it started (status 1); the previous model was brought back")
+    expect(alert).to_have_attribute("title", re.compile(re.escape("Carla exited as it started (status 1); the previous model was brought back")))
     expect(p.locator(".amp-card .amp-model")).to_have_text("Clean Room")
     page.close()
 
@@ -2072,8 +2071,8 @@ def test_with_the_panel_running_the_amp_card_writes_nothing_and_says_why(browser
     page = amp_rack(browser, amp_served)
     p = page.page
     expect(p.get_by_role("slider", name="amp Output Lvl")).to_be_disabled()
-    expect(p.locator(".amp-card")).to_contain_text("the panel's faders may have moved them since")
-    expect(p.locator(".amp-picker")).to_contain_text("The panel is running and owns the amp")
+    expect(p.locator(".amp-card .sub")).to_have_attribute("title", re.compile("the panel's faders may have moved them since"))
+    expect(p.get_by_role("combobox", name="Amp model")).to_have_attribute("title", re.compile("The panel is running and owns the amp"))
     page.close()
 
 
@@ -2128,8 +2127,8 @@ def test_the_updaters_stay_flat_as_the_amp_region_is_rebuilt(browser, amp_served
     assert first["amp"] == 2, "one per fader"
     for _ in range(5):
         picker.select_option("Edge.nam")
-        p.get_by_role("button", name="Cancel").click()
-        expect(p.get_by_role("group", name="Confirm the model change")).to_have_count(0)
+        p.get_by_role("group", name="Restart amp?").get_by_role("button", name="No").click()
+        expect(p.get_by_role("group", name="Restart amp?")).to_have_count(0)
     p.wait_for_timeout(1200)  # a poll or so, to rebuild whatever it would
     assert p.evaluate("() => window.sushiRigUpdaters()") == first
     expect(p.get_by_role("slider", name="amp Output Lvl")).to_have_attribute("aria-valuetext", "−3.0 dB")
@@ -2203,16 +2202,19 @@ def test_save_writes_the_running_rigs_file_in_place_and_says_it_is_not_committed
     save.click()
     result = p.locator(".save-result.ok")
     expect(result).to_contain_text("Saved electric_board")
-    expect(result).to_contain_text("Wrote config/rigs/electric_board.yaml in place, keeping its comments.")
-    expect(result.locator(".commit")).to_have_text(
+    # A few words since #209; what was written and what git says, on hover.
+    expect(result).to_have_attribute("title", re.compile(re.escape(
+        "Wrote config/rigs/electric_board.yaml in place, keeping its comments.")))
+    expect(result).to_have_attribute("title", re.compile(re.escape(
         f"Not committed: changed on top of commit {save_served.save.commit[:7]}. "
-        "sushi-rig does not commit: that is yours to do.")
+        "sushi-rig does not commit: that is yours to do.")))
     assert abs(drive_of(rig_file(save_served)) - 0.52) < 1e-6
     text = (save_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
     assert "# the drive: a comment the save keeps" in text
     # The save is the baseline: nothing seen since it.
     unsaved_count(p, 0)
-    expect(p.locator(".last-save")).to_contain_text("config/rigs/electric_board.yaml, not committed when saved.")
+    expect(p.locator(".last-save")).to_have_text(re.compile("^Saved "))
+    expect(p.locator(".last-save")).to_have_attribute("title", "config/rigs/electric_board.yaml, not committed when saved")
     page.close()
 
 
@@ -2226,16 +2228,21 @@ def test_after_a_save_a_change_is_unsaved_again_and_so_is_an_undo(browser, save_
     # A change after the save.
     p.get_by_role("button", name="Bypass overdrive").click()
     unsaved_count(p, 1)
-    # Undo it, then undo again: past the save, to the knob, which the file has.
+    # Undo it, then undo again. Until #209 the second went past the save to
+    # the knob, and the save stood; the one Undo takes the save back first
+    # (the file as it was, the knob unsaved again), then the knob.
     undo = p.locator("button.undo")
-    expect(undo).to_have_text("Undo · bypass overdrive")
+    expect(undo).to_have_attribute("title", "Undo bypass overdrive")
     undo.click()
     unsaved_count(p, 0)
-    expect(undo).to_have_text("Undo · overdrive · Drive")
+    expect(undo).to_have_attribute("title", "Undo save electric_board")
+    undo.click()
+    until(lambda: drive_of(rig_file(save_served)) is None or abs(drive_of(rig_file(save_served)) - 0.61) > 1e-6)
+    unsaved_count(p, 1)
+    expect(undo).to_have_attribute("title", "Undo overdrive Drive")
     undo.click()
     until(lambda: abs(save_served.rig.info["overdrive"]["Drive"]["value"] - 0.62) < 1e-9)
-    unsaved_count(p, 1)
-    assert abs(drive_of(rig_file(save_served)) - 0.61) < 1e-6, "the save is not undone"
+    unsaved_count(p, 0)
     page.close()
 
 
@@ -2244,16 +2251,17 @@ def test_save_as_writes_a_new_rig_which_becomes_the_running_one(browser, save_se
     p = page.page
     turn_drive_down(p, 5)
     p.get_by_role("button", name="Save as…").click()
-    name = p.get_by_label("New rig name")
+    name = p.get_by_label("Name", exact=True)
     name.fill("board-two")
-    expect(p.locator(".save-check")).to_have_text("Writes config/rigs/board-two.yaml, which becomes the running rig.")
+    expect(p.locator(".save-check")).to_have_text("")  # a good name says nothing (#209)
     p.get_by_role("button", name="Save as board-two").click()
     result = p.locator(".save-result.ok")
     expect(result).to_contain_text("Saved as board-two")
-    expect(result).to_contain_text("Wrote config/rigs/board-two.yaml, a new rig, which is now the running rig.")
-    expect(result.locator(".commit")).to_have_text(
+    expect(result).to_have_attribute("title", re.compile(re.escape(
+        "Wrote config/rigs/board-two.yaml, a new rig, which is now the running rig.")))
+    expect(result).to_have_attribute("title", re.compile(re.escape(
         f"Not committed: a new file git does not track yet, on commit {save_served.save.commit[:7]}. "
-        "sushi-rig does not commit: that is yours to do.")
+        "sushi-rig does not commit: that is yours to do.")))
     assert abs(drive_of(rig_file(save_served, "board-two")) - 0.57) < 1e-6
     assert drive_of(rig_file(save_served)) is None, "the source is untouched"
     assert save_served.save.state["rig"] == "config/rigs/board-two.yaml"
@@ -2261,10 +2269,10 @@ def test_save_as_writes_a_new_rig_which_becomes_the_running_one(browser, save_se
     # The page follows: the rig's name, the picker, the next plain save.
     expect(p.locator("h1.rig-name")).to_have_text("board-two")
     expect(p.locator(".rig", has_text="board-two")).to_contain_text("up")
-    expect(p.get_by_label("New rig name")).to_have_count(0)
+    expect(p.get_by_label("Name", exact=True)).to_have_count(0)
     turn_drive_down(p, 1)
     p.get_by_role("button", name="Save to board-two").click()
-    expect(p.locator(".save-result.ok")).to_contain_text("Wrote config/rigs/board-two.yaml in place")
+    expect(p.locator(".save-result.ok")).to_have_attribute("title", re.compile("^Wrote config/rigs/board-two.yaml in place"))
     page.close()
 
 
@@ -2274,9 +2282,9 @@ def test_a_name_the_rule_refuses_is_said_before_sending_and_a_taken_one_by_the_a
     page = save_rack(browser, save_served)
     p = page.page
     p.get_by_role("button", name="Save as…").click()
-    name = p.get_by_label("New rig name")
+    name = p.get_by_label("Name", exact=True)
     name.fill("Board Two")
-    expect(p.locator(".save-check.bad")).to_contain_text("lowercase letters, digits, '-' and '_'")
+    expect(p.locator(".save-check.bad")).to_have_attribute("title", re.compile(re.escape("lowercase letters, digits, '-' and '_'")))
     expect(p.locator(".save-as button[type=submit]")).to_be_disabled()
     name.fill("hall")
     p.get_by_role("button", name="Save as hall").click()
@@ -2285,7 +2293,7 @@ def test_a_name_the_rule_refuses_is_said_before_sending_and_a_taken_one_by_the_a
     expect(refused).to_contain_text("a rig called hall already exists (config/rigs/hall.yaml)")
     assert hall.read_text() == "# another rig\n"
     assert save_served.save.state["rig"] == "config/rigs/electric_board.yaml"
-    expect(p.get_by_label("New rig name")).to_have_value("hall"), "the form stays, to choose another"
+    expect(p.get_by_label("Name", exact=True)).to_have_value("hall"), "the form stays, to choose another"
     page.close()
 
 
@@ -2297,7 +2305,7 @@ def test_in_panel_mode_save_is_not_offered_and_says_how_to_save(browser, save_se
     expect(p.get_by_role("button", name="Save to electric_board")).to_be_disabled()
     expect(p.get_by_role("button", name="Save as…")).to_be_disabled()
     expect(p.locator(".save-note")).to_contain_text("The rig runs with its panel")
-    expect(p.locator(".save-note")).to_contain_text("save with the panel's SAVE button")
+    expect(p.locator(".save-note")).to_have_attribute("title", re.compile("save with the panel's SAVE button"))
     assert drive_of(rig_file(save_served)) is None
     page.close()
 
@@ -2311,7 +2319,7 @@ def test_a_refusal_from_the_agent_is_shown_with_its_reason(browser, save_served)
     p.get_by_role("button", name="Save to electric_board").click()
     refused = p.locator(".save-result.refused")
     expect(refused).to_contain_text("Not saved")
-    expect(refused).to_contain_text("the running rig lacks delay (on board), which electric_board has")
+    expect(refused).to_have_attribute("title", re.compile(re.escape("the running rig lacks delay (on board), which electric_board has")))
     assert drive_of(rig_file(save_served)) is None
     page.close()
 
@@ -2375,7 +2383,8 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
     # to show; a field showing it needs no note.
     assert (idle["default"], idle["note"]) == ("electric_board-2026-11-12-take-03", None)
     assert idle["stems"] == "3 stems: board.wav, board-dry.wav, master.wav"
-    assert (views[10]["default"], views[10]["note"]) == (None, "No name: the agent names the take when it starts.")
+    # The note that said the agent names a take with none is gone (#209).
+    assert (views[10]["default"], views[10]["note"]) == (None, None)
     assert (views[11]["default"], views[11]["note"], views[11]["record"]["disabled"]) == (
         "electric_board-2026-11-12-take-03", None, False), "a typed name does not hide what the default is"
     assert all("default" not in v for v in views[:4] + views[7:9]), "no default but while a take could start"
@@ -2396,8 +2405,6 @@ def test_what_a_start_or_stop_said_is_shown_as_it_was_said(blank):
         R.recordOutcome("stop", {ok: true, body: {name: "riff", seconds: 64, stems: [{}, {}], problems: []}}),
         R.recordOutcome("stop", {ok: false, reason: "not recording", code: "not_recording", body: {}}),
         R.recordCall("  riff "), R.recordCall(""), R.STOP_CALL,
-        R.describeEntry({op: "record", args: {action: "start", name: "riff"}}),
-        R.nextUndo({first: 0, log: [{op: "parameter", args: {}}, {op: "record", args: {action: "start"}}, {op: "record", args: {action: "stop"}}]}).index,
       ];
     """)
     assert said[0] == {"ok": False, "title": "Not recording", "reason": "already recording riff: stop it first", "code": "recording"}
@@ -2407,7 +2414,6 @@ def test_what_a_start_or_stop_said_is_shown_as_it_was_said(blank):
     assert said[3]["title"] == "Not stopped"
     assert said[4:7] == [{"path": "/record/start", "json": {"name": "riff"}}, {"path": "/record/start", "json": {}},
                          {"path": "/record/stop", "json": {}}]
-    assert said[7] == "record riff" and said[8] == 0, "undo passes over a take"
 
 
 def test_what_is_typed_is_what_differs_from_the_default_the_field_showed(blank):
@@ -2469,7 +2475,7 @@ def test_record_and_stop_are_one_tap_each_and_work_locked(browser, record_served
     p.get_by_role("button", name="Stop", exact=True).click()
     result = bar.locator(".record-result")
     expect(result).to_contain_text("Recorded riff-idea")
-    expect(result).to_contain_text("Whole · 5 stems · nothing lost")
+    expect(result).to_have_attribute("title", re.compile("Whole · 5 stems · nothing lost"))
     expect(bar.locator("h2")).to_have_text("Record")
     take = record_served.recorder.takes / "riff-idea"
     assert __import__("sushi_rig.take", fromlist=["check_take"]).check_take(
@@ -2525,7 +2531,7 @@ def test_a_name_the_rule_refuses_is_said_before_sending_and_a_reused_one_warns(b
     name = p.get_by_label("Take name")
     name.fill("Riff Idea")
     expect(p.locator("#take-note")).to_have_class(re.compile(r"\bbad\b"))
-    expect(p.locator("#take-note")).to_contain_text("lowercase letters, digits")
+    expect(p.locator("#take-note")).to_have_attribute("title", re.compile("lowercase letters, digits"))
     expect(p.get_by_role("button", name="Record", exact=True)).to_be_disabled()
     name.fill("riff")
     p.get_by_role("button", name="Record", exact=True).click()
@@ -2960,7 +2966,8 @@ def test_record_and_stop_do_not_move_between_a_press_and_its_release(browser, re
         reach(name)
         expect(name).to_be_focused()
         if state == "a name a take already has":
-            expect(p.locator("#take-note")).to_have_text("Will replace the earlier riff, which moves to _archive/riff/.")
+            expect(p.locator("#take-note")).to_have_text("Replaces riff")
+            expect(p.locator("#take-note")).to_have_attribute("title", "Will replace the earlier riff, which moves to _archive/riff/.")
         before, held = press_and_release(p, record, edge)
         assert held == before, f"Record moved under the press with the field {state}"
         expect(bar).to_have_class(re.compile(r"\brecording\b"))
@@ -3092,7 +3099,7 @@ def test_why_recording_is_off_is_said_on_the_bar(browser, record_served, change,
     page = stage_page(browser, record_served)
     bar = page.page.locator(".record-bar")
     expect(bar.locator("h2")).to_have_text("Recording is off")
-    expect(bar.locator(".record-note")).to_contain_text(said)
+    expect(bar.locator(".record-note")).to_have_attribute("title", re.compile(re.escape(said)))
     expect(page.page.get_by_role("button", name="Record", exact=True)).to_be_disabled()
     expect(page.page.get_by_role("button", name="Stop", exact=True)).to_be_disabled()
     page.close()
@@ -3107,7 +3114,7 @@ def test_a_take_the_agent_refuses_shows_its_reason(browser, record_served):
     p.get_by_role("button", name="Record", exact=True).click()
     refused = p.locator(".record-result.refused")
     expect(refused).to_contain_text("Not recording")
-    expect(refused).to_contain_text("the capture engine did not start: no such port (test)")
+    expect(refused).to_have_attribute("title", re.compile(re.escape("the capture engine did not start: no such port (test)")))
     expect(p.locator(".record-bar h2")).to_have_text("Record")
     page.close()
 
@@ -3246,7 +3253,7 @@ def test_a_new_rig_is_made_from_the_pickers_screen_and_offered_to_switch_to(brow
                                   "keys-in · iface:capture_AUX2", "pair-in · iface:capture_AUX4 + iface:capture_AUX5"])
     expect(p.get_by_label("Channel 1 name")).to_have_value("guitar")
     p.get_by_label("Rig name").fill("two-guitars")
-    expect(p.locator('[data-check="new-rig-name"]')).to_have_text("Writes config/rigs/two-guitars.yaml.")
+    expect(p.locator('[data-check="new-rig-name"]')).to_have_text("")  # a good name says nothing (#209)
     p.get_by_role("button", name="Add channel").click()
     expect(p.get_by_label("Channel 2 input")).to_have_value("vocal-in")
     # Two channels on one input: allowed, the agent's answer.
@@ -3256,10 +3263,10 @@ def test_a_new_rig_is_made_from_the_pickers_screen_and_offered_to_switch_to(brow
     p.get_by_role("button", name="Create two-guitars").click()
     result = p.locator(".rigfile-result.ok")
     expect(result).to_contain_text("Made two-guitars")
-    expect(result).to_contain_text("Wrote config/rigs/two-guitars.yaml, a new rig with 2 channels.")
-    expect(result.locator(".commit")).to_have_text(
+    expect(result).to_have_attribute("title", re.compile(re.escape("Wrote config/rigs/two-guitars.yaml, a new rig with 2 channels.")))
+    expect(result).to_have_attribute("title", re.compile(re.escape(
         f"Not committed: a new file git does not track yet, on commit {files_served.save.commit[:7]}. "
-        "sushi-rig does not commit: that is yours to do.")
+        "sushi-rig does not commit: that is yours to do.")))
     doc = rig_file(files_served, "two-guitars")
     assert [(c["name"], c["input"], c["width"]) for c in doc["channels"]] == [
         ("guitar", "guitar-in", "mono"), ("dirty", "guitar-in", "mono")]
@@ -3300,7 +3307,8 @@ def test_add_channel_refuses_past_the_ceiling_with_the_compilers_reason(browser,
     expect(p.locator(".channel-draft")).to_have_count(3)
     add.click()
     expect(p.locator(".channel-draft")).to_have_count(3)
-    expect(p.locator(".add-refused")).to_have_text(
+    expect(p.locator(".add-refused")).to_have_text("No more channels")
+    expect(p.locator(".add-refused")).to_have_attribute("title",
         "No more channels: 4 channels need 10 outputs — 2 for the master and 2 for each channel's stem — "
         "and Sushi has 8, so a rig has at most 3 channels.")
     p.get_by_role("button", name="Remove channel 3").click()
@@ -3318,7 +3326,7 @@ def test_the_agents_refusals_of_a_new_rig_are_shown_in_place(browser, files_serv
     p.get_by_role("button", name="Create hall").click()
     refused = p.locator(".rigfile-result.refused")
     expect(refused).to_contain_text("Not made: hall")
-    expect(refused).to_contain_text("a rig called hall already exists (config/rigs/hall.yaml)")
+    expect(refused).to_have_attribute("title", re.compile(re.escape("a rig called hall already exists (config/rigs/hall.yaml)")))
     assert (rigs / "hall.yaml").read_text() == "# made elsewhere\n"
     # Two channels started from one chain: the compiler refuses the names twice.
     p.get_by_label("Rig name").fill("copies")
@@ -3361,8 +3369,9 @@ def test_a_channel_is_added_to_the_running_rig_and_a_restart_is_offered(browser,
     p.get_by_role("button", name="Add keys").click()
     result = wiring.locator(".rigfile-result.ok")
     expect(result).to_contain_text("Added keys to electric_board")
-    expect(result).to_contain_text("electric_board keeps playing as it was until it restarts (track 'keys').")
-    expect(result.locator(".commit")).to_contain_text("Not committed: changed on top of commit")
+    expect(result).to_have_attribute("title", re.compile(re.escape(
+        "electric_board keeps playing as it was until it restarts (track 'keys').")))
+    expect(result).to_have_attribute("title", re.compile("Not committed: changed on top of commit"))
     after = (files_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
     import difflib
 
@@ -3371,11 +3380,11 @@ def test_a_channel_is_added_to_the_running_rig_and_a_restart_is_offered(browser,
         "+- name: keys", "+  input: keys-in", "+  width: stereo", "+  chain: []"], "only the channel's own lines"
     expect(wiring.locator(".wiring-row")).to_have_count(3)
     expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"]), "still playing as it was"
-    result.get_by_role("button", name="Restart electric_board to play it").click()
-    confirm = wiring.get_by_role("group", name="Confirm the restart")
-    expect(confirm).to_contain_text("The sound stops for a few seconds")
-    confirm.get_by_role("button", name="Restart now").click()
-    expect(p.locator(".notice")).to_contain_text("Restarted electric_board from its file.")
+    result.get_by_role("button", name="Restart").click()
+    confirm = wiring.get_by_role("group", name="Restart?")
+    expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
+    confirm.get_by_role("button", name="Yes").click()
+    expect(p.locator(".notice")).to_have_attribute("title", re.compile(re.escape("Restarted electric_board from its file.")))
     assert ["restart"] in files_served.lifecycle.calls
     expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "keys", "Master"])
     page.close()
@@ -3390,11 +3399,11 @@ def test_a_channels_input_is_changed_from_the_rack(browser, files_served):
     expect(width.locator("option[value=stereo]")).to_have_attribute("disabled", "")  # one port, no mono_to_stereo
     p.get_by_label("vocal input").select_option("keys-in")
     width.select_option("stereo")
-    p.get_by_role("button", name="Apply to vocal").click()
+    p.get_by_role("button", name="Apply").click()
     result = wiring.locator(".rigfile-result.ok")
     expect(result).to_contain_text("Changed vocal's input")
-    expect(result).to_contain_text("keeps playing as it was until it restarts")
-    expect(result.get_by_role("button", name="Restart electric_board to play it")).to_be_visible()
+    expect(result).to_have_attribute("title", re.compile("keeps playing as it was until it restarts"))
+    expect(result.get_by_role("button", name="Restart")).to_be_visible()
     expect(wiring.locator('.wiring-row[data-channel="vocal"]')).to_contain_text("keys-in · stereo")
     assert rig_file(files_served)["channels"][1] == {
         "name": "vocal", "input": "keys-in", "width": "stereo", "level": -6.0,
@@ -3407,19 +3416,20 @@ def test_an_edit_of_the_running_rig_with_unsaved_work_is_refused_in_place(browse
     p = page.page
     turn_drive_down(p, 1)
     wiring = inputs_region(p)
-    expect(wiring.locator(".warn")).to_contain_text("with unsaved changes on electric_board, save first")
+    # The line that said "save first" before an edit is gone (#209): the agent's refusal says it.
+    expect(wiring.locator(".warn")).to_have_count(0)
     wiring.get_by_role("button", name="Change board's input").click()
     p.get_by_label("board input").select_option("keys-in")
-    p.get_by_role("button", name="Apply to board").click()
+    p.get_by_role("button", name="Apply").click()
     refused = wiring.locator(".rigfile-result.refused")
     expect(refused).to_contain_text("Not changed: board's input")
-    expect(refused).to_contain_text("electric_board is running with 1 change made through the agent and not saved")
-    expect(refused).to_contain_text("Save first")
+    expect(refused).to_have_attribute("title", re.compile("electric_board is running with 1 change made through the agent and not saved"))
+    expect(refused).to_have_attribute("title", re.compile("Save first"))
     assert rig_file(files_served)["channels"][0]["input"] == "guitar-in"
     # Saved, the same change goes through.
     p.get_by_role("button", name="Save to electric_board").click()
     expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
-    p.get_by_role("button", name="Apply to board").click()
+    p.get_by_role("button", name="Apply").click()
     expect(wiring.locator(".rigfile-result.ok")).to_contain_text("Changed board's input")
     assert rig_file(files_served)["channels"][0]["input"] == "keys-in"
     page.close()
@@ -3455,15 +3465,15 @@ def test_after_an_edit_a_knob_turned_makes_the_offered_restart_refuse_until_told
     expect(result).to_contain_text("Added keys to electric_board")
     turn_drive_down(p, 1)
     until(lambda: abs(files_served.rig.info["overdrive"]["Drive"]["value"] - 0.61) < 1e-9)
-    result.get_by_role("button", name="Restart electric_board to play it").click()
-    wiring.get_by_role("group", name="Confirm the restart").get_by_role("button", name="Restart now").click()
+    result.get_by_role("button", name="Restart").click()
+    wiring.get_by_role("group", name="Restart?").get_by_role("button", name="Yes").click()
     refused = p.locator(".problem.refused")
     expect(refused).to_contain_text("Not restarted: electric_board")
-    expect(refused).to_contain_text("electric_board has 1 change made through the agent and not saved")
-    expect(refused).to_contain_text("Save first")
+    expect(refused).to_have_attribute("title", re.compile("electric_board has 1 change made through the agent and not saved"))
+    expect(refused).to_have_attribute("title", re.compile("Save first"))
     assert ["restart"] not in files_served.lifecycle.calls
-    refused.get_by_role("button", name="Restart anyway, dropping them").click()
-    expect(p.locator(".notice")).to_contain_text("Restarted electric_board from its file.")
+    refused.get_by_role("button", name="Restart anyway").click()
+    expect(p.locator(".notice")).to_have_attribute("title", re.compile(re.escape("Restarted electric_board from its file.")))
     assert files_served.lifecycle.calls[-1] == ["restart"]
     page.close()
 
@@ -3474,10 +3484,12 @@ def test_a_new_rig_that_moves_program_numbers_says_so_with_the_table(browser, fi
     p = page.page
     p.get_by_label("Rig name").fill("aa-board")
     p.get_by_role("button", name="Create aa-board").click()
-    moved = p.locator(".rigfile-result.ok .programs-moved")
-    expect(moved).to_contain_text("Program Change numbers follow config/rigs by file name, so aa-board (program 0) "
-                                  "moves 1 rig up one: program 0, which was electric_board, is now aa-board.")
-    expect(moved.locator("tbody tr")).to_have_text(["electric_board01"])
+    # The note and its table are the result's title since #209.
+    moved = p.locator(".rigfile-result.ok")
+    expect(moved).to_have_attribute("title", re.compile(re.escape(
+        "Program Change numbers follow config/rigs by file name, so aa-board (program 0) "
+        "moves 1 rig up one: program 0, which was electric_board, is now aa-board.")))
+    expect(moved).to_have_attribute("title", re.compile(re.escape("electric_board: program 0 → 1")))
     page.close()
 
 
@@ -3502,7 +3514,7 @@ def test_an_edits_answer_is_shown_even_when_a_poll_lands_while_it_is_written(bro
     wiring = inputs_region(p)
     wiring.get_by_role("button", name="Change vocal's input").click()
     p.get_by_label("vocal input").select_option("keys-in")
-    p.get_by_role("button", name="Apply to vocal").click()
+    p.get_by_role("button", name="Apply").click()
     until(lambda: started)
     # The run starts again elsewhere while the file is written: a new start time.
     files_served.lifecycle.started = files_served.lifecycle.started + timedelta(minutes=1)

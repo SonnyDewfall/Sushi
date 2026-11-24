@@ -85,19 +85,17 @@ const state = {
   levelUpdaters: [],         // the stage's channel levels', emptied whenever that region is rebuilt
   stripUpdaters: [],         // the rack's channel strips' volumes, likewise
   chosen: null,              // the rig picked in the picker; null follows the running rig
-  // Deleting a rig from the rack's picker (#129): the confirm open ({rig,
-  // answer, refused}: the dry run's answer, null while asked), the delete in
-  // flight, GET /rigs/bin (`listing`), the Undos offered (checked against
-  // it), the last outcome, and the Undo in flight. An outcome that worked and
-  // each Undo go after R.NOTICE_MS (#189); a refusal stays until dismissed.
-  bin: { confirm: null, pending: false, listing: null, offers: [], said: null, restoring: null, focus: null },
+  // Deleting a rig from the rack's picker (#129): the delete in flight, a
+  // refusal (until dismissed), and where the focus goes after. No confirm
+  // and no Undo of its own: the one Undo puts a rig back (#209).
+  bin: { pending: false, said: null, focus: null },
   rigsRunKey: null,          // the run GET /rigs was last read for (`R.runKeyOf`): its `running` follows the run
   pending: null,             // this page's lifecycle command in flight: {op, name}
   saving: null,              // this page's save in flight: {name}, null for the running rig's own file
   saveAsOpen: false, saveAsName: "",  // the Save as… form, and what is typed in it
   saveResult: null,          // what the last save or revert from this page said (R.saveOutcome, R.revertOutcome)
   saveRestartConfirm: false, // the restart a save-as offers (its file waits for one, #192), asked again before it runs
-  revert: { open: false, rig: null, list: null, choice: null, pending: false },  // Revert…: GET /rigs/<rig>/saves, the point chosen
+  revert: { open: false, rig: null, list: null, choice: null, pending: false, drop: null },  // Revert…: GET /rigs/<rig>/saves, the point reverted to, the "Drop changes?" asked
   confirming: false, confirmTimer: null,  // Stop's second tap
   record: null, recordBase: null,  // GET /record, with /live; and {elapsed, at} of the take running
   takesOpen: { pending: false, result: null },  // the rack's Open folder (#189): in flight, and what it said
@@ -137,6 +135,10 @@ const state = {
   failures: [],              // this page's refused changes, newest first
   failed: new Map(),         // control key -> the reason its last change was refused
   notice: null,
+  // The one Undo (#209): GET /undo's answer, a press in flight, what the last
+  // press said (`R.undoOutcome`, with its time), and the restart it offers
+  // asked again before it runs.
+  undo: { answer: null, pending: false, said: null, restartConfirm: false },
   pollSeq: 0, seq: 0, timer: null, polling: false,
   screen: null, regions: null, updaters: [], keys: new WeakMap(),
 };
@@ -291,22 +293,7 @@ async function refreshRigs(force = false) {
   state.rigs = await request("GET", "/rigs");
   state.rigsAt = Date.now();
   if (state.health) state.rigsRunKey = run;
-  await refreshBin();
   return true;
-}
-
-// GET /rigs/bin, and the Undos offered checked against it (#129): one whose
-// file is gone from the bin, or whose rig is in the picker again, is let go.
-// Only the offers there when it was asked: one a delete added meanwhile is
-// newer than the listing, and is checked by the next.
-async function refreshBin() {
-  const b = state.bin;
-  const asked = new Set(b.offers.map((o) => o.entry));
-  const answer = await request("GET", "/rigs/bin");
-  b.listing = answer;
-  if (!answer.ok) return;
-  const still = new Set(R.checkedOffers(b.offers, answer).map((o) => o.entry));
-  b.offers = b.offers.filter((o) => !asked.has(o.entry) || still.has(o.entry));
 }
 
 // amp/models, for the amp card's picker: every MODELS_MS (a model copied in
@@ -443,7 +430,7 @@ async function poll() {
     // (`R.readsLive`): a down rig is a state, and asking /live for it was a
     // console error a second (#111). The log answers whatever the rig.
     const health = await request("GET", "/health");
-    const [live, log, amp, record] = await Promise.all([
+    const [live, log, amp, record, undoNext] = await Promise.all([
       R.readsLive(health) ? request("GET", "/live") : null,
       health.ok ? request("GET", "/live/log") : null,
       // The amp is read when /live is, for the same reason: with no rig up
@@ -451,6 +438,8 @@ async function poll() {
       R.readsLive(health) ? request("GET", "/amp") : null,
       // And the recorder: with no rig up there is none (R.recordBar says so).
       R.readsLive(health) ? request("GET", "/record") : null,
+      // What the one Undo would step back (#209): whatever the rig.
+      health.ok ? request("GET", R.UNDO_CALL.path) : null,
     ]);
     const logBody = log && log.ok ? log.body : null;
     // See `pluginsDue`. Another rig is shown at once, so that nothing of the
@@ -471,6 +460,7 @@ async function poll() {
     state.amp = amp;
     noteRecord(record);
     state.log = logBody;
+    state.undo.answer = undoNext;
     state.switches = switches;
     state.seq = seq;
     // The visualiser (screensaver.js, #176) runs only while a rig is up.
@@ -1026,13 +1016,13 @@ function problemsRegion(el) {
   const list = problems();
   const key = JSON.stringify([list, state.failures.map((f) => [f.title, f.reason, f.at.getTime()]), state.notice]);
   patch(el, key, () => [
-    ...state.failures.map((f, i) => h("div", { class: "problem refused", role: "alert" },
-      h("strong", {}, f.title), h("span", {}, f.reason),
+    ...state.failures.map((f, i) => h("div", { class: "problem refused", role: "alert", title: f.reason },
+      h("strong", {}, f.title), h("span", {}, R.shortSaid(f.reason)),
       f.action ? h("button", { class: "act", onclick: () => { state.failures.splice(i, 1); f.action.run(); } }, f.action.label) : null,
       h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.failures.splice(i, 1); render(); } }, "×"))),
-    ...list.map((p) => h("div", { class: `problem ${p.kind}` }, h("strong", {}, p.title), h("span", {}, p.reason),
+    ...list.map((p) => h("div", { class: `problem ${p.kind}`, title: p.reason }, h("strong", {}, p.title), h("span", {}, R.shortSaid(p.reason)),
       p.at ? h("span", { class: "at" }, p.at) : null)),
-    state.notice ? h("div", { class: "notice" }, state.notice,
+    state.notice ? h("div", { class: "notice", title: state.notice.title || null }, state.notice.text ?? state.notice,
       h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.notice = null; render(); } }, "×")) : null,
   ]);
 }
@@ -1048,16 +1038,82 @@ async function move(unit, direction) {
   kick();
 }
 
-async function undo(skip = false) {
-  const answer = await request("POST", "/live/undo", skip ? { skip: true } : {});
-  if (!answer.ok) {
-    fail(skip ? "Not skipped" : "Not undone", answer,
-      answer.code === "stale" && !skip ? { label: "Skip it", run: () => undo(true) } : null);
-  } else {
-    state.notice = skip ? `Gave up on: ${R.describeEntry(answer.body.skipped)}` : `Undone: ${R.describeEntry(answer.body.undone)}`;
+// The one Undo (#209): POST /undo, and what it said beside the button for
+// R.NOTICE_MS. Whatever it put back may be a rig file, the bin or the
+// pedals, so everything they show is read again.
+async function undo() {
+  const u = state.undo;
+  if (u.pending) return;
+  u.pending = true;
+  render();
+  let answer;
+  try {
+    answer = await request("POST", R.UNDO_CALL.path, R.UNDO_CALL.json);
+  } finally {
+    u.pending = false;
   }
+  u.said = { ...R.undoOutcome(answer), at: noticeClock() };
+  u.restartConfirm = false;
+  if (answer.ok && answer.body) u.answer = { ok: true, status: 200, body: { next: answer.body.next ?? null } };
+  armNotices();
   render();
   kick();
+  if (answer.ok) {
+    refreshRigs(true).then(render);
+    const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+    if (rig.config_name) refreshRigChannels(rig.config_name, true).then(render);
+    refreshMidi(true).then(render);
+    if (state.revert.open) refreshSaves();
+  }
+}
+
+async function restartForUndo() {
+  const u = state.undo;
+  u.restartConfirm = false;
+  const offer = u.said && u.said.offer;
+  if (!offer) return;
+  const ok = await lifecycle("restart", offer.name);
+  if (ok) u.said = null;
+  render();
+}
+
+// The button and what its last press said, in its own slot of each
+// screen's header. `screen` decides what it may undo (R.undoButton).
+function undoRegion(el, screen) {
+  const u = state.undo;
+  const view = R.undoButton(u.answer, { locked: state.locked, screen, pending: u.pending });
+  const said = u.said;
+  patch(el, JSON.stringify([view, said && [said.ok, said.text, said.title, !!said.offer], u.restartConfirm, !!state.pending]), () => [
+    h("button", { class: `undo${view.cant ? " cant" : ""}`, disabled: view.disabled, title: view.title, "aria-label": view.title,
+      onclick: () => undo() }, "Undo"),
+    said ? h("span", { class: `undo-said ${said.ok ? "ok" : "refused"}`, role: said.ok ? "status" : "alert", title: said.title || null },
+      said.text) : null,
+    said && said.offer && !u.restartConfirm ? h("button", { class: "rig-act small undo-restart", disabled: !!state.pending,
+      onclick: () => { u.restartConfirm = true; render(); } }, "Restart") : null,
+    said && said.offer && u.restartConfirm ? confirmBox("Restart?", restartForUndo, () => { u.restartConfirm = false; render(); }) : null,
+  ]);
+}
+
+// What an action said, in a few words (#209): its title ("Saved
+// electric_board", "Not assigned: C"), with everything else it said -- the
+// file written, what git says, the agent's reason -- in the box's `title`,
+// for a hover. `action` and `offer` are its buttons, if any.
+function resultBox(result, { cls = "save-result", dismiss = null, offer = null } = {}) {
+  const more = [result.ok ? result.text : result.reason, result.ok ? result.commit : null].filter(Boolean).join(" ");
+  return h("div", { class: `${cls} ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert", title: more || null },
+    h("strong", {}, result.title),
+    result.action ? h("button", { class: "rig-act danger", onclick: result.action.run }, result.action.label) : null,
+    offer,
+    dismiss ? h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: dismiss }, "×") : null);
+}
+
+// A confirm, where one is still asked (#209: what Undo cannot take back, or
+// what cuts the sound): one or two words, Yes and No.
+function confirmBox(question, yes, no, { pending = false, cls = "" } = {}) {
+  return h("span", { class: `confirm${cls ? " " + cls : ""}`, role: "group", "aria-label": question },
+    h("span", { class: "q" }, question),
+    h("button", { class: "rig-act danger small confirm-yes", disabled: pending, onclick: yes }, "Yes"),
+    h("button", { class: "rig-act small confirm-no", onclick: no }, "No"));
 }
 
 // Save (S4): the running rig into its own file, or as a new one (`name`),
@@ -1155,7 +1211,7 @@ async function lifecycle(op, name, opts = {}) {
   }
   const said = R.lifecycleOutcome(op, name, answer);
   if (said.ok) {
-    state.notice = said.text;
+    state.notice = { text: said.title, title: said.text };
     // Follow the rig that is up now; after a stop, keep the one stopped, so
     // starting it again is one tap.
     state.chosen = op === "stop" ? name : null;
@@ -1163,7 +1219,7 @@ async function lifecycle(op, name, opts = {}) {
     // A restart that would drop unsaved changes is refused by the agent;
     // dropping them is a second, deliberate tap, never the default.
     const discard = op === "restart" && answer.code === "unsaved"
-      ? { label: "Restart anyway, dropping them", run: () => lifecycle("restart", name, { discard: true }) } : null;
+      ? { label: "Restart anyway", run: () => lifecycle("restart", name, { discard: true }) } : null;
     fail(said.title, { reason: said.reason, code: answer.code }, discard);
   }
   render();
@@ -1188,7 +1244,7 @@ async function changeAmpModel(model) {
     state.ampPending = null;
   }
   const said = R.ampModelOutcome(model, answer);
-  if (said.ok) state.notice = said.text;
+  if (said.ok) state.notice = { text: said.title, title: said.text };
   else fail(said.title, { reason: said.reason, code: answer.code });
   render();
   kick();
@@ -1216,10 +1272,8 @@ function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, titl
   const confirming = state.confirming && !!stop;
   // Stop takes a second tap, because it cuts the sound; the rest are one.
   const acts = (actions) => (confirming
-    ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm stopping the rig" },
-      h("p", {}, `Stop ${stop.name || "the rig"}? The sound stops until a rig is started again.`),
-      h("button", { class: "rig-act danger", onclick: () => lifecycle("stop", stop.name) }, "Stop now"),
-      h("button", { class: "rig-act", onclick: () => { clearTimeout(state.confirmTimer); state.confirming = false; render(); } }, "Cancel"))
+    ? h("div", { class: "rig-actions" }, confirmBox("Stop?", () => lifecycle("stop", stop.name),
+      () => { clearTimeout(state.confirmTimer); state.confirming = false; render(); }, { cls: "stop-confirm" }))
     : h("div", { class: "rig-actions" }, actions.map((a) => h("button", {
       class: `rig-act${a.primary ? " primary" : ""}`, disabled: a.disabled,
       onclick: () => (a.op === "stop" ? armStop() : lifecycle(a.op, a.name)),
@@ -1243,7 +1297,7 @@ function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, titl
     sel.prompt ? h("option", { value: "", disabled: true, selected: true }, sel.prompt) : null,
     sel.options.map((o) => h("option", { value: o.value, selected: o.value === sel.value }, o.label))));
     patch(el, JSON.stringify(["dropdown", sel.actions, view.problem, view.busy, confirming && !locked, locked]), () => [
-      view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
+      view.problem ? h("p", { class: "rig-problem", title: view.problem }, R.shortSaid(view.problem)) : null,
       view.busy ? h("p", { class: "rig-busy", role: "status" }, view.busy) : null,
       // Start and Stop only unlocked, in one slim row with the guide's
       // link: on stage a Stop within reach of a thumb is the mistake the
@@ -1260,19 +1314,15 @@ function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, titl
     class: `rig${r.up ? " up" : ""}${r.chosen ? " chosen" : ""}`, "aria-pressed": String(r.chosen),
     onclick: () => { state.chosen = r.name; state.confirming = false; render(); },
   }, h("span", { class: "n" }, r.name), r.up ? h("span", { class: "tag" }, "up now") : null);
-  const held = dels && dels.find((d) => d.why);
   const rebuilt = patch(el, JSON.stringify([view, confirming, newRig, dels, bin]), () => [
     h("h2", {}, "RIGS"),
-    view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
+    view.problem ? h("p", { class: "rig-problem", title: view.problem }, R.shortSaid(view.problem)) : null,
     view.rows.length ? h("div", { class: "rig-list", role: "group", "aria-label": "Rigs in config/rigs" },
       view.rows.map((r, i) => (dels ? h("div", { class: "rig-row", "data-rig": r.name }, rigButton(r),
         h("button", { class: "rig-del", disabled: dels[i].disabled, "aria-label": dels[i].aria, title: dels[i].why,
-          "aria-describedby": dels[i].why ? "rig-del-why" : null, onclick: () => askDelete(r.name) }, dels[i].label))
+          onclick: () => deleteRig(r.name) }, dels[i].label))
         : rigButton(r)))) : null,
-    held ? h("p", { class: "sub rig-del-why", id: "rig-del-why" }, held.why) : null,
-    bin && bin.confirm ? deleteConfirmBox(bin.confirm) : null,
-    bin && bin.said ? saidBox(bin.said) : null,
-    bin && bin.offers.length ? offersBox(bin) : null,
+    bin && bin.said && !bin.said.ok ? saidBox(bin.said) : null,
     view.busy ? h("p", { class: "rig-busy", role: "status" }, view.busy) : null,
     acts(view.actions),
     // The New rig screen, from the rack's picker only: making a rig is not a
@@ -1287,136 +1337,73 @@ function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, titl
 }
 
 // ---------------------------------------------------------------- deleting a rig (#129)
-// The rack's picker: Delete on a row asks the agent what it would do (a dry
-// run: refused for the running rig, the Program Change numbers that move,
-// what git holds of the file), and the confirm says it; the delete moves the
-// file into config/rigs/.deleted/, and Undo, offered on this page for
-// R.NOTICE_MS (never across a reload, #189), moves it back.
+// The rack's picker: Delete on a row moves the file into config/rigs/.deleted/
+// at once, with no confirm: the one Undo (#209) moves it back.
 
 function binKey() {
   const b = state.bin;
-  return { confirm: b.confirm ? { ...R.deleteConfirm(b.confirm.rig, b.confirm.answer), refusedNow: b.confirm.refused || null, pending: b.pending } : null,
-    offers: b.offers, said: b.said, restoring: b.restoring };
-}
-
-function deleteConfirmBox(c) {
-  const refused = c.refusedNow || c.refused;
-  // A refusal that may pass (busy, no answer) offers asking again in place.
-  const retry = refused && (c.refusedNow ? c.refusedNow.retry : c.retry);
-  return h("div", { class: "confirm delete-confirm", role: "group", "aria-label": `Confirm deleting ${c.rig}` },
-    c.loading ? h("p", { class: "sub" }, `Asking the agent what deleting ${c.rig} would change…`) : null,
-    refused ? h("p", { role: "alert" }, `${c.rig} cannot be deleted${retry ? " now" : ""}: ${c.refusedNow ? c.refusedNow.reason : refused}`) : null,
-    c.title && !refused ? h("p", {}, c.title) : null,
-    c.lines && !refused ? h("ul", { class: "lost" }, c.lines.map((line) => h("li", {}, line))) : null,
-    c.moves && c.moves.length && !refused ? h("div", { class: "programs-moved", role: "note" },
-      h("span", { class: "warn" }, c.programsNote),
-      h("ul", { class: "moves" }, c.moves.map((line) => h("li", {}, line)))) : null,
-    retry ? h("button", { class: "rig-act delete-retry", onclick: () => askDelete(c.rig) }, "Try again")
-      : h("button", { class: "rig-act danger delete-go", disabled: !!(c.loading || refused || c.pending),
-        onclick: () => deleteRig(c.rig) }, c.pending ? "Deleting…" : c.go),
-    h("button", { class: "rig-act delete-cancel", onclick: cancelDelete }, "Cancel"));
+  return { said: b.said, pending: b.pending };
 }
 
 function saidBox(said) {
-  return h("div", { class: `save-result rig-deleted ${said.ok ? "ok" : "refused"}`, role: said.ok ? "status" : "alert" },
+  return h("div", { class: `save-result rig-deleted ${said.ok ? "ok" : "refused"}`, role: said.ok ? "status" : "alert",
+    title: said.ok ? null : said.reason },
     h("strong", {}, said.title),
-    h("span", { class: "said" }, said.ok ? said.text : said.reason),
     h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.bin.said = null; render(); } }, "×"));
 }
 
-// The Undos offered, newest first: each a rig deleted from this page whose
-// file the agent still has in its bin. `b` is what the region is drawn from
-// (`binKey`, a copy made for its key): what a press changes is state.bin's
-// own. Until #189 the × changed the copy, so state.bin, the key and the page
-// all stayed as they were, and the × did nothing.
-function offersBox(b) {
-  return h("ul", { class: "bin-offers", "aria-label": "Rigs deleted from this page" }, b.offers.map((o) => h("li", { "data-entry": o.entry },
-    h("span", { class: "said" }, "Deleted ", h("strong", {}, o.rig), ": in ", h("code", {}, o.file)),
-    h("button", { class: "rig-act undo-delete", "data-entry": o.entry, disabled: !!b.restoring, onclick: () => undoDelete(o) },
-      b.restoring === o.entry ? "Putting it back…" : `Undo: put back ${o.rig}`),
-    h("button", { class: "dismiss small", "aria-label": `Forget the Undo for ${o.rig}`, onclick: () => {
-      state.bin.offers = R.dropOffer(state.bin.offers, o.entry);
-      render();
-    } }, "×"))));
-}
-
-// The notices that worked, gone once their R.NOTICE_MS is up (#189): the rig
-// picker's outcome and Undos (`R.noticesLeft`), the takes folder's, and the
-// record bar's. Timed on the page's monotonic clock (`noticeClock`), not the
-// wall clock, which NTP can step back; one timer, set for the soonest due
+// The notices that go by themselves after R.NOTICE_MS (#189): the takes
+// folder's and the record bar's when they worked, and the one Undo's few
+// words, whatever they said (#209: the button's title keeps saying what the
+// next press would do). A refusal elsewhere stays until it is dismissed.
+// Timed on the page's monotonic clock (`noticeClock`), not the wall clock,
+// which NTP can step back; one timer, set for the soonest due
 // (`armNotices`), as the Stop confirm's is (`armStop`), and set again after
 // each pass for what is left, so a timer that fires early only looks again.
 const noticeClock = () => performance.now();
 let noticeTimer = null;
 
+function undoNotice() {
+  const u = state.undo.said;
+  return u && !state.undo.restartConfirm ? { ok: true, at: u.at } : null;
+}
+
 function armNotices() {
   clearTimeout(noticeTimer);
   noticeTimer = null;
-  const b = state.bin;
-  const wait = R.nextNoticeIn([b.said, state.takesOpen.result, state.recordResult,
-    ...b.offers.filter((o) => o.entry !== b.restoring).map((o) => ({ ok: true, at: o.at }))], noticeClock());
+  const wait = R.nextNoticeIn([state.takesOpen.result, state.recordResult, undoNotice()], noticeClock());
   if (wait !== null) noticeTimer = setTimeout(expireNotices, wait);
 }
 
-// Where the focus goes when what held it leaves with its notice: a rig
-// picker's notice gives it to its rig's row if the rig is listed (put back),
-// else to the picker's first rig; the record bar's to Record; the takes
-// folder's to Open folder. Never left on the page's body.
-function focusAfterNotice(where, rig) {
-  const tries = where === "rigs" ? [rig ? `.rig-row[data-rig="${CSS.escape(rig)}"] button.rig` : null, ".rig-list button.rig"]
-    : where === "record" ? ["button.record-act.rec", "button.record-act.stop"]
-      : where === "takes" ? ["button.open-takes"] : [];
-  for (const selector of tries.filter(Boolean)) {
+// Where the focus goes when what held it leaves with its notice: the record
+// bar's to Record, the takes folder's to Open folder, the Undo's to Undo.
+// Never left on the page's body.
+function focusAfterNotice(where) {
+  const tries = where === "record" ? ["button.record-act.rec", "button.record-act.stop"]
+    : where === "takes" ? ["button.open-takes"] : where === "undo" ? ["button.undo"] : [];
+  for (const selector of tries) {
     const el = document.querySelector(selector);
     if (el && !el.disabled) { el.focus(); if (document.activeElement === el) return; }
   }
 }
 
 function expireNotices() {
-  const b = state.bin;
   const now = noticeClock();
-  const left = R.noticesLeft(b, now);
   const openDone = R.noticeDone(state.takesOpen.result, now);
   const recordDone = R.noticeDone(state.recordResult, now);
-  if (left.said !== b.said || left.offers.length !== b.offers.length || openDone || recordDone) {
+  const undoDone = R.noticeDone(undoNotice(), now);
+  if (openDone || recordDone || undoDone) {
     const active = document.activeElement;
     const held = active && active !== document.body ? active : null;
-    const where = held && (held.closest("section.rigs") ? "rigs" : held.closest(".record-bar") ? "record"
-      : held.closest("section.takes") ? "takes" : null);
-    const entry = held && held.closest("li[data-entry]") ? held.closest("li[data-entry]").dataset.entry : null;
-    const offer = entry ? b.offers.find((o) => o.entry === entry) : null;
-    b.said = left.said;
-    b.offers = left.offers;
+    const where = held && (held.closest(".record-bar") ? "record" : held.closest("section.takes") ? "takes"
+      : held.closest(".undo-slot") ? "undo" : null);
+    if (undoDone) state.undo.said = null;
     if (openDone) state.takesOpen.result = null;
     if (recordDone) state.recordResult = null;
     render();
-    const row = held && held.closest(".rig-row[data-rig]");
-    if (held && !held.isConnected) focusAfterNotice(where, offer ? offer.rig : row ? row.dataset.rig : null);
+    if (held && !held.isConnected) focusAfterNotice(where);
   }
   armNotices();
-}
-
-async function askDelete(rig) {
-  const b = state.bin;
-  if (b.pending) return;
-  b.confirm = { rig, answer: null, refused: null };
-  b.focus = ".delete-cancel";
-  render();
-  const call = R.deleteCall(rig, true);
-  const answer = await request("POST", call.path, call.json);
-  if (b.confirm && b.confirm.rig === rig && !b.confirm.answer) {
-    b.confirm.answer = answer;
-    // Cancel keeps the focus: a second Enter does not delete.
-    b.focus = ".delete-cancel";
-  }
-  render();
-}
-
-function cancelDelete() {
-  const rig = state.bin.confirm && state.bin.confirm.rig;
-  state.bin.confirm = null;
-  if (rig) state.bin.focus = `.rig-row[data-rig="${CSS.escape(rig)}"] .rig-del`;
-  render();
 }
 
 async function deleteRig(rig) {
@@ -1432,40 +1419,16 @@ async function deleteRig(rig) {
     b.pending = false;
   }
   const said = { ...R.deletedOutcome(rig, answer), at: noticeClock() };
+  // No confirm and no Undo of its own (#209): the one Undo puts it back,
+  // and says so; only a refusal is said here, in a few words.
+  b.said = said.ok ? null : said;
   if (said.ok) {
-    b.offers = R.addOffer(b.offers, { ...said.binned, at: said.at });
-    Object.assign(b, { confirm: null, said, focus: `.undo-delete[data-entry="${CSS.escape(said.binned.entry)}"]` });
     if (state.chosen === rig) state.chosen = null;
-    armNotices();
+    b.focus = ".rig-list button.rig";
     await refreshRigs(true);
-  } else if (b.confirm && b.confirm.rig === rig) {
-    b.confirm.refused = said;
   }
   render();
-}
-
-async function undoDelete(offer) {
-  const b = state.bin;
-  if (b.restoring) return;
-  b.restoring = offer.entry;
-  render();
-  const call = R.restoreCall(offer.rig, offer.entry);
-  let answer;
-  try {
-    answer = await request("POST", call.path, call.json);
-  } finally {
-    b.restoring = null;
-  }
-  const said = { ...R.restoreOutcome(offer.rig, answer), at: noticeClock() };
-  b.said = said;
-  if (said.ok || !said.keep) b.offers = R.dropOffer(b.offers, offer.entry);
-  // An Undo kept through a refusal that may pass (busy, no answer) is offered
-  // afresh, for its own R.NOTICE_MS from now, to be tried again.
-  else b.offers = b.offers.map((o) => (o.entry === offer.entry ? { ...o, at: said.at } : o));
-  if (said.ok) b.focus = `.rig-row[data-rig="${CSS.escape(offer.rig)}"] .rig`;
-  expireNotices();
-  await refreshRigs(true);
-  render();
+  kick();
 }
 
 // ---------------------------------------------------------------- the amp
@@ -1554,23 +1517,23 @@ function ampRegion(el) {
     state.ampPicker = null;
     if (view.state === "hidden") return [];
     if (view.state !== "up") {
-      return [h("h2", {}, "AMP"), h("p", { class: view.state === "failed" ? "missing" : "amp-none" }, view.why)];
+      return [h("h2", {}, "AMP"), h("p", { class: view.state === "failed" ? "missing" : "amp-none", title: view.why }, R.shortSaid(view.why))];
     }
     state.ampPicker = h("div", { class: "amp-picker" });
     return [
       h("div", { class: "amp-head" },
         h("span", { class: "swatch", style: "background:#E07A73" }),
-        h("div", { class: "who" }, h("h2", {}, "AMP"), h("span", { class: "amp-model", title: view.model ? view.model.stored : null }, view.model ? view.model.name : "no model"),
-          view.model && view.model.declared ? h("span", { class: "amp-declared" }, `The file calls itself ${view.model.declared}`) : null,
-          h("span", { class: "sub" }, view.known === "panel" ? view.note : "in Carla · values are what was last sent, not read back"))),
-      view.model && view.model.problem ? h("p", { class: "missing" }, view.model.problem) : null,
-      view.model && view.model.warning ? h("p", { class: "warn" }, view.model.warning) : null,
-      view.model && view.model.description ? h("details", { class: "amp-about" }, h("summary", {}, "What the model declares"),
+        h("div", { class: "who" }, h("h2", {}, "AMP"), h("span", { class: "amp-model",
+          title: view.model ? [view.model.stored, view.model.declared ? `It calls itself ${view.model.declared}` : null].filter(Boolean).join(" · ") : null },
+          view.model ? view.model.name : "no model"),
+          view.known === "panel" ? h("span", { class: "sub", title: view.note }, "From the panel") : null)),
+      view.model && view.model.problem ? h("p", { class: "missing", title: view.model.problem }, R.shortSaid(view.model.problem)) : null,
+      view.model && view.model.warning ? h("p", { class: "warn", title: view.model.warning }, R.shortSaid(view.model.warning)) : null,
+      view.model && view.model.description ? h("details", { class: "amp-about" }, h("summary", {}, "Model notes"),
         h("pre", {}, view.model.description)) : null,
-      view.down ? h("p", { class: "missing" }, "Carla is not running: restart the rig to bring the amp back.") : null,
+      view.down ? h("p", { class: "missing", title: "Carla is not running: restart the rig to bring the amp back." }, "Carla down") : null,
       h("div", { class: "faders" }, view.faders.map(ampFader),
-        view.shown.map((p) => h("div", { class: "shown", title: p.note }, h("span", { class: "label" }, p.name), h("span", { class: "value" }, p.text),
-          p.note ? h("span", { class: "note" }, p.note) : null))),
+        view.shown.map((p) => h("div", { class: "shown", title: p.note }, h("span", { class: "label" }, p.name), h("span", { class: "value" }, p.text)))),
       state.ampPicker,
       helpAnchor("amp"),
     ];
@@ -1586,15 +1549,13 @@ function ampPickerRegion(el, picker) {
       picker.options.map((o) => h("option", { value: o.model, disabled: !o.usable, title: o.why || (o.declared ? `It calls itself ${o.declared}` : null) }, o.label)));
     select.value = chosen ? chosen.model : "";
     select.addEventListener("change", () => { state.ampChoice = select.value || null; render(); });
+    // The select says why it is off, on hover; a model chosen asks once,
+    // since loading it restarts the amp and cuts the sound.
+    if (picker.why) select.title = picker.why;
     return [
       h("label", { class: "selector" }, h("span", { class: "label" }, "Model"), select),
-      // The warning is said once: under the picker, or in the confirm.
-      picker.why ? h("p", { class: "sub" }, picker.why)
-        : !(chosen && picker.canChange) ? h("p", { class: "sub" }, picker.warning) : null,
-      chosen && picker.canChange ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the model change" },
-        h("p", {}, `Load ${chosen.label}? ${picker.warning}`),
-        h("button", { class: "rig-act danger", onclick: () => changeAmpModel(chosen.model) }, `Load ${chosen.label}`),
-        h("button", { class: "rig-act", onclick: () => { state.ampChoice = null; render(); } }, "Cancel")) : null,
+      chosen && picker.canChange ? confirmBox("Restart amp?", () => changeAmpModel(chosen.model),
+        () => { state.ampChoice = null; render(); }, { cls: "amp-confirm" }) : null,
     ];
   });
 }
@@ -1826,6 +1787,7 @@ function rackFrame() {
     title: h("h1", { class: "rig-name" }),
     status: h("span", { class: "status-slot" }),
     lock: h("span", { class: "lock-slot" }),
+    undo: h("span", { class: "undo-slot" }),
     problems: h("div", { class: "problems", "aria-live": "polite" }),
     tiles: h("span", { class: "tile-row" }),
     rigs: h("section", { class: "rigs", "aria-label": "Rigs" }),
@@ -1848,7 +1810,7 @@ function rackFrame() {
   regions.header = h("header", { class: "bar" },
     h("svg", { width: 28, height: 28, viewBox: "0 0 28 28", "aria-hidden": "true", class: "mark" }, h("path", { d: "M5 18a9 9 0 0 1 18 0" }), h("path", { d: "M10 18a4 4 0 0 1 8 0" })),
     regions.title, masterFader("rack"), regions.status,
-    h("span", { class: "spacer" }), regions.tiles, h("a", { class: "go", href: "#stage" }, "Stage"), helpAnchor("guide", "go help"), regions.lock);
+    h("span", { class: "spacer" }), regions.tiles, h("a", { class: "go", href: "#stage" }, "Stage"), helpAnchor("guide", "go help"), regions.undo, regions.lock);
   // The open tab's panel (#135): the amp first, in the tab of the channel it
   // is in front of (between the guitar and the board), then that chain.
   regions.panel.append(regions.amp, regions.rack);
@@ -1976,44 +1938,40 @@ function unitParts(slot, unit, expanded) {
   ];
 }
 
-// A unit's Remove (#130), at the foot of its open row: behind a confirm built
-// into the row, since a remove takes a plugin and its settings out of the
-// sound (and confirm() does not exist in every viewer the page is opened
-// in). Built with the row; what it shows is drawn in place (`drawRemove`),
-// so arming it, or a refusal, rebuilds nothing. Never offered on the
-// compiler's send, return or copy to stereo, which are not units here.
+// A unit's Remove (#130), at the foot of its open row: one tap, with no
+// confirm, since the one Undo puts the plugin back with its settings (#209).
+// Built with the row; what it shows is drawn in place (`drawRemove`), so a
+// refusal rebuilds nothing. Never offered on the compiler's send, return or
+// copy to stereo, which are not units here.
 function removeParts(slot, unit) {
   if (!R.removable(unit)) return null;
   const name = unit.name;
   const parts = {
-    ask: h("button", { class: "row-act remove", "data-focus": "remove", onclick: () => askRemove(name) }),
-    yes: h("button", { class: "row-act danger", "data-focus": "remove-confirm", hidden: true, onclick: () => removeUnit(name) },
-      `Remove ${name}`),
-    keep: h("button", { class: "row-act", "data-focus": "remove-keep", hidden: true, onclick: () => keepUnit(name) }, "Keep"),
+    ask: h("button", { class: "row-act remove", "data-focus": "remove", onclick: () => removeUnit(name) }),
     said: h("p", { class: "row-said", hidden: true }),
   };
   slot.remove = parts;
-  return h("div", { class: "row-acts" }, parts.ask, parts.yes, parts.keep, parts.said);
+  return h("div", { class: "row-acts" }, parts.ask, parts.said);
 }
 
-// The Remove's state, in place: offered, armed (the confirm), in flight, or
-// refused with the agent's reason. Locked, it says so and refuses in place.
-// In flight its button keeps the focus the confirm had (`aria-disabled`,
-// not `disabled`, which would drop it to the page), until its row goes.
+// The Remove's state, in place: offered, in flight, or refused in a few
+// words (the agent's reason on hover). Locked, it says so and refuses in
+// place. In flight its button keeps the focus (`aria-disabled`, not
+// `disabled`, which would drop it to the page), until its row goes.
 function drawRemove(slot, name) {
   const parts = slot.remove;
   if (!parts || !parts.ask.isConnected) return;
   let now = state.removing.get(name) || {};
   if (now.done && Date.now() - now.at > 5000) { state.removing.delete(name); now = {}; }
-  const armed = !!now.armed, pending = !!now.pending;
-  const label = pending ? `Removing ${name}…` : state.locked ? `Remove ${name}… (locked)` : `Remove ${name}…`;
+  const pending = !!now.pending;
+  const label = pending ? "Removing…" : state.locked ? "Remove (locked)" : "Remove";
   if (parts.ask.textContent !== label) parts.ask.textContent = label;
+  parts.ask.setAttribute("aria-label", `Remove ${name}`);
   parts.ask.title = state.locked ? R.lockRefusal(true, "remove") : "";
   parts.ask.setAttribute("aria-disabled", String(pending));
-  parts.ask.hidden = armed;
-  parts.yes.hidden = parts.keep.hidden = !armed;
-  const said = now.reason || (armed ? `Take ${name} out of the chain? Undo puts it back with its settings.` : "");
+  const said = now.reason ? (now.lock ? "Locked" : "Not removed") : "";
   if (parts.said.textContent !== said) parts.said.textContent = said;
+  parts.said.title = now.reason || "";
   parts.said.hidden = !said;
   parts.said.classList.toggle("refused", !!now.reason);
   parts.said.setAttribute("role", now.reason ? "alert" : "status");
@@ -2024,42 +1982,13 @@ function removeFocus(name, which) {
   if (slot && slot.remove) slot.remove[which].focus({ preventScroll: true });
 }
 
-function askRemove(name) {
-  const was = state.removing.get(name);
-  if (was && was.pending) return;
-  if (was && was.timer) clearTimeout(was.timer);
-  const refusal = R.lockRefusal(state.locked, "remove");
-  if (refusal) {
-    state.removing.set(name, { reason: refusal, lock: true });
-    render();
-    return;
-  }
-  // Left alone, the confirm is forgotten, as Stop's second tap is.
-  const timer = setTimeout(() => {
-    const now = state.removing.get(name);
-    if (now && now.armed && now.timer === timer) { state.removing.delete(name); render(); }
-  }, CONFIRM_MS);
-  state.removing.set(name, { armed: true, timer });
-  render();
-  removeFocus(name, "yes");
-}
-
-function keepUnit(name) {
-  const was = state.removing.get(name);
-  if (was && was.timer) clearTimeout(was.timer);
-  state.removing.delete(name);
-  render();
-  removeFocus(name, "ask");
-}
-
-// The confirm, tapped: removed through the agent. Its answer is about the
-// rig it was sent to: if the page has come to show another since (a switch,
-// a restart, from anywhere), it is said as that rig's, in the boxes at the
+// Remove, tapped: removed through the agent. Its answer is about the rig it
+// was sent to: if the page has come to show another since (a switch, a
+// restart, from anywhere), it is said as that rig's, in the boxes at the
 // top, and nothing on this rig's rows is touched (review of #130).
 async function removeUnit(name) {
   const was = state.removing.get(name);
-  if (!was || !was.armed) return;  // only an armed confirm of this rig's (see settleEdits)
-  clearTimeout(was.timer);
+  if (was && was.pending) return;
   const refusal = R.lockRefusal(state.locked, "remove");
   if (refusal) { state.removing.set(name, { reason: refusal, lock: true }); render(); return; }
   const run = state.editsRun, rig = shownRigName();
@@ -2074,7 +2003,7 @@ async function removeUnit(name) {
       // and says "Removing…" until then (forgotten after a few seconds).
       state.removing.set(name, { pending: true, done: true, at: Date.now() });
     } else if (state.rackParts && state.rackParts.slots.has(name)) {
-      state.removing.set(name, { reason: `Not removed: ${answer.reason}` });
+      state.removing.set(name, { reason: answer.reason });
     } else {
       // Its row is not on the page now (another tab, the chain redrawn):
       // said where it is seen, and the row is free to try again.
@@ -2083,7 +2012,7 @@ async function removeUnit(name) {
     }
   }, () => {
     state.removing.delete(name);
-    if (answer.ok) state.notice = `Removed ${name} from ${rig}, which the page no longer shows.`;
+    if (answer.ok) state.notice = `Removed ${name} from ${rig}`;
     else fail(`Not removed from ${rig}: ${name}`, answer);
   });
   render();
@@ -2190,7 +2119,7 @@ function unitSlot(slot, track, unit, index) {
   }
   patch(slot.badge, JSON.stringify(unit.monoNote), () => monoBadge(unit));
   // What the row as drawn shows: a row held under a drag keeps its old controls.
-  const sub = [pluginName(unit), slot.profiled ? "profile" : "no profile: every parameter"].join(" · ");
+  const sub = [pluginName(unit), slot.profiled ? "profile" : "no profile"].join(" · ");
   if (slot.sub.textContent !== sub) slot.sub.textContent = sub;
   slot.steps.up.disabled = !R.canMove(track, index, "up");
   slot.steps.down.disabled = !R.canMove(track, index, "down");
@@ -2428,14 +2357,15 @@ function chainRegion(regions, model, status, open) {
       state.removing.delete(name);
     }
     state.addRefused.clear();
-    if (waiting) return h("p", { class: "empty" }, "Reading the rig…");
+    if (waiting) return h("p", { class: "empty" }, "Reading…");
     if (!track) {
       // With no chain to add to, the library can still be looked through
       // (#130: the drawer is there, its adds off with the reason).
-      return [h("p", { class: "empty" }, model ? "This rig has no tracks to show."
-        : status.tone === "busy" ? "The rig is changing; the rack comes back when it is up."
-          : status.tone === "off" ? "No rig to show: nothing is running in Sushi. Choose one under RIGS to start it."
-            : "No rig to show: nothing is running in Sushi."),
+      const empty = model ? ["No tracks", "This rig has no tracks to show."]
+        : status.tone === "busy" ? ["Changing…", "The rig is changing; the rack comes back when it is up."]
+          : status.tone === "off" ? ["No rig", "Nothing is running in Sushi. Choose one under RIGS to start it."]
+            : ["No rig", "Nothing is running in Sushi."];
+      return [h("p", { class: "empty", title: empty[1] }, empty[0]),
       h("p", { class: "browse" }, h("button", { class: "add browse-library", "data-focus": "browse",
         onclick: () => openDrawer(null, null) }, "Browse the library…"))];
     }
@@ -2462,7 +2392,7 @@ function chainRegion(regions, model, status, open) {
   const slots = R.addSlots(track);
   drawAddSlot(parts.start, track, slots[0]);
   const count = track.units.length;
-  const hint = count ? `${count} plugin${count === 1 ? "" : "s"} · open a unit for all its controls` : "no plugins";
+  const hint = count ? `${count} plugin${count === 1 ? "" : "s"}` : "no plugins";
   if (parts.hint.textContent !== hint) parts.hint.textContent = hint;
   const names = new Set(track.units.map((u) => u.name));
   // A row taken away with the focus in it (its "Removing…", most often): the
@@ -2554,7 +2484,9 @@ function drawAddSlot(parts, track, slot) {
   parts.button.setAttribute("aria-busy", String(!!now));
   parts.button.title = off || (state.locked ? `${R.lockRefusal(true, "add")} The library can still be looked through.` : "");
   const refused = now ? null : state.addRefused.get(parts.key) || null;
-  if (parts.said.textContent !== (refused || "")) parts.said.textContent = refused || "";
+  const short = R.shortSaid(refused || "");
+  if (parts.said.textContent !== short) parts.said.textContent = short;
+  parts.said.title = refused || "";
   parts.said.hidden = parts.dismiss.hidden = !refused;
   parts.said.setAttribute("role", refused ? "alert" : "status");
 }
@@ -2686,7 +2618,7 @@ async function addFrom(entry) {
     else fail(`Not added: ${shown}`, { reason: outcome.reason.replace(/^Not added: /, "") });
   }, () => {
     state.adding.delete(key);
-    if (outcome.ok) state.notice = `Added ${outcome.name} to ${drawer.track} on ${rig}, which the page no longer shows.`;
+    if (outcome.ok) state.notice = `Added ${outcome.name} to ${rig}`;
     else fail(`Not added to ${rig}: ${shown}`, { reason: outcome.reason.replace(/^Not added: /, "") });
   });
   render();
@@ -2763,9 +2695,9 @@ function drawerRegion(el, model) {
     parts.entries = [];
     parts.groups = [];
     if (!state.library) {
-      return h("p", { class: "drawer-none" }, state.libraryError
-        ? `The library could not be read: ${state.libraryError}. Asking again every ${RETRY_MS / 1000} s.`
-        : "Reading the library…");
+      return state.libraryError
+        ? h("p", { class: "drawer-none", title: `The library could not be read: ${state.libraryError}. Asking again every ${RETRY_MS / 1000} s.` }, "Library unreadable")
+        : h("p", { class: "drawer-none" }, "Reading…");
     }
     const groups = R.libraryGroups(state.library);
     return [...groups.map((g) => {
@@ -2792,15 +2724,18 @@ function drawerRegion(el, model) {
   // Opened to look through, with a rig up: where adding is done from.
   const why = (!d.slot && !moved && R.readsLive(state.health) ? "To add a plugin, use an “Add after…” in a chain." : blocked)
     || d.said || null;
-  if (parts.why.textContent !== (why || "")) parts.why.textContent = why || "";
+  const whyShort = R.shortSaid(why || "");
+  if (parts.why.textContent !== whyShort) parts.why.textContent = whyShort;
+  parts.why.title = why || "";
   parts.why.hidden = !why;
   const home = drawerHome(parts);
   const flying = namesInFlight();
   for (const item of parts.entries || []) {
     const warning = !blocked && item.view.addable && track && d.slot
       ? R.addWarning(track, d.slot, item.entry, R.addName(item.entry, liveBody(), flying).shown) : null;
-    const note = item.view.why ? `Cannot be added: ${item.view.why}` : warning ? warning.text : "";
+    const note = item.view.why ? "Can't add" : warning ? warning.text : "";
     if (item.note.textContent !== note) item.note.textContent = note;
+    item.note.title = item.view.why ? `Cannot be added: ${item.view.why}` : warning ? warning.text : "";
     item.note.classList.toggle("warn", !!warning);
     const off = !!blocked || !item.view.addable || !d.slot || d.run === null;
     // An entry turned off with the focus on it would drop the focus to the
@@ -2851,8 +2786,8 @@ function detail(unit, size, acts = null) {
       h("div", { class: "knobs" }, g.controls.map((c) => control(unit, c, size))))),
     panel.advanced.length ? h("section", { class: "group advanced" }, h("h3", {}, "More"),
       h("div", { class: "knobs" }, panel.advanced.map((c) => control(unit, c, "small")))) : null,
-    panel.missing.length ? h("p", { class: "missing" },
-      `In the profile but not on the running plugin: ${panel.missing.map((c) => c.label).join(", ")}`) : null,
+    panel.missing.length ? h("p", { class: "missing", title: "In the profile but not on the running plugin" },
+      `Missing: ${panel.missing.map((c) => c.label).join(", ")}`) : null,
     acts);
 }
 
@@ -2860,6 +2795,7 @@ function renderRack(regions, model, unsaved, status) {
   patch(regions.title, status.title, () => status.title);
   patch(regions.status, JSON.stringify(status), () => statusLine(status));
   patch(regions.lock, JSON.stringify([state.locked, state.armed]), () => lockButton());
+  undoRegion(regions.undo, "rack");
   tilesRegion(regions.tiles);
   problemsRegion(regions.problems);
   const ampView = R.ampCard(state.amp, state.ampModels, { locked: state.locked, pending: state.ampPending });
@@ -2881,28 +2817,20 @@ function renderRack(regions, model, unsaved, status) {
 function agentRegion(el) {
   const agent = state.health && state.health.ok ? state.health.body.agent || {} : {};
   const line = R.agentLine(agent.listen ?? null, location.host);
-  patch(el, JSON.stringify(line), () => h("p", { class: "agent" }, line.text,
-    line.urls.flatMap((u, i) => [i ? (i === line.urls.length - 1 ? " or " : ", ") : " ",
-      h("a", { href: u.url, class: "phone-url" }, u.url), u.label ? ` (${u.label})` : ""]),
-    line.urls.length ? ". " : "", line.after));
+  patch(el, JSON.stringify(line), () => h("p", { class: "agent", title: line.title || null }, line.text,
+    line.urls.flatMap((u, i) => [i ? ", " : " ", h("a", { href: u.url, class: "phone-url", title: u.label || null }, u.url)]),
+    line.after));
 }
 
 // A time of today as the page shows one (the log's are to the second).
 const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-// Undo, above Save: an action, not a view of history. The itemised list of
-// unsaved changes that stood here, and the "was" beside each knob, were
-// removed (2026-11-06): they came and went as values changed, which moved
-// what was under the player's hand. What is unsaved is the count on Save;
-// history is Revert.
+// The save column's heading. Its Undo, which undid live edits only, is the
+// one Undo in each screen's header now (#209). The itemised list of
+// unsaved changes that stood here was removed (2026-11-06); what is unsaved
+// is the count on Save, and history is Revert.
 function renderChanges(el) {
-  const next = R.nextUndo(state.log);
-  const undoLabel = !state.log ? "Undo: the log could not be read"
-    : !next ? "Nothing to undo" : next.barrier ? "Nothing to undo past the rig switch" : `Undo · ${R.describeEntry(next.entry)}`;
-  patch(el, JSON.stringify([undoLabel]), () => [
-    h("h2", {}, "SAVE"),
-    h("button", { class: "undo", title: undoLabel, disabled: !next || !!next.barrier, onclick: () => undo(false) }, undoLabel),
-  ]);
+  patch(el, "SAVE", () => [h("h2", {}, "SAVE")]);
 }
 
 // Save, Save as… and Revert… (S4), under Undo. Its own region, keyed without
@@ -2932,20 +2860,20 @@ function saveRegion(el, unsaved) {
           onclick: () => toggleRevert(view.running) }, view.revert.label)),
       state.saveAsOpen ? saveAsForm(view) : null,
       state.revert.open ? revertPanel(view) : null,
-      h("p", { class: "sub save-note" }, view.note),
-      result ? h("div", { class: `save-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
-        h("strong", {}, result.title),
-        h("span", {}, result.ok ? result.text : result.reason),
-        result.ok ? h("span", { class: "commit" }, result.commit) : null,
-        result.action ? h("button", { class: "rig-act danger", onclick: result.action.run }, result.action.label) : null,
-        result.ok && result.offer ? h("button", { class: "rig-act primary offer", disabled: !!state.pending,
-          onclick: () => { state.saveRestartConfirm = true; render(); } }, result.offer.label) : null,
-        h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.saveResult = null; state.saveRestartConfirm = false; render(); } }, "×")) : null,
-      result && result.ok && result.offer && state.saveRestartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
-        h("p", {}, `Restart ${result.offer.name}? The sound stops for a few seconds while it comes back from its file.`),
-        h("button", { class: "rig-act danger", disabled: !!state.pending || !!busyNow, onclick: restartForSave }, "Restart now"),
-        h("button", { class: "rig-act", onclick: () => { state.saveRestartConfirm = false; render(); } }, "Not now")) : null,
-      last ? h("p", { class: "sub last-save" }, `Last saved ${last.time} to `, h("code", {}, last.file), `, ${last.then}.`) : null,
+      // Why Save is off, or what is under way, in a few words; the whole
+      // sentence on hover.
+      view.blocked || state.saving ? h("p", { class: "sub save-note", title: view.note }, R.shortSaid(view.note)) : null,
+      result ? resultBox(result, {
+        cls: "save-result",
+        dismiss: () => { state.saveResult = null; state.saveRestartConfirm = false; render(); },
+        offer: result.ok && result.offer && !state.saveRestartConfirm
+          ? h("button", { class: "rig-act primary offer", disabled: !!state.pending,
+            onclick: () => { state.saveRestartConfirm = true; render(); } }, "Restart") : null,
+      }) : null,
+      result && result.ok && result.offer && state.saveRestartConfirm
+        ? confirmBox("Restart?", restartForSave, () => { state.saveRestartConfirm = false; render(); }, { pending: !!state.pending || !!busyNow })
+        : null,
+      last ? h("p", { class: "sub last-save", title: `${last.file}, ${last.then}` }, `Saved ${last.time}`) : null,
       helpAnchor("save"),
     ];
   });
@@ -2969,13 +2897,12 @@ function drawSaveDot(el, dot) {
 // ---------------------------------------------------------------- revert to a previous save
 
 // What the revert panel shows, for its region's key: the list as of this
-// minute (its "5 min ago" moves on), the choice, and the confirm's count.
+// minute (its "5 min ago" moves on), the point being reverted to, and the
+// question asked when unsaved changes stand in the way.
 function revertKey(view) {
   const r = state.revert;
   const rows = R.revertRows(r.list, Date.now(), clockDay);
-  const row = rows.rows.find((x) => x.id === r.choice) || null;
-  const count = view.dot.count;
-  return { rig: r.rig, rows, row, confirm: row ? R.revertConfirm(row, r.list, count, r.rig, clockDay) : null, pending: r.pending };
+  return { rig: r.rig, rows, choice: r.choice, drop: r.drop, pending: r.pending };
 }
 
 // A time with its day when it is not today's: a save of yesterday at 14:02
@@ -2998,42 +2925,40 @@ async function refreshSaves() {
 
 function toggleRevert(rig) {
   const r = state.revert;
-  if (r.open) { Object.assign(r, { open: false, choice: null }); render(); return; }
-  Object.assign(r, { open: true, rig, list: null, choice: null });
+  if (r.open) { Object.assign(r, { open: false, choice: null, drop: null }); render(); return; }
+  Object.assign(r, { open: true, rig, list: null, choice: null, drop: null });
   render();
   refreshSaves();
 }
 
+// A point, tapped, is reverted to at once: no confirm, since the one Undo
+// puts the file back (#209). Only unsaved changes the revert would drop,
+// which no Undo brings back, are asked about: "Drop changes?".
 function revertPanel(view) {
   const key = revertKey(view);
   const { rows } = key;
-  const choose = (id) => { state.revert.choice = id; render(); };
   return h("div", { class: "revert", role: "group", "aria-label": `Revert ${key.rig} to a previous save` },
-    h("h3", {}, `Revert ${key.rig} to…`),
-    rows.loading ? h("p", { class: "sub" }, "Reading the saves…") : null,
-    rows.problem ? h("p", { class: "rig-problem" }, rows.problem) : null,
-    rows.empty ? h("p", { class: "sub" }, "No saves yet, and git has no commits of this file: Save keeps one each time.") : null,
-    rows.rows.length ? h("ul", { class: "revert-list" }, rows.rows.map((row) => h("li", {},
-      h("button", { class: `revert-point${row.id === state.revert.choice ? " chosen" : ""}`, "data-point": row.id,
-        "aria-pressed": String(row.id === state.revert.choice), onclick: () => choose(row.id) },
-      h("span", { class: "n" }, row.title, row.current ? h("span", { class: "tag" }, "the file now") : null),
+    h("h3", {}, `Revert ${key.rig}`),
+    rows.loading ? h("p", { class: "sub" }, "Reading…") : null,
+    rows.problem ? h("p", { class: "rig-problem", title: rows.problem }, R.shortSaid(rows.problem)) : null,
+    rows.empty ? h("p", { class: "sub" }, "No saves") : null,
+    rows.rows.length ? h("ul", { class: "revert-list", title: rows.notes.join(" ") || null }, rows.rows.map((row) => h("li", {},
+      h("button", { class: `revert-point${row.id === key.choice ? " chosen" : ""}`, "data-point": row.id,
+        "aria-pressed": String(row.id === key.choice), disabled: !!key.pending, onclick: () => revertTo(key.rig, row, false) },
+      h("span", { class: "n" }, row.title, row.current ? h("span", { class: "tag" }, "now") : null),
       h("span", { class: "s" }, row.sub))))) : null,
-    key.confirm ? h("div", { class: "confirm revert-confirm", role: "group", "aria-label": "Confirm the revert" },
-      h("p", {}, key.confirm.title),
-      h("ul", { class: "lost" }, h("li", {}, key.confirm.plays), key.confirm.lost.map((line) => h("li", {}, line))),
-      h("button", { class: "rig-act danger", disabled: !!key.pending,
-        onclick: () => revertTo(key.rig, key.row, key.confirm.discard) }, key.pending ? "Reverting…" : key.confirm.go),
-      h("button", { class: "rig-act", onclick: () => choose(null) }, "Cancel")) : null,
-    rows.notes.map((note) => h("p", { class: "sub" }, note)));
+    key.drop ? confirmBox("Drop changes?", () => revertTo(key.rig, key.drop, true),
+      () => { state.revert.drop = null; render(); }, { pending: !!key.pending, cls: "revert-drop" }) : null);
 }
 
 // POST /rigs/<rig>/revert, then what it said, under the buttons. A refusal
-// for unsaved work the page had not counted offers dropping it, as a
-// second, deliberate tap.
+// for unsaved work asks, once, whether to drop it.
 async function revertTo(rig, row, discard) {
   const r = state.revert;
   if (r.pending) return;
   r.pending = true;
+  r.choice = row.id;
+  r.drop = null;
   render();
   const call = R.revertCall(rig, row.id, discard);
   let answer;
@@ -3044,9 +2969,11 @@ async function revertTo(rig, row, discard) {
   }
   const said = R.revertOutcome(rig, answer);
   if (!said.ok && said.code === "unsaved") {
-    said.action = { label: "Revert anyway, dropping them", run: () => { state.saveResult = null; revertTo(rig, row, true); } };
+    r.drop = row;
+    state.saveResult = null;
+  } else {
+    state.saveResult = said;
   }
-  state.saveResult = said;
   if (answer.ok) Object.assign(r, { open: false, choice: null });
   render();
   kick();
@@ -3062,7 +2989,8 @@ function saveAsForm(view) {
   input.value = state.saveAsName;
   const draw = () => {
     const problem = R.checkRigName(input.value, view.running);
-    check.textContent = input.value ? (problem || `Writes config/rigs/${input.value}.yaml, which becomes the running rig.`) : "";
+    check.textContent = input.value && problem ? R.shortSaid(problem) : "";
+    check.title = problem || "";
     check.classList.toggle("bad", !!problem && !!input.value);
     go.disabled = !!problem || view.saveAs.disabled;
     go.textContent = problem ? "Save as" : `Save as ${input.value}`;
@@ -3073,7 +3001,7 @@ function saveAsForm(view) {
     event.preventDefault();
     if (!R.checkRigName(input.value, view.running)) save(input.value);
   } },
-    h("label", {}, h("span", {}, "New rig name"), input), check,
+    h("label", {}, h("span", {}, "Name"), input), check,
     h("div", { class: "save-acts" }, go,
       h("button", { class: "save-act", type: "button", onclick: () => { state.saveAsOpen = false; render(); } }, "Cancel")));
 }
@@ -3129,9 +3057,9 @@ function recordRegion(el) {
       view.state === "idle" ? h("p", { class: "take-whole", "aria-hidden": "true" }) : null,
       // The ruler a name is measured on (`nameCut`): never seen, and no part of the layout.
       view.state === "idle" ? h("span", { class: "take-rule", "aria-hidden": "true" }, h("span", {})) : null,
-      view.reason ? h("p", { class: "record-note" }, view.reason) : null,
+      view.reason ? h("p", { class: "record-note", title: view.reason }, R.shortSaid(view.reason)) : null,
       view.state === "idle" ? h("p", { class: "record-note", id: "take-note", "aria-live": "polite" }) : null,
-      recording && view.note ? h("p", { class: "record-note" }, view.note) : null,
+
       view.stems ? h("p", { class: "record-stems" }, view.stems) : null,
       h("div", { class: "record-acts" },
         h("button", { class: "record-act rec", disabled: view.record.disabled, onclick: recordStart }, view.record.label),
@@ -3139,10 +3067,9 @@ function recordRegion(el) {
       // A stop names the take, its folder and `take check`'s verdict (#189),
       // a take with problems in the refusal colour and as an alert, with
       // the stop's own reason too when it failed.
-      result ? h("div", { class: `record-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
-        h("strong", {}, result.title), result.text ? h("span", {}, result.text) : null,
-        !result.ok && result.reason ? h("span", {}, result.reason) : null,
-        result.folder ? h("code", { class: "take-folder" }, result.folder) : null,
+      result ? h("div", { class: `record-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert",
+        title: [result.text, !result.ok ? result.reason : null, result.folder].filter(Boolean).join(" ") || null },
+        h("strong", {}, result.title),
         h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.recordResult = null; render(); } }, "×")) : null,
     ];
   });
@@ -3171,7 +3098,7 @@ function drawNameCheck(el) {
   if (view.state !== "idle") return;
   const note = el.querySelector("#take-note");
   const button = el.querySelector("button.record-act.rec");
-  if (note) { note.textContent = view.note || ""; note.classList.toggle("bad", !!view.bad); }
+  if (note) { note.textContent = view.note || ""; note.title = view.noteTitle || ""; note.classList.toggle("bad", !!view.bad); }
   if (button) { button.disabled = view.record.disabled; button.textContent = view.record.label; }
   drawNameWhole(el, view.default);
 }
@@ -3309,11 +3236,9 @@ function takesRegion(el) {
   const result = view.result;
   patch(el, JSON.stringify(view), () => [
     h("h2", {}, "TAKES"),
-    view.dir ? h("p", { class: "takes-dir" }, "Takes go in ", h("code", {}, view.dir)) : null,
+    view.dir ? h("p", { class: "takes-dir", title: "Takes go in this folder" }, h("code", {}, view.dir)) : null,
     view.button ? h("button", { class: "rig-act open-takes", disabled: view.button.disabled, onclick: openTakesFolder }, view.button.label) : null,
-    result ? h("div", { class: `save-result open-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
-      h("strong", {}, result.title), h("span", { class: "said" }, result.ok ? result.text : result.reason),
-      h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.takesOpen.result = null; render(); } }, "×")) : null,
+    result ? resultBox(result, { cls: "save-result open-result", dismiss: () => { state.takesOpen.result = null; render(); } }) : null,
     helpAnchor("takes"),
   ]);
 }
@@ -3349,11 +3274,12 @@ function stageFrame() {
     rigs: h("section", { class: "rigs stage-rigs", "aria-label": "Rigs" }),
     title: h("span", { class: "status-slot" }),
     pick: h("span", { class: "pick-slot" }),
+    undo: h("span", { class: "undo-slot" }),
     lock: h("span", { class: "lock-slot" }),
   };
   // One row: the state's dot, the rig dropdown in the rig's name's place
   // (the name itself kept for the screen readers' heading), and the Lock.
-  regions.row.append(regions.title, regions.pick, regions.lock);
+  regions.row.append(regions.title, regions.pick, regions.undo, regions.lock);
   // Built once, its parts patched on their own, as the rack's is: the master
   // fader under the rig's state keeps a drag and its focus through a poll.
   // Start, Stop and the busy line (#182) under the master and the tiles,
@@ -3384,6 +3310,7 @@ function renderStage(regions, model, status) {
   patch(regions.title, JSON.stringify([status.tone, status.title]), () => [
     h("span", { class: `dot tone-${status.tone}`, "aria-hidden": "true" }), h("h1", { class: "rig-name sr-only" }, status.title)]);
   patch(regions.lock, JSON.stringify([state.locked, state.armed]), () => lockButton());
+  undoRegion(regions.undo, "stage");
   regions.detail.className = `detail-line tone-${status.tone}`;
   regions.detail.title = status.tone === "up" ? SOUND_NOTE : "";
   patch(regions.detail, status.detail, () => status.detail);
@@ -3400,20 +3327,15 @@ function renderStage(regions, model, status) {
       channelVolume(t, "stage", state.levelUpdaters)))] : [];
   });
   const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel, u.monoNote])]), state.locked, [...state.open]]) : JSON.stringify(["none", status.tone, state.locked]);
-  const lockNote = () => h("p", { class: `lock-note${state.locked ? " locked" : ""}` }, state.locked ? lockIcon() : null,
-    state.locked
-      ? "Add, remove and reorder are off while locked, the volumes and the rig dropdown are held, and start and stop are hidden. Knobs, bypass and Record still work. This is the page's lock: the agent does not enforce one yet."
-      : "Lock off: the volumes move, the rig can be switched, started or stopped at the top, and the rack can reorder the rig.");
+  // What the lock holds is the Lock button's to say (its label and title)
+  // and the guide's: no paragraph about it here (#209).
   patch(regions.cards, structure, () => {
     state.updaters = [];
     if (!model) {
-      return [h("p", { class: "empty" }, status.tone === "busy" ? "The rig is changing; the cards come back when it is up."
-        : "No rig to show: nothing is running in Sushi."), lockNote()];
+      return [status.tone === "busy" ? h("p", { class: "empty", title: "The rig is changing; the cards come back when it is up." }, "Changing…")
+        : h("p", { class: "empty", title: "Nothing is running in Sushi." }, "No rig")];
     }
-    return [
-      ...model.tracks.filter((t) => t.units.length).map((t) => h("section", { class: "track" }, h("h2", {}, t.name), t.units.map(card))),
-      lockNote(),
-    ];
+    return model.tracks.filter((t) => t.units.length).map((t) => h("section", { class: "track" }, h("h2", {}, t.name), t.units.map(card)));
   });
   stageAmpRegion(regions.amp);
   // The dropdown is shown off while locked; Start and Stop are not there.
@@ -3528,20 +3450,16 @@ function pedalPanel(board, t) {
         if (value) choosePedal(t, R.pedalChoice(board, "parameter", `${t.path}/${value}`, c.name, board.ask ? board.controller : null));
         else choosePedal(t, { call: R.pedalCall(c.name, null, null), confirm: null, what: `${R.pedalName(c.name)} off ${t.what}` });
       }));
-      if (use && !here) rows.push(h("p", { class: "sub" }, `${R.pedalName(c.name)} is on ${R.pedalSaid(use.binding, use.target)} now.`));
+      if (use && !here) rows.push(h("p", { class: "sub", title: `${R.pedalName(c.name)} is on ${R.pedalSaid(use.binding, use.target)} now.` }, `on ${R.pedalSaid(use.binding, use.target)}`));
     }
   }
   const refused = pu.refused && pu.refused.key === t.key ? pu.refused.reason : null;
-  return h("div", { class: "pedal-panel", role: "group", "aria-label": `Pedal for ${t.what}` },
-    h("p", { class: "sub" }, board.controller ? `${board.controller}'s controls${board.ask ? " (chosen in Pedals)" : ""}` : "No device to assign from"),
-    rows.length ? rows : h("p", { class: "sub" }, "None of the device's controls can take this."),
-    confirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the move" },
-      h("p", {}, confirm.choice.confirm),
-      h("button", { class: "rig-act danger small", disabled: busy, onclick: () => sendPedal(t, confirm.choice) }, confirm.choice.moveLabel),
-      h("button", { class: "rig-act small", onclick: () => { pu.confirm = null; render(); } }, "Keep it")) : null,
+  return h("div", { class: "pedal-panel", role: "group", "aria-label": `Pedal for ${t.what}`, title: board.controller || null },
+    board.controller ? null : h("p", { class: "sub" }, "No device"),
+    rows.length ? rows : h("p", { class: "sub", title: "None of the device's controls can take this." }, "Nothing fits"),
     busy ? h("p", { class: "sub", role: "status" }, "Assigning…") : null,
-    locked ? h("p", { class: "sub lock-says" }, lockIcon(), locked) : null,
-    refused ? h("p", { class: "row-said refused", role: "alert" }, refused) : null);
+    locked ? h("p", { class: "sub lock-says", title: locked }, lockIcon(), "Locked") : null,
+    refused ? h("p", { class: "row-said refused", role: "alert", title: refused }, R.shortSaid(refused)) : null);
 }
 
 function pedalLockRefusal() {
@@ -3562,11 +3480,8 @@ function choosePedal(t, choice) {
   const locked = pedalLockRefusal();
   if (locked) { pu.refused = { key: t.key, reason: locked, lock: true }; render(); return; }
   pu.refused = null;
-  if (choice.confirm) {
-    pu.confirm = { key: t.key, choice, what: choice.what, row: pu.row ? pu.row.name : null, value: pu.row ? pu.row.value : null };
-    render();
-    return;
-  }
+  // A control moved off what it did is not asked about (#209): the one Undo
+  // puts the assignment back.
   sendPedal(t, choice);
 }
 
@@ -3646,17 +3561,15 @@ function pedalsRegion(el) {
       })()) : null,
     device ? h("p", { class: `pedal-device state-${device.state}` }, h("span", { class: "dot", "aria-hidden": "true" }),
       h("strong", {}, board.controller), ` · ${device.text}`) : null,
-    board.problem ? h("p", { class: "rig-problem" }, board.problem) : null,
+    board.problem ? h("p", { class: "rig-problem", title: board.problem }, R.shortSaid(board.problem)) : null,
     h("ul", { class: "pedal-list" }, rows.map((r) => h("li", { class: `pedal-row${r.assigned ? " assigned" : ""}${r.job ? " job" : ""}`, "data-control": r.control },
       h("span", { class: "heard", "aria-hidden": "true" }),
       h("strong", { class: "pedal-name" }, r.name), h("span", { class: "does" }, r.does), h("span", { class: "value" }),
       h("span", { class: "sr-only heard-said" })))),
-    h("p", { class: "sub" }, "Assign from the rack: the pedal button beside an effect's on/off, or by a channel's name. A light is a message heard from that control."),
     pu.result ? rigFileResult(pu.result, () => { pu.result = null; render(); }, () => { pu.restartConfirm = true; render(); }) : null,
-    pu.restartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
-      h("p", {}, `Restart ${shownRigName()}? The sound stops for a few seconds while it comes back from its file.`),
-      h("button", { class: "rig-act danger", disabled: !!state.pending || !!busy, onclick: restartForPedals }, "Restart now"),
-      h("button", { class: "rig-act", onclick: () => { pu.restartConfirm = false; render(); } }, "Not now")) : null,
+    pu.restartConfirm ? confirmBox("Restart?", restartForPedals, () => { pu.restartConfirm = false; render(); },
+      { pending: !!state.pending || !!busy }) : null,
+    helpAnchor("pedals"),
   ]));
   // The lights and the pedal's value, in place.
   for (const r of rows) {
@@ -3779,18 +3692,19 @@ function fitWidth(choices, draft) {
 // What a write said, in place: the agent's reason (and the lines to add to
 // the machine file, when it gave them), or the file, what git says of it and
 // the gesture that plays it.
+// What a rig file write said (#209: a few words, the rest on hover): its
+// title, the machine file's missing lines when a role is missing (a
+// control: they are to copy), and the offer to restart, start or switch.
 function rigFileResult(result, dismiss, play) {
-  return h("div", { class: `save-result rigfile-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
+  const more = [result.ok ? result.text : result.reason, result.programs ? result.programs.note : null,
+    ...(result.programs ? result.programs.rows.map((r) => `${r.rig}: program ${r.from} → ${r.to}`) : []),
+    result.ok ? result.commit : null].filter(Boolean).join(" ");
+  return h("div", { class: `save-result rigfile-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert",
+    title: more || null },
     h("strong", {}, result.title),
-    h("span", { class: "said" }, result.ok ? result.text : result.reason),
-    result.hint ? h("pre", { class: "machine-hint" }, result.hint) : null,
-    result.programs ? h("div", { class: "programs-moved", role: "note" },
-      h("span", { class: "warn" }, result.programs.note),
-      h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Rig"), h("th", {}, "Program before"), h("th", {}, "after"))),
-        h("tbody", {}, result.programs.rows.map((r) => h("tr", {}, h("td", {}, r.rig), h("td", {}, String(r.from)), h("td", {}, String(r.to))))))) : null,
-    result.ok ? h("span", { class: "commit" }, result.commit) : null,
+    result.hint ? h("details", { class: "machine-hint-box" }, h("summary", {}, "Machine lines"), h("pre", { class: "machine-hint" }, result.hint)) : null,
     result.ok && result.offer ? h("button", { class: "rig-act primary offer", disabled: !!state.pending,
-      onclick: () => play(result.offer) }, result.offer.label) : null,
+      onclick: () => play(result.offer) }, result.offer.op === "restart" ? "Restart" : result.offer.label) : null,
     h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: dismiss }, "×"));
 }
 
@@ -3817,7 +3731,7 @@ function renderNewRig(regions, status) {
   // has been at the form (a form emptied on purpose stays empty).
   if (!nr.touched && nr.channels.length === 0 && choices.inputs.length) nr.channels.push(R.newChannel(choices, []));
   if (!filesReady()) {
-    patch(regions.form, "reading", () => h("p", { class: "empty" }, "Reading the machine file's roles and the rigs' channels…"));
+    patch(regions.form, "reading", () => h("p", { class: "empty" }, "Reading…"));
     return;
   }
   newRigRegion(regions.form);
@@ -3838,11 +3752,7 @@ function newRigRegion(el) {
     sources, view.countText, nr.addRefused, nr.result, nr.pending, view.blocked, !!state.pending]);
   const rebuilt = patch(el, key, () => [
     h("form", { class: "new-rig-form", onsubmit: (event) => { event.preventDefault(); createRig(); } },
-      h("p", { class: "sub" }, "A rig of channels, written to ", h("code", {}, "config/rigs/<name>.yaml"),
-        `: each channel plays from an input of ${view.choices.machine || "the machine file"}, and their sends mix into a master on `,
-        h("code", {}, view.choices.output || "monitor-out"), ". Chains start empty unless a channel starts from another rig's. ",
-        "The agent compiles the rig before it writes it, and says why if it will not."),
-      view.choices.problem ? h("p", { class: "rig-problem" }, view.choices.problem) : null,
+      view.choices.problem ? h("p", { class: "rig-problem", title: view.choices.problem }, R.shortSaid(view.choices.problem)) : null,
       textField("Rig name", "new-rig-name", nr.name, (v) => { nr.name = v; drawNewRigChecks(el); }, "e.g. two-guitars"),
       h("p", { class: "save-check", "data-check": "new-rig-name" }),
       h("div", { class: "draft-head" }, h("h2", {}, "CHANNELS"), h("span", { class: "sub" }, view.countText)),
@@ -3850,8 +3760,8 @@ function newRigRegion(el) {
       h("div", { class: "save-acts" },
         h("button", { type: "button", class: "save-act add-channel", onclick: addDraftChannel }, "Add channel"),
         h("button", { type: "submit", class: "save-act primary create" }, view.create.label)),
-      nr.addRefused ? h("p", { class: "save-check bad add-refused", role: "alert" }, nr.addRefused) : null,
-      view.blocked ? h("p", { class: "sub" }, view.blocked) : null),
+      nr.addRefused ? h("p", { class: "save-check bad add-refused", role: "alert", title: nr.addRefused }, R.shortSaid(nr.addRefused)) : null,
+      view.blocked ? h("p", { class: "sub", title: view.blocked }, R.shortSaid(view.blocked)) : null),
     nr.result ? rigFileResult(nr.result, () => { nr.result = null; render(); }, playNewRig) : null,
   ]);
   if (rebuilt) refocus(el, focus);
@@ -3880,9 +3790,9 @@ function drawNewRigChecks(el) {
   const view = newRigView();
   const set = (name, text, bad) => {
     const p = el.querySelector(`[data-check="${name}"]`);
-    if (p) { p.textContent = text || ""; p.classList.toggle("bad", !!bad); }
+    if (p) { p.textContent = R.shortSaid(text || ""); p.title = text || ""; p.classList.toggle("bad", !!bad); }
   };
-  set("new-rig-name", nr.name ? view.nameProblem || `Writes config/rigs/${nr.name}.yaml.` : "", !!(nr.name && view.nameProblem));
+  set("new-rig-name", nr.name ? view.nameProblem : "", !!(nr.name && view.nameProblem));
   view.channels.forEach((c, i) => set(`ch-name-${i}`, c.problem, !!c.problem));
   const create = el.querySelector("button.create");
   if (create) { create.disabled = view.create.disabled; create.textContent = view.create.label; }
@@ -3985,11 +3895,10 @@ function stripsRegion(el, model, unsaved) {
   const extra = filed.filter((c) => !names.includes(c.name));
 
   patch(parts.head, JSON.stringify([view.blocked || null, view.file || null, view.problem || null, ready && choices.problem]), () => [
-    h("h2", {}, "CHANNELS AND INPUTS"),
-    view.blocked ? h("p", { class: "sub inputs-why" }, view.blocked) : null,
-    view.file ? h("p", { class: "sub" }, h("code", {}, view.file), " — an input edit writes the file; the rig plays it after a restart") : null,
-    view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
-    ready && choices.problem ? h("p", { class: "rig-problem" }, choices.problem) : null,
+    h("h2", { title: view.file || null }, "CHANNELS"),
+    view.blocked ? h("p", { class: "sub inputs-why", title: view.blocked }, R.shortSaid(view.blocked)) : null,
+    view.problem ? h("p", { class: "rig-problem", title: view.problem }, R.shortSaid(view.problem)) : null,
+    ready && choices.problem ? h("p", { class: "rig-problem", title: choices.problem }, R.shortSaid(choices.problem)) : null,
   ]);
 
   // Keyed by the channels alone: the master's plugin count is drawn in place
@@ -4028,7 +3937,7 @@ function stripsRegion(el, model, unsaved) {
     };
     return [
       live.map((t) => strip(t.name, channelVolume(t, "strip", state.stripUpdaters))),
-      extra.map((c) => strip(c.name, h("p", { class: "sub" }, "Added to the file: restart the rig to play it, and its volume comes with it."), false)),
+      extra.map((c) => strip(c.name, h("p", { class: "sub", title: "Added to the file: restart the rig to play it, and its volume comes with it." }, "Needs restart"), false)),
       master ? opens(h("section", { class: "strip strip-master", "data-channel": R.MASTER, "aria-label": "master" },
         opener(R.MASTER),
         h("p", { class: "sub master-says" })), R.MASTER) : null,
@@ -4047,8 +3956,8 @@ function stripsRegion(el, model, unsaved) {
   }
   const says = parts.list.querySelector(".master-says");
   if (says && master) {
-    says.textContent = `The mix: ${master.units.length} plugin${master.units.length === 1 ? "" : "s"} on its chain. `
-      + "Its volume is the master's, in the header.";
+    says.textContent = `${master.units.length} plugin${master.units.length === 1 ? "" : "s"}`;
+    says.title = "The mix. Its volume is the master's, in the header.";
   }
 
   // Each strip's input line, on its own key.
@@ -4062,8 +3971,8 @@ function stripsRegion(el, model, unsaved) {
       editing ? [w.change, choices] : null, !!w.pending, view.rig || null,
       presetsOpen ? [pu.choice, pu.pending, pu.result, state.presets, state.locked, !!state.pending] : null]), () => (
       view.blocked ? null
-        : c === undefined ? h("p", { class: "sub strip-input" }, "Reading the rig's file…")
-          : c === null ? h("p", { class: "sub strip-input" }, "Not in the running rig's file.")
+        : c === undefined ? h("p", { class: "sub strip-input" }, "Reading…")
+          : c === null ? h("p", { class: "sub strip-input", title: "Not in the running rig's file." }, "Not in file")
             : [wiringRow(view, c, choices), presetsOpen ? presetPanel(view, c) : null]));
     if (presetsOpen) drawPresetCheck(slot, name);
     if (rebuilt) refocus(slot, focus);
@@ -4077,7 +3986,7 @@ function stripsRegion(el, model, unsaved) {
     w.adding && [w.adding.input, w.adding.width, w.adding.from], sources, w.pending, w.result, w.restartConfirm, busy,
     !!state.pending, view.unsaved]), () => [
     !ready ? null
-      : w.adding && !sources ? h("p", { class: "sub" }, "Reading the rigs' channels, to start from…")
+      : w.adding && !sources ? h("p", { class: "sub" }, "Reading…")
         : w.adding ? addChannelForm(parts.foot, view, choices, sources)
           : h("button", { class: "save-act add-channel", disabled: !!w.pending,
             onclick: () => {
@@ -4085,12 +3994,9 @@ function stripsRegion(el, model, unsaved) {
               inBackground("rig channels", refreshAllRigChannels);
               inBackground("presets", () => refreshPresets(true));
             } }, "Add channel"),
-    h("p", { class: "warn" }, view.unsaved),
     w.result ? rigFileResult(w.result, () => { w.result = null; render(); }, () => { w.restartConfirm = true; render(); }) : null,
-    w.restartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
-      h("p", {}, `Restart ${view.rig}? The sound stops for a few seconds while it comes back from its file.`),
-      h("button", { class: "rig-act danger", disabled: !!state.pending || !!busy, onclick: restartForEdit }, "Restart now"),
-      h("button", { class: "rig-act", onclick: () => { w.restartConfirm = false; render(); } }, "Not now")) : null,
+    w.restartConfirm ? confirmBox("Restart?", restartForEdit, () => { w.restartConfirm = false; render(); },
+      { pending: !!state.pending || !!busy }) : null,
   ]);
   if (rebuilt) refocus(parts.foot, focus);
   if (ready) drawAddCheck(parts.foot, view);
@@ -4123,7 +4029,7 @@ function wiringRow(view, c, choices) {
     ...widthPicker(R.widthOptions(choices, w.change.input), w.change.width, (v) => { w.change.width = v; render(); }, `${c.name} width`).flat(),
     h("div", { class: "save-acts" },
       h("button", { class: "save-act primary", disabled: !!w.pending || !Object.keys(change).length,
-        onclick: () => changeInput(view.rig, c.name, change) }, `Apply to ${c.name}`),
+        onclick: () => changeInput(view.rig, c.name, change) }, "Apply"),
       h("button", { class: "save-act", onclick: () => { w.editing = null; render(); } }, "Cancel")));
   return row;
 }
@@ -4158,9 +4064,7 @@ function presetPanel(view, c) {
         disabled: !!pu.pending || !!state.pending || !!locked || !chosen || !chosen.ok,
         onclick: () => loadPreset(c.name, pu.choice, {}) },
       pu.pending === "load" ? "Loading…" : chosen ? `Load ${chosen.name} onto ${c.name}` : "Load"),
-      locked ? h("p", { class: "sub" }, locked) : null,
-      h("p", { class: "sub" }, `Loading replaces ${c.name}'s chain and level with the preset's and writes ${view.rig}'s file; `
-        + "with unsaved changes, save first.")),
+      locked ? h("p", { class: "sub" }, locked) : null),
     result ? h("div", { class: `save-result preset-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
       h("strong", {}, result.title),
       h("span", { class: "said" }, result.ok ? result.text : result.reason),

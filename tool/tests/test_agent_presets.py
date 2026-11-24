@@ -320,6 +320,27 @@ def test_a_preset_loads_onto_another_channel_live_with_names_of_its_own(root):
     assert world.state["rig"] == "config/rigs/guitar_vocal.yaml"
 
 
+def test_a_load_is_undone_by_the_one_undo_the_file_back_and_the_rig_switched_into_it(root):
+    """#209: POST /undo after a load puts the rig file's bytes back and
+    switches the running rig into it, as the undo of a revert does."""
+    agent, world, fake, runner = make_agent(root)
+    save_as(agent, "guitar", "gv-guitar")
+    path = rig_file(root, "guitar_vocal")
+    before = path.read_bytes()
+    vocal = plugins_of(fake, "vocal")
+    status, body = load(agent, "vocal", "gv-guitar")
+    assert status == 200 and body["how"] == "live", body
+    assert path.read_bytes() != before
+    status, state = call(agent, "GET", "/undo")
+    assert status == 200 and state["next"]["label"] == "load gv-guitar" and state["next"]["act"] == "load", state
+    status, body = call(agent, "POST", "/undo", json={})
+    assert status == 200, body
+    assert body["said"] == "Undone: load gv-guitar" and body["how"] == "switched", body
+    assert path.read_bytes() == before, "the file as it was before the load, byte for byte"
+    assert plugins_of(fake, "vocal") == vocal, "the rig plays it again: a reading of the fake"
+    assert runner.calls == [], "nothing was restarted"
+
+
 def test_a_preset_loaded_back_onto_its_channel_sets_what_differs(root):
     agent, world, fake, runner = make_agent(root)
     save_as(agent, "guitar", "gv-guitar")

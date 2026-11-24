@@ -6917,3 +6917,37 @@ may take its samples through `patch:`, which Sushi cannot set; the FBV sends
 only CCs, so the spike plays from a keyboard or the MPD218. A section says how
 we would write our own Linux control app for the pickup if one were needed.
 Nothing is built. *(2026-11-23)*
+
+**One Undo for everything, and far less text on the page (#209).** The
+owner: "too much text explaining various decisions … give me an undo button
+and if there does need to be a message about deleting something or
+overwriting something, make it simple 1-2 words." The agent now keeps a
+history of what can be put back (`history.py`, `GET /undo`, `POST /undo`),
+50 steps deep, in its memory: shared by every page, kept across a reload,
+cleared by an agent restart. A step is a live edit (by its live log index,
+undone by the live undo; a fader's drag within 2 s is one step), a rig file
+write (the bytes before and a digest of what was written: a channel, an
+input, a pedal, a Save over the running rig's file, a revert, a new rig),
+a delete into the bin, or a Save as (recorded, and answered "can't undo").
+Undoing a write puts the bytes back only while the file is as the write left
+it, then does again what the write did to the running rig: a revert's switch,
+a pedal's bindings live, or nothing for an edit that waited for a restart
+the rig has not had (the file is what plays again), else a restart offered.
+A Save's undo withdraws its log entry (`withdrawn`), so what it wrote is
+unsaved again, and gives the chain log back. A step that cannot be put back
+is 409 `cant_undo` and dropped, so the next press goes on.
+
+The page has one **Undo** in each screen's header, beside the Lock: its
+title says what it would take back ("Undo delete clean"), "Nothing to undo"
+or "Can't undo: …"; a press says "Undone: …" for 15 s. Locked, it holds what
+the lock holds of the change itself (a move, an add, a remove, the amp's
+model, a pedal); on the stage it undoes live edits only. The Undo above
+Save, its Skip, and the picker's 15 s "Undo: put back" offers are gone.
+Delete, Remove, a revert point and a pedal moved off what it did no longer
+ask; Stop, a restart and the amp's model ask "Stop?", "Restart?", "Restart
+amp?" with Yes and No, and a revert refused for unsaved work "Drop changes?".
+Explanatory paragraphs are gone from the sidebars, panels and results: a
+result says its title and keeps the rest in its `title`; a refusal is cut to
+its first clause (`R.shortSaid`), whole on hover. A channel load (#208's
+channels from other rigs) is a file write with `apply="switch"`: one
+`_history_file` call where it writes. Not run on the rig. *(2026-11-23)*

@@ -49,37 +49,34 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
    above.
 4. Click **Add** and the channel's name.
 5. A box headed **Added** confirms it. The channel is now in the rig's file but
-   not yet in the sound. Click **Restart … to play it**, then **Restart now**.
-   The sound stops for a few seconds while the rig comes back. **Not now** puts
-   it off; the channel then plays the next time the rig starts.
+   not yet in the sound. Click **Restart**; the page asks **Restart?**: click
+   **Yes**. The sound stops for a few seconds while the rig comes back. **No**
+   puts it off; the channel then plays the next time the rig starts.
+6. Changed your mind? **Undo**, at the top of the page, takes the channel out
+   of the file again.
 
 ## Change a channel's input
 
 1. Save first, as above.
 2. On the rack, in the channel's strip on the left, click **Change input**.
 3. Pick the new **Input**, and the **Width** if that changes too.
-4. Click **Apply to** and the channel's name, or **Cancel**.
-5. Click **Restart … to play it**, then **Restart now**.
+4. Click **Apply**, or **Cancel**.
+5. Click **Restart**, then **Yes**. **Undo** puts the old input back.
 
 ## Delete a rig
 
 1. On the rack, under **RIGS** on the right, click **Delete** beside the rig.
-   The rig that is playing has its **Delete** greyed out, with the reason under
-   the list: switch to another rig, or stop it, first.
-2. A box asks whether to delete the rig's file, `config/rigs/<name>.yaml`. It
-   says what happens to the file,
-   whether git can bring it back too, and, if your pedal's program numbers
-   change, which rigs move, such as "electric-delay moves from program 6 to 5".
-3. Click **Delete** and the rig's name, or **Cancel**.
+   The rig that is playing has its **Delete** greyed out; hover over it for
+   why: switch to another rig, or stop it, first.
 
-A box headed **Deleted** says where the file went, and under it **Undo: put
-back** and the rig's name. Both go by themselves after about 15 seconds, or
-straight away with their **×**. Undo is not offered again after that, nor
-after you reload the page.
+The rig goes at once, with no question: **Undo**, at the top of the page,
+puts it back. Beside it the page says **Undone: delete** and the rig's name.
+Undo is there after a reload too, and on any other page of the same agent,
+until the agent restarts.
 
 The file is not gone: it is moved into `config/rigs/.deleted/`, a folder the
 page, the pedal numbers and git all leave alone. If the rig was committed to
-git, `git checkout` brings it back too; the box gives you the exact command.
+git, `git checkout HEAD -- config/rigs/<name>.yaml` brings it back too.
 
 ### Put a deleted rig back by hand
 
@@ -126,18 +123,16 @@ folder's `.gitignore` where it is.
   name can shift the ones after it. The **Made** box shows a table of which
   moved.
 - **Deleting a rig moves the pedal numbers of the rigs after it** down by one,
-  as a new rig moves them up. The box before you delete lists which.
-- **Undo is refused if a rig of that name has been made since**, so a new file
-  is never replaced; the box says so, and stays until you close it. The
-  deleted file stays in `config/rigs/.deleted/`, to move back by hand if you
-  want it ([Put a deleted rig back by hand](#put-a-deleted-rig-back-by-hand)).
-  Undo is not offered at all once the deleted file has been removed from
-  there.
+  as a new rig moves them up. **Undo** moves them back.
+- **Undo cannot put a rig back if a rig of that name has been made since**, so
+  a new file is never replaced: hover over **Undo** and it says **Can't
+  undo**, and why. The deleted file stays in `config/rigs/.deleted/`, to move
+  back by hand if you want it
+  ([Put a deleted rig back by hand](#put-a-deleted-rig-back-by-hand)).
 - **`git clean -x` empties `config/rigs/.deleted/`**, because git is told to
   ignore it. A deleted rig that was never committed is then gone for good.
-- **Undo is on this page only, and for about 15 seconds.** Another phone or
-  laptop does not offer it, nor this one after a reload, but the file is in
-  `config/rigs/.deleted/` for anyone to move back.
+- **Undo goes back 50 steps, until the agent restarts.** After that the file
+  is still in `config/rigs/.deleted/` for anyone to move back.
 - The page has no way to rename a rig. A rig is one file in the project's
   `config/rigs/` folder.
 - Adding a channel from the page and restarting to play it has been done on the
@@ -147,19 +142,19 @@ folder's `.gitignore` where it is.
 
 ## If something goes wrong
 
-- **"… cannot be deleted"** in the delete box. It is the rig that is playing,
-  usually because it was switched to from another page or a pedal meanwhile.
-  Switch away, then try again.
-- **A box headed "Not put back".** It gives the reason: a rig of that name is
-  there again (the deleted one is still in `config/rigs/.deleted/`), or the
-  deleted file is no longer there.
-- **"… cannot be deleted now"** with **Try again**: the agent was busy with
-  another command, such as a rig starting. Click **Try again**.
+- **A box headed "Not deleted"** under the rigs. Hover over it for the reason:
+  usually it is the rig that is playing, switched to from another page or a
+  pedal meanwhile (switch away, then try again), or the agent was busy with
+  another command, such as a rig starting (try again in a moment).
+- **"Can't undo"** beside **Undo**. Hover over **Undo** before pressing it to
+  see why: a rig of that name is there again (the deleted one is still in
+  `config/rigs/.deleted/`), or the deleted file is no longer there. The next
+  press goes on to the change before.
 - **A box headed "Not made", "Not added" or "Not changed".** The agent checks
   that the rig would really run before it writes anything, and refused. The box
   gives the reason, and nothing was written.
 - **The box mentions unsaved changes.** Save, then try again.
 - **The restart is refused because of changes since.** The box offers
-  **Restart anyway, dropping them**. Save instead if you want to keep them.
+  **Restart anyway**, which drops them. Save instead if you want to keep them.
 - **The left column says no rig is running**, or that the rig is a "v1 config".
   Start a rig from the list under **RIGS** first.

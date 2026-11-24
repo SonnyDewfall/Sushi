@@ -11,7 +11,7 @@ screen.
 A **rig** is one saved setup, and each rig is one file on the laptop, in the
 `config/rigs/` folder of the project.
 
-<img src="img/save-and-revert.png" alt="The SAVE part of the rack: the Undo button, Save to electric_board with a 1 on it for one unsaved change, Save as and Revert, and the Revert list opened with an earlier save chosen and the question asking whether to revert, dropping one unsaved change" width="320">
+<img src="img/save-and-revert.png" alt="The SAVE part of the rack: Save to electric_board with a 1 on it for one unsaved change, Save as and Revert, and the Revert list opened with its saves and commits" width="320">
 
 ## Save
 
@@ -19,8 +19,9 @@ A **rig** is one saved setup, and each rig is one file on the laptop, in the
    how many changes you have made since the last save.
 2. Click it.
 
-A box headed **Saved** and the rig's name tells you which file was written. The
-number on the button goes away.
+A box headed **Saved** and the rig's name tells you it worked; hover over it for
+the file and what git thinks of it. The number on the button goes away.
+**Undo**, at the top of the page, puts the file back as it was before the save.
 
 Saving works while the page is **Locked**, and does not interrupt the sound.
 
@@ -29,9 +30,9 @@ Saving works while the page is **Locked**, and does not interrupt the sound.
 Use this to keep a variation without touching the rig you started from.
 
 1. Click **Save as…**.
-2. Type a name under **New rig name**. Names are lowercase letters, digits,
-   `-` and `_`, such as `electric-board-2`. The line under the box tells you
-   the file it will write, or what is wrong with the name.
+2. Type a name under **Name**. Names are lowercase letters, digits,
+   `-` and `_`, such as `electric-board-2`. A short line under the box says
+   what is wrong with the name, if anything.
 3. Click **Save as** and the name.
 
 The new rig appears in the list under **RIGS**, and it becomes the rig that is
@@ -43,16 +44,15 @@ it was at its last save.
 Every time you save, the rig keeps a copy of the file as it was written. The
 newest 50 for each rig are kept.
 
-1. Click **Revert…**. A list opens, headed **Revert … to…**. Each line
-   starting **Saved** is one of your saves, with its time; the one marked
-   **the file now** is what the file holds at this moment. Lines starting
-   **Commit** are older versions kept by git, if there are any.
-2. Click the one you want to go back to.
-3. Read the question that appears. It says what will happen to the sound and
-   exactly what, if anything, will be lost.
-4. Click **Revert now**. If you have unsaved changes the button instead reads
-   **Revert, dropping** and how many; clicking it throws those changes away.
-   **Cancel** backs out.
+1. Click **Revert…**. A list opens, headed **Revert** and the rig's name. Each
+   line starting **Saved** is one of your saves, with its time; the one marked
+   **now** is what the file holds at this moment. Lines starting **Commit**
+   are older versions kept by git, if there are any.
+2. Click the one you want to go back to. It happens at once: **Undo** takes it
+   back.
+3. If you have unsaved changes, the page asks **Drop changes?** instead:
+   **Yes** reverts and throws those changes away (Undo cannot bring them
+   back); **No** leaves everything as it was.
 
 The rig then changes to that save. Where it can, it changes without stopping;
 where it cannot, it restarts, and the sound stops for a few seconds. A box
@@ -104,9 +104,9 @@ and none of those reaches it.
   has been restarted it starts again from nothing, so no number does not prove
   the file matches what you hear. That is why **Save** is always offered. If in
   doubt, save.
-- **Undo is not Revert.** **Undo**, the button above **Save**, takes back one
-  change at a time since you started; **Revert…** goes back to a whole saved
-  version. See [Shaping a sound](shaping-a-sound.md#take-a-change-back).
+- **Undo is not Revert.** **Undo**, at the top of the page, takes back one
+  change at a time; **Revert…** goes back to a whole saved version (and Undo
+  takes a revert back too). See [Shaping a sound](shaping-a-sound.md#take-a-change-back).
 - **The amp is saved as the page last set it.** The amp cannot be asked what it
   is set to.
 - **The copies Revert lists live on this laptop only**, in a hidden folder of

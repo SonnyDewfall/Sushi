@@ -4679,7 +4679,7 @@ class Agent:
                                 "written and the rig is as it was"))
             return answer
         self._history_file(path, done["before"], done["after"], f"pedal {change['control']}", run=run,
-                           apply="restart" if done["not_live"] else "bindings")
+                           apply="restart" if done["not_live"] else "bindings", act="pedal")
         if not done["not_live"]:
             await self._midi_sync()
             answer.update(how="live", takes_effect="now", offer=None, why=[],
@@ -5607,10 +5607,10 @@ class Agent:
                         "added": edits["added"],
                     }, was)
                     if created:
-                        self.history.push("none", f"save as {out.stem}", rig=out.stem,
+                        self.history.push("none", f"save as {out.stem}", rig=out.stem, act="save_as",
                                           why="Save as makes a new rig")
                     else:
-                        self._history_file(out, kept.get("before"), written, f"save {out.stem}",
+                        self._history_file(out, kept.get("before"), written, f"save {out.stem}", act="save",
                                            run={"state": state}, save_entry=answer["entry"],
                                            chain_before=chain_before)
                     # Kept only now that the save has wholly happened, so a
@@ -6186,7 +6186,7 @@ class Agent:
             done = await self._rigfile_thread(request, path, work)
         except RigFileError as exc:
             raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
-        self._history_file(path, None, done["after"], f"new rig {name}", run=run)
+        self._history_file(path, None, done["after"], f"new rig {name}", run=run, act="new_rig")
         return {"ok": True, "rig": name, "file": self._save_shown(path), "how": "new", "committed": False,
                 "running": False, "path": path, **({"programs": done["programs"]} if done["programs"] else {}),
                 **({"provenance_note": done["provenance_note"]} if done["provenance_note"] else {}),
@@ -6233,7 +6233,8 @@ class Agent:
         label = (f"add channel {change.get('channel')}" if change.get("op") == "add_channel"
                  else f"input {change.get('channel')}" if change.get("op") == "input" else f"edit {path.stem}")
         self._history_file(path, done["before"], done["after"], label, run=run,
-                           apply="restart" if running else "none")
+                           apply="restart" if running else "none",
+                           act="channel" if change.get("op") == "add_channel" else "input")
         answer = {"ok": True, "rig": path.stem, "file": self._save_shown(path), "how": "updated",
                   "committed": False, "change": done["change"], "running": running, "path": path}
         shown = answer["file"]
@@ -6431,7 +6432,7 @@ class Agent:
             done = await self._rigfile_locked(
                 request, lambda run: self._rigfile_thread(request, path, lambda: work(run)))
             binned = done["binned"]
-            self.history.push("bin", f"delete {name}", rig=name, entry=binned.name)
+            self.history.push("bin", f"delete {name}", rig=name, entry=binned.name, act="delete")
             answer = {"ok": True, "rig": name, "file": self._save_shown(path), "how": "deleted", "committed": False,
                       "binned": {"entry": binned.name, "file": self._save_shown(binned)},
                       "undo": {"path": f"/rigs/{name}/restore", "json": {"entry": binned.name}},
@@ -6637,7 +6638,7 @@ class Agent:
                     raise error
                 shown = self._save_shown(path)
                 self._history_file(path, before, data, f"revert {name}", run=run,
-                                   apply="switch" if running else "none")
+                                   apply="switch" if running else "none", act="revert")
                 answer = {"ok": True, "rig": name, "file": shown, "point": said, "running": running,
                           "written": True, "discarded": bool(discard and running)}
                 if not running:
@@ -6809,7 +6810,9 @@ class Agent:
 
     async def undo_state_route(self, request):
         """`GET /undo`: what the next press of Undo would step back (`next`:
-        `label`, `kind`, `op` for a live one, `can` and `why` when it cannot
+        `label`, `kind`, `op` for a live one, `act` for another (what was
+        done: `channel`, `input`, `pedal`, `save`, `save_as`, `revert`,
+        `new_rig`, `delete`, `load`; the page's lock reads it), `can` and `why` when it cannot
         be), `depth` (steps held) and `limit`. `next` is null with nothing
         to undo. A live step's `can` is true until it is tried: whether the
         rig is still as the change left it is Sushi's to say."""
@@ -7237,6 +7240,10 @@ class Agent:
                     if exc.extra:
                         error.agent_extra = exc.extra
                     raise error
+                # One Undo (#209): the file put back and the rig switched into
+                # it, as a revert's is, whatever the switch below does.
+                self._history_file(path, planned["before"], planned["after"], f"load {name}", run=run,
+                                   apply="switch", act="load")
                 shown = self._save_shown(path)
                 answer = {
                     "ok": True, "rig": path.stem, "file": shown, "preset": name, "channel": channel,
@@ -7346,6 +7353,7 @@ class Agent:
                 provenance={planned["channel"]: self._provenance(planned["name"])})
         except rigfile.RigFileError as exc:
             raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
+        planned["before"], planned["after"] = before, path.read_bytes()  # for the one Undo (#209)
         if kept_as is not None:
             return {"id": kept_as, "how": "kept by that save already"}
         how = f"before loading channel preset {planned['name']} onto {planned['channel']}"

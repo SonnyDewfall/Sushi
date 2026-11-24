@@ -40,7 +40,7 @@ fail or behave oddly.
 To restart cleanly:
 
 1. Save anything you want to keep ([Saving and going back](saving.md)).
-2. Stop the rig: under **RIGS**, **Stop** and its name, then **Stop now**.
+2. Stop the rig: under **RIGS**, **Stop** and its name, then **Yes**.
 3. In the terminal where the agent is running, press Ctrl+C. Then start it
    again:
 
@@ -57,8 +57,8 @@ But the new agent did not start that rig, and it shows:
 
 - It does not watch the rig. If a part of the rig stops, **no box appears** to
   tell you.
-- **Undo** has nothing to take back, and the number on **Save** starts again
-  from nothing.
+- **Undo** has nothing to take back (it remembers only what this agent saw),
+  and the number on **Save** starts again from nothing.
 - It cannot change the amp's model.
 
 All of that lasts until the rig is next started from the new agent. Stopping

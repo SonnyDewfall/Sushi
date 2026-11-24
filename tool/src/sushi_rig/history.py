@@ -181,6 +181,8 @@ def shown(entry: dict[str, Any] | None) -> dict[str, Any] | None:
     if entry["kind"] == "live":
         out["op"] = entry.get("op")
         out["steps"] = len(entry.get("indices") or [])
+    if entry.get("act"):
+        out["act"] = entry["act"]
     if entry.get("rig"):
         out["rig"] = entry["rig"]
     if entry["kind"] == "none":
