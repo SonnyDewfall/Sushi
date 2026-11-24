@@ -187,34 +187,22 @@ def test_the_record_heads_help_link_makes_it_no_taller_and_record_moves_nothing_
 
 
 @pytest.mark.parametrize("width", [320, 390])
-@pytest.mark.parametrize("locked", [True, False])
-def test_the_lock_note_is_as_tall_as_its_words_alone(browser, served, width, locked):
-    """Nothing beside the lock note's words takes their width: a link there
-    pushed every card down (82 to 114 px at 390). Measured against a copy of
-    the note with only its icon and words, beside it."""
+def test_no_lock_note_stands_above_the_cards_locked_or_not(browser, served, width):
+    """The stage's lock note once pushed every card down (82 to 114 px at
+    390 with a link in it). #209 took the note out: what the lock holds is
+    the Help's to say, and the Lock button's own words. So there is none,
+    locked or not, and the button says what it is."""
     page = Watched(browser, served, "/#stage", width=width, height=844)
     p = page.page
     p.wait_for_selector(".card")
-    if not locked:
-        lock = p.locator("button.lock")
-        lock.click()
-        lock.click()
-        expect(lock).to_have_text("Lock off · editing")
-    note = p.locator(".lock-note")
-    expect(note).to_have_class(re.compile(r"\blocked\b") if locked else re.compile(r"^lock-note$"))
-    expect(note.locator("a, button")).to_have_count(0)
-    heights = note.evaluate("""(el) => {
-      const copy = document.createElement('p');
-      copy.className = el.className;
-      for (const child of el.childNodes) {
-        if (child.nodeType === Node.TEXT_NODE || child.tagName.toLowerCase() === 'svg') copy.append(child.cloneNode(true));
-      }
-      el.after(copy);
-      const both = [el.getBoundingClientRect().height, copy.getBoundingClientRect().height];
-      copy.remove();
-      return both;
-    }""")
-    assert heights[0] == heights[1], heights
+    lock = p.locator("button.lock")
+    expect(p.locator(".lock-note")).to_have_count(0)
+    expect(lock).to_have_attribute("aria-label", "Performance lock is on. Tap twice to unlock structural edits")
+    lock.click()
+    lock.click()
+    expect(lock).to_have_text("Lock off · editing")
+    expect(p.locator(".lock-note")).to_have_count(0)
+    expect(lock).to_have_attribute("aria-label", "Performance lock is off. Tap to lock")
     page.close()
 
 

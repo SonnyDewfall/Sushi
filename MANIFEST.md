@@ -7022,5 +7022,9 @@ a footswitch, its send bypassed, is a live step like any bypass, said as
 "mute vocal". #210's new words follow the less-text rule: **Save & assign**
 (its title says the rest), PEDALS' "Ranges changed" or "Not playing yet"
 with a one-word **Restart**, "waiting" for the board, "Device" for its
-picker, and the restart confirm "Restart?" with Yes and No. Not run on the
-rig. *(2026-11-24)*
+picker, and the restart confirm "Restart?" with Yes and No. A refusal shown
+under a heading that its words repeat ("Not switched to x: ...") is cut past
+it, and a take that is not whole says "1 problem" on its result. The UI tests
+of the stage, the takes, the phone line, the visualiser's line and the lock
+read the new words, with what was said whole in the element's title. Not run
+on the rig. *(2026-11-24)*

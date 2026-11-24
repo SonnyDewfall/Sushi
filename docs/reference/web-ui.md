@@ -102,9 +102,14 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
     panels and results: what is left is a heading, the control, and a short
     status or error. A result says its title ("Saved electric_board", "Not
     assigned: C"); everything else it said (the file written, what git
-    says, the agent's reason) is its `title`, for a hover. A refusal is cut
-    to its first clause (`R.shortSaid`), the whole of it in the `title`. The
-    "About …" and Help links stay: the guide keeps the explanations.
+    says, the agent's reason) is its `title`, for a hover. A refusal says
+    what is wrong beside its title, cut to its first clause (`R.shortSaid`,
+    which passes over a leading "error: ", "nothing was written: " or a
+    repeat of the title), the whole of it in the `title`; so does a take
+    that is not whole ("1 problem"). PEDALS' pedal-map line (#210) is "Not
+    playing yet" or "Ranges changed" with **Restart**, and an assignment
+    refused for unsaved work offers **Save & assign**. The "About …" and
+    Help links stay: the guide keeps the explanations.
 - **A tab per channel, and bypassed plugins minimised (#135, 2026-11-15).**
   The middle column is a tablist: **one tab per channel in the rig's order,
   then Master**, and the open tab's chain under them, nothing of another

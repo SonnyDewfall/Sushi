@@ -306,7 +306,12 @@ def test_a_refusal_is_cut_to_what_is_wrong_in_a_few_words(blank):
         R.shortSaid("nothing was written"),
         R.shortSaid(""),
         R.shortSaid(null),
+        // The heading it is shown under, when the words begin with it, is passed over.
+        R.shortSaid("Not switched to x: 1 plugin it loads is missing. Nothing was changed", 40, "Not switched to x"),
+        R.shortSaid("error: x was not started: 1 plugin missing"),
+        R.shortSaid("Not switched to x", 40, "Not switched to x"),
       ];""")
     assert cut == ["a rig called hall already exists", "duplicate name 'overdrive' in track…",
                    "Sushi would not set Feedback", "the rig is using 86% of its 21.333 ms…",
-                   "nothing was written", "", ""]
+                   "nothing was written", "", "", "1 plugin it loads is missing", "x was not started",
+                   "Not switched to x"]

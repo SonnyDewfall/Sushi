@@ -3580,11 +3580,17 @@ export function undoOutcome(answer) {
 
 // A refusal in a few words, for the page (#209): what comes before its
 // first colon, semicolon, bracket or full stop, cut at a word under about
-// forty characters. A leading "nothing was written: " is passed over: what
-// is wrong is what follows it. The whole of it goes in the element's `title`.
-export function shortSaid(text, max = 40) {
+// forty characters. A leading "error: " or "nothing was written: " is passed over, and so
+// is a leading `heading` (the title it is shown under, which the agent's
+// words often begin with: "Not switched to x: ..."): what is wrong is what
+// follows. The whole of it goes in the element's `title`.
+export function shortSaid(text, max = 40, heading = null) {
   if (typeof text !== "string" || !text) return "";
-  const rest = text.replace(/^nothing (?:was|is) (?:written|changed|started): /i, "");
+  let rest = text;
+  if (typeof heading === "string" && heading && rest.toLowerCase().startsWith(`${heading.toLowerCase()}: `)) {
+    rest = rest.slice(heading.length + 2);
+  }
+  rest = rest.replace(/^error: /i, "").replace(/^nothing (?:was|is) (?:written|changed|started): /i, "");
   let cut = (rest || text).split(/: |; | \(|\. /)[0].trim();
   if (cut.length > max) cut = `${cut.slice(0, max).replace(/\s+\S*$/, "")}…`;
   return cut;

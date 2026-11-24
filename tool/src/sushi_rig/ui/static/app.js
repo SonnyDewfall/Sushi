@@ -1017,10 +1017,10 @@ function problemsRegion(el) {
   const key = JSON.stringify([list, state.failures.map((f) => [f.title, f.reason, f.at.getTime()]), state.notice]);
   patch(el, key, () => [
     ...state.failures.map((f, i) => h("div", { class: "problem refused", role: "alert", title: f.reason },
-      h("strong", {}, f.title), h("span", {}, R.shortSaid(f.reason)),
+      h("strong", {}, f.title), h("span", {}, R.shortSaid(f.reason, 40, f.title)),
       f.action ? h("button", { class: "act", onclick: () => { state.failures.splice(i, 1); f.action.run(); } }, f.action.label) : null,
       h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.failures.splice(i, 1); render(); } }, "×"))),
-    ...list.map((p) => h("div", { class: `problem ${p.kind}`, title: p.reason }, h("strong", {}, p.title), h("span", {}, R.shortSaid(p.reason)),
+    ...list.map((p) => h("div", { class: `problem ${p.kind}`, title: p.reason }, h("strong", {}, p.title), h("span", {}, R.shortSaid(p.reason, 40, p.title)),
       p.at ? h("span", { class: "at" }, p.at) : null)),
     state.notice ? h("div", { class: "notice", title: state.notice.title || null }, state.notice.text ?? state.notice,
       h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.notice = null; render(); } }, "×")) : null,
@@ -1103,7 +1103,7 @@ function resultBox(result, { cls = "save-result", dismiss = null, offer = null }
   const more = [result.ok ? result.text : result.reason, result.ok ? result.commit : null].filter(Boolean).join(" ");
   return h("div", { class: `${cls} ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert", title: more || null },
     h("strong", {}, result.title),
-    !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason)) : null,
+    !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason, 40, result.title)) : null,
     result.action ? h("button", { class: "rig-act danger", onclick: result.action.run }, result.action.label) : null,
     offer,
     dismiss ? h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: dismiss }, "×") : null);
@@ -3078,6 +3078,9 @@ function recordRegion(el) {
       result ? h("div", { class: `record-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert",
         title: [result.text, !result.ok ? result.reason : null, result.folder].filter(Boolean).join(" ") || null },
         h("strong", {}, result.title),
+        // Not whole, or not stopped: what is wrong in a few words ("1 problem").
+        !result.ok && (result.text || result.reason)
+          ? h("span", { class: "said" }, R.shortSaid(result.text || result.reason, 40, result.title)) : null,
         h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.recordResult = null; render(); } }, "×")) : null,
     ];
   });
@@ -3742,7 +3745,7 @@ function rigFileResult(result, dismiss, play) {
   return h("div", { class: `save-result rigfile-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert",
     title: more || null },
     h("strong", {}, result.title),
-    !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason)) : null,
+    !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason, 40, result.title)) : null,
     result.hint ? h("details", { class: "machine-hint-box" }, h("summary", {}, "Machine lines"), h("pre", { class: "machine-hint" }, result.hint)) : null,
     result.ok && result.offer ? h("button", { class: "rig-act primary offer", disabled: !!state.pending,
       onclick: () => play(result.offer) }, result.offer.op === "restart" ? "Restart" : result.offer.label) : null,
