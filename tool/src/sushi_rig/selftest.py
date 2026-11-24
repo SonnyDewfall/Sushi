@@ -90,7 +90,7 @@ from .analysis import (
     Finding,
     Harmonics,
     check_finite,
-    find_delays,
+    find_latency,
     harmonic_distortion,
     peak_dbfs,
     rms_dbfs,
@@ -269,7 +269,12 @@ class Delay:
 
 
 def measure_delay(probe: Probe) -> Delay:
-    """How late the response is, from the strongest alignment between the two.
+    """How late the response is: its earliest path (`analysis.find_latency`).
+
+    The earliest, not the strongest alignment, which this was until #143: a
+    probe through a copy of electric-delay's chain would have read the delay
+    pedal's echo, 19440 samples, and failed `delay_findings` as a buffer
+    hundreds of blocks long, when the dry signal was there one quantum late.
 
     Needs a **broadband** stimulus — an impulse, noise or a sweep. A sine would
     produce a confident and meaningless answer, because every cycle of it aligns
@@ -277,11 +282,14 @@ def measure_delay(probe: Probe) -> Delay:
     `samples is None` means nothing correlated at all, which is what silence
     looks like.
     """
-    peaks = find_delays(probe.injected, probe.returned, max_peaks=1)
+    # A return under half the stimulus has no lag to search, which
+    # `find_delays` answered with no peak and `find_latency` refuses.
+    short = 2 * len(probe.returned) < len(probe.injected)
+    found = None if short else find_latency(probe.injected, probe.returned)
     return Delay(
         name=probe.name,
         sample_rate=probe.sample_rate,
-        samples=peaks[0].lag_samples if peaks else None,
+        samples=found.peak.lag_samples if found is not None else None,
     )
 
 

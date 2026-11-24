@@ -299,16 +299,20 @@ CHECKSUMS = {
     # electric-chorus-2's is config/sound/electric-chorus-2.yaml as it was
     # before 8c9bb76 renamed it to the two-channel rig's `.board`, which
     # differs from it in its `config:` line alone. Each sha256 here is that
-    # git blob's, so `git show <commit>:<path> | sha256sum` says the same.
+    # git blob's, so `git show <commit>:<path> | sha256sum` says the same;
+    # except electric-delay's and electric_board's, whose `delay_samples` (and
+    # electric_board's note on it) were rewritten when the delay became the
+    # earliest path rather than the strongest (#143), 19440 to 0 and 4163 to
+    # 1, every other byte as frozen.
     "sound/accustomed.yaml": "dea3c2aefb4ccc16026abc247561249b4eb37ee1b47f3f13aab8f2d7014be0dc",
     "sound/electric-chorus-2.yaml": "7d6469d1840ee606d7976f00247d3880c80212d494403000466f6281525bbc3b",
     "sound/electric-chorus-hall.yaml": "008d130a8209e96fb8130af04eaf6c31e60eb6cddbbeef773618a70b1c34a117",
     "sound/electric-chorus.yaml": "d2a184db1b92133090bfc4b65e23fa7290696f93ff538f714ae7cbbd33f7c440",
     "sound/electric-clean.yaml": "ed29336ee65a8934a76a9a76edc39a56a91387ba7fa2bcb67c74c76aa5152f9e",
-    "sound/electric-delay.yaml": "7129f5082354ce061a143b48c1c6d44f07e0fcdb9073771d245b41a9a91bf925",
+    "sound/electric-delay.yaml": "b3e8cd27b40eeff888249de660b9fc637031d1c45d3c4c0fda931409ce10174d",
     "sound/electric-octave-up.yaml": "c5346663244708688cf79c760ff0640b63c02ccc1088e3d14cd4a28deeb48853",
     "sound/electric-spacey-delay.yaml": "456b672f1d6614bae2a5ebd6b8cd8146d38e0249c87498e1590721a07cff8692",
-    "sound/electric_board.yaml": "968c4a08de97fa7d9ca44f135655ef7df286de44081629c3ea871b88ff10ae8a",
+    "sound/electric_board.yaml": "b801c22ffeb89e33ff32fd254ad2d613a8ba6b4e80688738a2e1235c6ef27fb6",
     "sound/guitar_vocal.guitar.yaml": "722da50c8de79c51eee0853bc0063a610912fc6bba415843f7995f3f0215abfc",
     "sound/guitar_vocal.vocal.yaml": "2a0d60051d4b4ae4438d2f785224b20b963663c3d9ec05347596f77a34226f61",
     "sound/hard-feelings.yaml": "45b54cecf78e87b7a7253b8e6347fa08c3a0c1d2a08b3ba99fbee1c97ed61a30",
