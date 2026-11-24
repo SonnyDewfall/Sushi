@@ -41,8 +41,8 @@ yet, so the page tells you the rig is up but never claims it sounds right.
 ## Stop the rig
 
 1. Under **RIGS**, click **Stop** and the rig's name.
-2. The page asks again, because stopping cuts the sound. Click **Stop now**
-   within a few seconds, or **Cancel**.
+2. The page asks **Stop?**, because stopping cuts the sound. Click **Yes**
+   within a few seconds, or **No**.
 
 Stopping throws away any changes you have not saved. See
 [Saving and going back](saving.md).

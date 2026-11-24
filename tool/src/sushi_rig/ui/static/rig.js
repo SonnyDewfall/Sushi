@@ -1123,7 +1123,8 @@ export function unsavedChanges(logAnswer, live, rig, amp = null, plugins = null)
   const log = (logAnswer && logAnswer.log) || [];
   const first = (logAnswer && logAnswer.first) || 0;
   let start = 0;
-  for (let i = log.length - 1; i >= 0; i--) if (log[i].op === "rig" || log[i].op === "save") { start = i + 1; break; }
+  // A save Undo took back (`withdrawn`, #209) is no baseline: its file is as before it.
+  for (let i = log.length - 1; i >= 0; i--) if (log[i].op === "rig" || (log[i].op === "save" && !log[i].withdrawn)) { start = i + 1; break; }
   // The log's `at` is to the second, the rig's start finer: compare seconds.
   const since = rig && rig.started_at ? Math.floor(Date.parse(rig.started_at) / 1000) * 1000 : NaN;
   const keys = new Map();
@@ -1225,43 +1226,6 @@ function chainChanges(item, now, plugins = null, copies = new Set()) {
     out.push({ kind: "chain", track: item.track, from: item.from, to: [...now], source: item.source });
   }
   return out;
-}
-
-// The entry an undo would take back, as the agent picks it (agent.pick_undo):
-// the newest that is neither an undo nor a skip and has not been undone or
-// skipped; a save and a take's start or stop are passed over, and a rig
-// switch is a barrier. `{index,
-// entry}`, `{barrier}` or null.
-export function nextUndo(logAnswer) {
-  const log = (logAnswer && logAnswer.log) || [];
-  const first = (logAnswer && logAnswer.first) || 0;
-  const handled = new Set();
-  for (let i = log.length - 1; i >= 0; i--) {
-    const e = log[i];
-    if (e.op === "rig") return { barrier: e };
-    if (e.op === "undo") handled.add(e.undoes);
-    else if (e.op === "stale") handled.add(e.stale);
-    else if (e.op === "save" || e.op === "record") continue;
-    else if (!handled.has(first + i)) return { index: first + i, entry: e };
-  }
-  return null;
-}
-
-export function describeEntry(entry) {
-  const a = entry.args || {};
-  switch (entry.op) {
-    case "parameter": return `${a.processor} · ${a.parameter}`;
-    case "parameters": return `${a.processor} · ${Object.keys(a.parameters || {}).join(", ")}`;
-    case "bypass": return `${a.bypassed ? "bypass" : "turn on"} ${a.processor}`;
-    case "move": return `move ${a.processor} ${a.direction}`;
-    case "add": return `add ${a.name}`;
-    case "remove": return `remove ${a.processor}`;
-    case "amp": return `amp · ${a.name}`;
-    case "amp_model": return `amp model ${modelName(a.model)}`;
-    case "save": return `save to ${a.file}`;
-    case "record": return `${a.action === "stop" ? "stop" : "record"} ${a.name}`;
-    default: return entry.op;
-  }
 }
 
 // ---------------------------------------------------------------- the rig's state
@@ -1595,15 +1559,11 @@ export function deleteAction(name, running, busy = false) {
     return { name, disabled: true, label: "Delete", aria: `Delete ${name}: not while it is the running rig`,
       why: `${name} is the running rig, so it cannot be deleted: switch to another rig, or stop it, first.` };
   }
-  return { name, disabled: !!busy, label: "Delete", aria: `Delete ${name}…`, why: null };
+  return { name, disabled: !!busy, label: "Delete", aria: `Delete ${name}`, why: null };
 }
 
 export function deleteCall(rig, dryRun = false) {
   return { path: `/rigs/${encodeURIComponent(rig)}/delete`, json: dryRun ? { dry_run: true } : {} };
-}
-
-export function restoreCall(rig, entry = null) {
-  return { path: `/rigs/${encodeURIComponent(rig)}/restore`, json: entry ? { entry } : {} };
 }
 
 // "electric-delay moves from program 6 to 5", for each rig whose number
@@ -1628,24 +1588,6 @@ function passing(answer) {
   return answer.code === "busy" || !answer.status;
 }
 
-// The confirm, from the agent's dry run (`answer`, null while it is asked).
-export function deleteConfirm(rig, answer) {
-  if (!answer) return { rig, loading: true, go: `Delete ${rig}` };
-  if (!answer.ok) return { rig, refused: answer.reason, code: answer.code || null, retry: passing(answer), go: `Delete ${rig}` };
-  const b = answer.body || {};
-  const moves = programMoves(b.programs);
-  return {
-    rig, file: b.file, title: `Delete ${b.file}?`,
-    lines: [
-      "It moves to config/rigs/.deleted/, out of the picker and the Program Change list, and Undo puts it back. Nothing is committed.",
-      binGitText(b.git, b.git_note),
-    ],
-    moves,
-    programsNote: moves.length ? "Program Change numbers follow config/rigs by file name, so a pedal preset set for a number then selects the rig listed against it after." : null,
-    go: `Delete ${rig}`,
-  };
-}
-
 // What a delete said: `{ok, title, text, binned}` with what Undo needs, or
 // `{ok: false, title, reason, code, retry}`.
 export function deletedOutcome(rig, answer) {
@@ -1659,43 +1601,9 @@ export function deletedOutcome(rig, answer) {
   };
 }
 
-// What an Undo said. Refused, `keep` is whether its Undo stays offered:
-// only for a refusal that may pass (busy, no answer). A file of that name
-// there again is said once, with the reason, and the Undo goes: the rig is
-// in the picker again, and the binned file stays in config/rigs/.deleted/.
-export function restoreOutcome(rig, answer) {
-  if (!answer.ok) {
-    return { ok: false, title: `Not put back: ${rig}`, reason: answer.reason, code: answer.code || null, keep: passing(answer) };
-  }
-  const b = answer.body || {};
-  const moves = programMoves(b.programs);
-  return { ok: true, title: `Put back ${rig}`, text: `${b.file} is back from ${b.from}.${moves.length ? ` ${moves.join("; ")}.` : ""}` };
-}
-
-// The Undos offered: a few, newest first, held by this page only, for
-// NOTICE_MS each (`noticesLeft`). Until #189 they were kept in this browser
-// across reloads (`sushi-rig.binned`), and never left; that record is
-// removed when the page loads and never read. A deleted rig is still in
-// config/rigs/.deleted/ after its Undo has gone, to move back by hand.
-export const KEEP_UNDOS = 5;
+// What this browser once kept for the page and no longer reads: the Undos
+// of deletes, kept across reloads until #189. Removed as the page loads.
 export const RETIRED_KEYS = ["sushi-rig.binned"];
-
-export function addOffer(offers, binned) {
-  return [binned, ...offers.filter((o) => o.entry !== binned.entry)].slice(0, KEEP_UNDOS);
-}
-
-export function dropOffer(offers, entry) {
-  return offers.filter((o) => o.entry !== entry);
-}
-
-// The Undos still worth offering, by what the agent says is in its bin now
-// (GET /rigs/bin): an entry gone from it, or whose rig is in the picker
-// again, is not. Nothing is offered until the agent has said.
-export function checkedOffers(offers, binAnswer) {
-  if (!binAnswer || !binAnswer.ok) return [];
-  const there = new Map((binAnswer.body.entries || []).map((e) => [e.entry, e]));
-  return offers.filter((o) => there.has(o.entry) && there.get(o.entry).rig === o.rig && !there.get(o.entry).back);
-}
 
 // ---------------------------------------------------------------- saving (S4)
 // POST /rig/save: the running rig into its own file of config/rigs, or "save
@@ -1730,7 +1638,7 @@ export function lastSave(logAnswer) {
   const log = (logAnswer && logAnswer.log) || [];
   for (let i = log.length - 1; i >= 0; i--) {
     const e = log[i];
-    if (e.op === "save") return { ...(e.args || {}), at: e.at };
+    if (e.op === "save" && !e.withdrawn) return { ...(e.args || {}), at: e.at };
   }
   return null;
 }
@@ -1858,8 +1766,13 @@ export function savesCall(rig) {
   return { path: `/rigs/${encodeURIComponent(rig)}/saves` };
 }
 
-export function revertCall(rig, id, discard = false) {
-  return { path: `/rigs/${encodeURIComponent(rig)}/revert`, json: discard ? { save: id, discard: true } : { save: id } };
+// `restart`: false (the page's first tap) has a revert that would restart
+// Sushi refused as `restarts`, to be asked "Restart?" (#235's review), true
+// once it was; left out, as curl leaves it, the switch restarts where it must.
+export function revertCall(rig, id, discard = false, restart = null) {
+  const json = discard ? { save: id, discard: true } : { save: id };
+  if (restart !== null) json.restart = !!restart;
+  return { path: `/rigs/${encodeURIComponent(rig)}/revert`, json };
 }
 
 // The list a "Revert…" opens, from GET /rigs/<rig>/saves: each point by
@@ -1885,38 +1798,6 @@ export function revertRows(answer, now, fmt = (iso) => iso) {
   for (const problem of b.problems || []) notes.push(problem);
   notes.push(`The newest ${b.keep} saves of ${b.rig} are kept, in ${b.kept_in}/, which git ignores.`);
   return { rows, loading: false, problem: null, notes, empty: rows.length === 0 };
-}
-
-// The confirm for reverting to `row`: what it does and, named, what is lost.
-// `count` is the unsaved changes the page saw (`unsavedChanges`); the agent
-// decides, and refuses with `unsaved` if it saw some the page did not.
-export function revertConfirm(row, answer, count, rig, fmt = (iso) => iso) {
-  const b = (answer && answer.ok && answer.body) || {};
-  const current = b.current || {};
-  const what = row.kind === "commit" ? `commit ${row.title.slice(7)} (${row.ago || row.when})`
-    : `the save of ${row.when} (${row.ago || "time not known"})`;
-  const running = !!b.running;
-  const lost = [];
-  if (count > 0 && running) lost.push(`${count} unsaved change${count === 1 ? "" : "s"} playing now, made since the last save.`);
-  if (current.kept_as === row.id) {
-    lost.push("Nothing of the file: it is this save already.");
-  } else if (current.kept_as) {
-    const kept = (b.points || []).find((p) => p.id === current.kept_as);
-    lost.push(`Nothing of the file: as it is now it is kept as the save of ${kept ? fmt(kept.at) : "earlier"}, so you can come back to it.`);
-  } else if (current.git === "unchanged") {
-    lost.push("Nothing of the file: as it is now it is as its commit has it, so you can come back to that.");
-  } else {
-    lost.push("The file as it is now: it is in no save or commit (it changed since, by an edit or by hand), so it is lost.");
-  }
-  return {
-    title: `Revert ${rig} to ${what}?`,
-    lost,
-    plays: running
-      ? "The running rig is switched to it: live where it can be, by a restart where it must be (the sound stops for a few seconds)."
-      : `${rig} is not running: only its file changes.`,
-    go: count > 0 && running ? `Revert, dropping ${count} unsaved change${count === 1 ? "" : "s"}` : "Revert now",
-    discard: count > 0 && running,
-  };
 }
 
 // What a revert answered: {ok, title, text, commit} or {ok: false, title,
@@ -2280,8 +2161,8 @@ export function ampModelCall(model) {
 export function ampModelOutcome(model, answer) {
   const body = answer.body || {};
   if (answer.ok) {
-    if (body.changed === false) return { ok: true, text: body.message || `${modelName(model)} is already playing.` };
-    return { ok: true, text: body.message || `The amp now plays ${modelName(model)}.` };
+    if (body.changed === false) return { ok: true, title: `Amp: ${modelName(model)}`, text: body.message || `${modelName(model)} is already playing.` };
+    return { ok: true, title: `Amp: ${modelName(model)}`, text: body.message || `The amp now plays ${modelName(model)}.` };
   }
   const back = body.restored === true ? " The previous model was brought back."
     : body.restored === false ? " The amp did not come back: restart the rig." : "";
@@ -2452,9 +2333,9 @@ export function recordBar(health, answer, typed, pending) {
     default: fallback,
     record: { label: starting ? "Starting…" : "Record", disabled: !!problem || starting },
     stop: { label: "Stop", disabled: true },
-    note: problem ? problem
-      : replaces ? `Will replace the earlier ${name}, which moves to _archive/${name}/.`
-        : name || fallback ? null : "No name: the agent names the take when it starts.",
+    // A few words (#209); the whole of it is `noteTitle`, for a hover.
+    note: problem ? shortSaid(problem) : replaces ? `Replaces ${name}` : null,
+    noteTitle: problem ? problem : replaces ? `Will replace the earlier ${name}, which moves to _archive/${name}/.` : null,
     bad: !!problem,
   };
 }
@@ -2524,13 +2405,13 @@ export function openFolderOutcome(answer) {
 }
 
 // ---------------------------------------------------------------- notices that go by themselves (#189)
-// What says something worked leaves after NOTICE_MS: a rig deleted or put
-// back, its Undo offer, the takes folder opened, a whole take stopped. A
+// What says something worked leaves after NOTICE_MS: the takes folder
+// opened, a whole take stopped, and the one Undo's few words (#209). A
 // refusal stays until it is dismissed, so an error is never gone unread.
 // Each notice carries `at`, the page's monotonic clock (`performance.now`)
 // when it was shown, so a wall clock stepped back cannot hold one; the page
 // sets one timer for the soonest due (`nextNoticeIn`) and, when it fires,
-// drops what is done (`noticesLeft`) and sets it again for the rest.
+// drops what is done and sets it again for the rest.
 export const NOTICE_MS = 15000;
 
 // Whether notice `n` (`{ok, at}`) has had its time: only one that worked, and
@@ -2545,17 +2426,6 @@ export function nextNoticeIn(notices, now) {
   const due = notices.filter((n) => !!n && n.ok === true && typeof n.at === "number")
     .map((n) => Math.max(0, NOTICE_MS - (now - n.at)));
   return due.length ? Math.min(...due) : null;
-}
-
-// The rig picker's notices still to show: the delete's or Undo's outcome, and
-// the Undos offered, each gone once its time is up (an offer is one that
-// worked, so it goes as an outcome that worked does), except the Undo in
-// flight (`restoring`), which stays until its answer says what happened.
-export function noticesLeft({ said = null, offers = [], restoring = null }, now) {
-  return {
-    said: noticeDone(said, now) ? null : said,
-    offers: offers.filter((o) => o.entry === restoring || !noticeDone({ ok: true, at: o.at }, now)),
-  };
 }
 
 // ---------------------------------------------------------------- rig files (the New rig screen)
@@ -2848,6 +2718,7 @@ export const HELP = {
   save: { page: "saving", label: "About saving" },
   loadChannel: { page: "channel-from-another-rig", label: "Help" },
   amp: { page: "shaping-a-sound", anchor: "set-the-amp", label: "About the amp" },
+  pedals: { page: "playing-live", anchor: "pedals", label: "About pedals" },
 };
 
 // The screens the guide can go back to, by the page's screen (`currentScreen`).
@@ -3344,19 +3215,21 @@ export function eqGlow(prev, level, dt) {
 // after}`: app.js draws `text`, each of `urls` ({url, label}) as a link with
 // its interface, then `after`.
 export function agentLine(listen, here) {
+  // A few words on the page (#209); what they mean is the `title`.
   const same = "Phone and laptop see the same rig.";
-  if (!listen || typeof listen !== "object") return { text: `Agent on ${here}. ${same}`, urls: [], after: "" };
+  if (!listen || typeof listen !== "object") return { text: `Agent on ${here}`, urls: [], after: "", title: same };
   if (!listen.network) {
-    return { text: `Agent on ${here}, for this machine only: a phone cannot reach it. For one, start the agent with sushi-rig agent --phone.`,
-      urls: [], after: "" };
+    return { text: "This machine only", urls: [], after: "",
+      title: `Agent on ${here}, for this machine only: a phone cannot reach it. For one, start the agent with sushi-rig agent --phone.` };
   }
   const urls = (Array.isArray(listen.urls) ? listen.urls : []).filter((u) => u && typeof u.url === "string")
     .map((u) => ({ url: u.url, label: [u.kind, u.interface].filter(Boolean).join(", ") }));
   if (!urls.length) {
-    return { text: `Agent on ${here}, open to the network, but this machine has no network address: join Wi-Fi or the phone's hotspot.`,
-      urls: [], after: "" };
+    return { text: "No network", urls: [], after: "",
+      title: `Agent on ${here}, open to the network, but this machine has no network address: join Wi-Fi or the phone's hotspot.` };
   }
-  return { text: `Agent on ${here}. On a phone on the same network, open`, urls, after: `${same} No password: anyone on the network can change it.` };
+  return { text: "Phone:", urls, after: "",
+    title: `Agent on ${here}. On a phone on the same network, open one of these. ${same} No password: anyone on the network can change it.` };
 }
 
 // ---------------------------------------------------------------- pedals (#192)
@@ -3427,12 +3300,16 @@ export function pedalBoard(answer, chosen = null) {
 }
 
 // What the Pedals section says when the file's mappings wait for a restart
-// (#210, GET /midi's `behind`), with its offer; null when they do not.
+// (#210, GET /midi's `behind`), with its offer; null when they do not. A few
+// words and a one-word offer (#209); the rest is the `title`.
 export function pedalBehind(board) {
   if (!board.ok || !board.behindRestart || !board.rig) return null;
-  const offer = { op: "restart", name: board.rig, label: `Restart ${board.rig} to play them` };
-  if (board.behindRanges) return { text: "Pedal ranges changed. Restart to apply.", offer: { ...offer, label: `Restart ${board.rig}` } };
-  return { text: `This file's pedal mappings are not playing yet: Sushi loads them when ${board.rig} restarts.`, offer };
+  const offer = { op: "restart", name: board.rig, label: "Restart" };
+  if (board.behindRanges) {
+    return { text: "Ranges changed", title: `Pedal ranges changed: they apply when ${board.rig} restarts.`, offer };
+  }
+  return { text: "Not playing yet",
+    title: `This file's pedal mappings are not playing yet: Sushi loads them when ${board.rig} restarts.`, offer };
 }
 
 const PEDAL_WORDS = { bypass: true, mute: true, volume: true, parameter: true, blend: true };
@@ -3523,7 +3400,7 @@ export function pedalDeviceState(health, controller) {
       : { state: "listening", text: "listening" };
   }
   if (feed.state === "absent") return { state: "absent", text: "not connected" };
-  if (feed.state === "waiting") return { state: "waiting", text: "waiting: this rig needs it, and it is not plugged in" };
+  if (feed.state === "waiting") return { state: "waiting", text: "waiting", title: "Waiting: this rig needs it, and it is not plugged in" };
   if (feed.state === "opening") return { state: "opening", text: "opening its port" };
   return { state: feed.state || "unknown", text: feed.problem || feed.state || "not known" };
 }
@@ -3583,4 +3460,93 @@ export function pedalOutcome(what, answer) {
     offer = { op: "restart", name: body.rig, label: `Restart ${body.rig} to play it` };
   }
   return { ok: true, title: `Assigned ${what}`, text, commit: commitText(body.library), offer, file: body.file };
+}
+
+// ---------------------------------------------------------------- one Undo (#209)
+// One button, on the rack and the stage, that steps back the newest change
+// of any kind: GET /undo says what it would do (`next`), POST /undo does
+// it. The history is the agent's (history.py), shared by every page and
+// kept until the agent restarts, so a reload keeps it.
+export const UNDO_CALL = { path: "/undo", json: {} };
+// A press, for the step the button showed (`next`, GET /undo's): its `seq`,
+// so a step another page or a later change put on top is refused
+// (`changed`), not undone in its place. `restart: false` until "Restart?"
+// was answered Yes, so a switch back that would restart Sushi is asked
+// about first; `discard` once "Drop changes?" was.
+export function undoCall(next, { discard = false, restart = false } = {}) {
+  const json = { restart: !!restart };
+  if (next && Number.isInteger(next.seq)) json.seq = next.seq;
+  if (discard) json.discard = true;
+  return { path: UNDO_CALL.path, json };
+}
+// What the lock holds is what it holds of the change itself (`lockRefusal`):
+// the rig's structure (a move, an add, a remove), the amp's model (it
+// restarts the amp), a pedal's assignment, and what switches the rig back
+// (a revert's or a channel load's Undo: the rig's structure, as a load is).
+// A knob, a fader and a bypass are let through, as they are locked, and so
+// are the rack's file edits that are not behind the lock (a channel, an
+// input, a save, a delete).
+const UNDO_STRUCTURAL = ["move", "add", "remove", "amp_model"];
+const UNDO_LOCKED_ACTS = ["pedal", "load", "revert"];
+
+// The button: `{disabled, title, cant}`. `answer` is GET /undo's (request's
+// shape), `screen` "rack" or "stage": on the stage it is for the live edits.
+export function undoButton(answer, { locked = false, screen = "rack", pending = false } = {}) {
+  if (pending) return { disabled: true, title: "Undoing…", cant: false };
+  if (!answer || !answer.ok) return { disabled: true, title: "Undo unknown", cant: false };
+  const next = answer.body.next;
+  if (!next) return { disabled: true, title: "Nothing to undo", cant: false };
+  const live = next.kind === "live";
+  if (screen === "stage" && !live) return { disabled: true, title: `Undo ${next.label} on the rack`, cant: false };
+  if (locked && (live ? UNDO_STRUCTURAL.includes(next.op) : UNDO_LOCKED_ACTS.includes(next.act))) {
+    return { disabled: true, title: `Locked: ${next.label}`, cant: false };
+  }
+  if (next.can === false) return { disabled: false, title: `Can't undo: ${next.why || next.label}`, cant: true };
+  return { disabled: false, title: `Undo ${next.label}`, cant: false };
+}
+
+// What a press said, in a few words: `{ok, text, title, offer}`; the whole
+// reason, when there is one, is the `title`, for a hover.
+export function undoOutcome(answer) {
+  const body = answer.body || {};
+  if (answer.ok) {
+    const restart = body.how === "restart";
+    return { ok: true, text: restart ? `${body.said} · restart` : body.said, title: body.reason || null,
+      offer: restart && body.rig ? { op: "restart", name: body.rig } : null, ask: null };
+  }
+  const refused = (text) => ({ ok: false, text, title: answer.reason, offer: null, ask: null });
+  // Held, not refused (#235's review): the page asks, and presses again.
+  if (answer.code === "unsaved" || answer.code === "panel") return { ...refused("Drop changes?"), ask: "drop" };
+  if (answer.code === "restarts") return { ...refused("Restart?"), ask: "restart" };
+  // Which step was dropped, on the page, not only in the title a phone
+  // cannot show.
+  if (answer.code === "cant_undo") {
+    const label = body.skipped && body.skipped.label;
+    return refused(label ? `Can't undo: ${label}` : "Can't undo");
+  }
+  if (answer.code === "nothing_to_undo") return refused("Nothing to undo");
+  if (answer.code === "changed") return refused("Changed: press again");
+  if (answer.code === "busy") return refused("Busy");
+  if (answer.status === 0) return refused("Agent not answering");
+  if (answer.status === 502 || answer.status === 503) return refused("Sushi not answering");
+  if (answer.status === 504) return refused("Timed out");
+  return refused(`Not undone: ${shortSaid(answer.reason || "")}`);
+}
+
+// A refusal in a few words, for the page (#209): what comes before its
+// first colon, semicolon, bracket or full stop, cut at a word under about
+// forty characters. A leading "error: " or "nothing was written: " is passed over, and so
+// is a leading `heading` (the title it is shown under, which the agent's
+// words often begin with: "Not switched to x: ..."): what is wrong is what
+// follows. The whole of it goes in the element's `title`.
+export function shortSaid(text, max = 40, heading = null) {
+  if (typeof text !== "string" || !text) return "";
+  let rest = text;
+  if (typeof heading === "string" && heading && rest.toLowerCase().startsWith(`${heading.toLowerCase()}: `)) {
+    rest = rest.slice(heading.length + 2);
+  }
+  rest = rest.replace(/^error: /i, "").replace(/^nothing (?:was|is) (?:written|changed|started): /i, "");
+  let cut = (rest || text).split(/: |; | \(|\. /)[0].trim();
+  if (cut.length > max) cut = `${cut.slice(0, max).replace(/\s+\S*$/, "")}…`;
+  return cut;
 }

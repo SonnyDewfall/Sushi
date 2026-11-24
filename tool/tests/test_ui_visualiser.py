@@ -920,7 +920,9 @@ def test_a_visualiser_that_cannot_be_made_closes_its_audio_and_is_not_tried_agai
     p = v.page
     v.until("() => sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
     assert p.evaluate("[window.made, window.unmade]") == [1, 1], "no AudioContext is left open"
-    assert "Reload the page" in p.locator(".visualiser-note").inner_text()
+    # A few words on the line (#209); the whole reason is its title.
+    assert p.locator(".visualiser-note").inner_text().startswith("Off")
+    assert "Reload the page" in p.locator(".visualiser-note").get_attribute("title")
     before = v.state()["attempts"]
     state = v.refused(after=before)
     assert state["why"].startswith("Off: butterchurn could not draw here")
@@ -940,7 +942,7 @@ def test_a_lost_context_stops_it_and_it_starts_afresh_once(opened):
     # disposes of itself before the page hears of it: waited for, as a whole.
     v.until("""() => { const v = sushiRigVisualiser();
       return v.phase === 'off' && v.lost === 1 && v.session === null && (v.error || '').includes('context lost'); }""")
-    assert "context lost" in v.page.locator(".visualiser-note").inner_text()
+    assert "context lost" in v.page.locator(".visualiser-note").get_attribute("title")
     v.shown()
     p.evaluate(lose)
     v.until("() => sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
@@ -1051,7 +1053,7 @@ def test_xruns_rising_while_it_listens_stop_it_until_it_is_switched_on_again(ope
     assert "glitched" in state["tripped"] and "from 0 to 5" in state["tripped"]
     assert state["session"]["listening"] is False
     state = v.refused(after=state["attempts"])
-    assert state["why"] == state["tripped"] and "glitched" in p.locator(".visualiser-note").inner_text()
+    assert state["why"] == state["tripped"] and "glitched" in p.locator(".visualiser-note").get_attribute("title")
     p.locator("#visualiser-on").uncheck()
     p.locator("#visualiser-on").check()
     assert v.shown()["tripped"] is None
@@ -1486,7 +1488,7 @@ def test_a_lost_context_on_an_equaliser_look_is_as_on_butterchurn(opened):
     p.evaluate(lose)
     v.until("""() => { const v = sushiRigVisualiser();
       return v.phase === 'off' && v.lost === 1 && v.session === null && (v.error || '').includes('context lost'); }""")
-    assert "canvas context lost" in p.locator(".visualiser-note").inner_text()
+    assert "canvas context lost" in p.locator(".visualiser-note").get_attribute("title")
     v.until("() => window.oldGl.getContext('webgl2').isContextLost()", timeout=5000)
     assert p.evaluate("!document.body.contains(window.oldGl)"), \
         "butterchurn's WebGL context is given back at once, not left for the garbage collector (PR #201's review)"

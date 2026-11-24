@@ -335,12 +335,12 @@ def test_an_add_from_the_drawer_lands_in_its_place_and_no_other_row_is_rebuilt(b
     expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-busy", "false")
     assert rows_kept(p) == ["overdrive", "octave", "delay"], "every row that was there is the row that was there"
     # Drawn once, as what it is: its plugin known from the add, before /live/plugins says.
-    expect(unit(p, "mda_delay")).to_contain_text("MDA Delay · no profile: every parameter")
+    expect(unit(p, "mda_delay")).to_contain_text("MDA Delay · no profile")
     expect(unit(p, "mda_delay").get_by_role("slider")).to_have_count(6)
     # It has its own place to add after, and is live work: one unsaved change, and Undo names it.
     expect(slot(p, "Add after mda_delay…")).to_be_visible()
     unsaved_count(p, 1)
-    expect(p.locator("aside.changes button.undo")).to_have_text("Undo · add mda_delay")
+    expect(p.locator("button.undo")).to_have_attribute("title", "Undo add mda_delay")
     page.close()
 
 
@@ -389,10 +389,7 @@ def test_a_mono_plugin_comes_with_its_hidden_copy_and_its_remove_takes_both(brow
     expect(p.locator(".add-slot")).to_have_count(3), "no place to add after the copy: what follows it goes past it"
     unsaved_count(p, 1)
     unit(p, "gxtubescreamer").get_by_role("button", name="gxtubescreamer", exact=True).click()
-    unit(p, "gxtubescreamer").get_by_role("button", name="Remove gxtubescreamer…").click()
-    expect(unit(p, "gxtubescreamer").locator(".row-said")).to_have_text(
-        "Take gxtubescreamer out of the chain? Undo puts it back with its settings.")
-    assert lib.rig.chains["vocal"][0] == "gxtubescreamer", "one tap removes nothing"
+    # One tap since #209 (it asked first until then): the one Undo puts it back.
     unit(p, "gxtubescreamer").get_by_role("button", name="Remove gxtubescreamer", exact=True).click()
     until(lambda: lib.rig.chains["vocal"] == ["vocal_delay", "vocal_send"])
     expect(p.locator("#t-vocal .unit button.name")).to_have_text(["vocal_delay"])
@@ -430,15 +427,17 @@ def test_locked_the_drawer_opens_to_browse_and_adding_and_removing_are_refused_i
     expect(p.locator("button.lock")).to_have_text("Locked")
     slot(p, "Add after overdrive…").click()
     expect(drawer(p)).to_be_visible()
-    expect(drawer(p).locator(".drawer-why")).to_contain_text("Locked: adding a plugin changes the rig's structure")
+    expect(drawer(p).locator(".drawer-why")).to_have_attribute("title", re.compile("^Locked: adding a plugin changes the rig's structure"))
     expect(entry(p, MDA_DELAY)).to_be_disabled()
     expect(p.locator(".lib-entry:enabled")).to_have_count(0)
     p.get_by_role("button", name="Close the library").click()
     expect(drawer(p)).to_be_hidden()
     unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
-    unit(p, "delay").get_by_role("button", name="Remove delay… (locked)").click()
-    expect(unit(p, "delay").locator(".row-said")).to_contain_text("Locked: removing a plugin changes the rig's structure")
-    expect(unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)).to_be_hidden()
+    expect(unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)).to_have_text("Remove (locked)")
+    unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
+    said = unit(p, "delay").locator(".row-said")
+    expect(said).to_have_text("Locked")
+    expect(said).to_have_attribute("title", re.compile("^Locked: removing a plugin changes the rig's structure"))
     assert lib.rig.writes() == []
     page.close()
 
@@ -451,7 +450,7 @@ def test_with_no_rig_running_the_library_can_be_browsed_and_nothing_added(browse
         expect(p.locator(".rig-name")).to_have_text("Rig down")
         p.get_by_role("button", name="Browse the library…").click()
         expect(drawer(p).locator(".drawer-where")).to_have_text("Look through what can be added.")
-        expect(drawer(p).locator(".drawer-why")).to_have_text("No rig is running, so nothing can be added: start one under RIGS.")
+        expect(drawer(p).locator(".drawer-why")).to_have_attribute("title", "No rig is running, so nothing can be added: start one under RIGS.")
         expect(entry(p, MDA_DELAY)).to_be_visible()
         expect(p.locator(".lib-entry:enabled")).to_have_count(0)
         assert served.rig.writes() == []
@@ -474,12 +473,13 @@ def test_the_open_drawer_turns_its_adds_off_while_the_rig_restarts_and_stays_off
     restart = threading.Thread(target=post, args=(lib, "/rig/restart", {}))
     restart.start()
     try:
-        expect(drawer(p).locator(".drawer-why")).to_have_text("restart is running: adding waits until it is done.")
+        expect(drawer(p).locator(".drawer-why")).to_have_attribute("title", "restart is running: adding waits until it is done.")
         expect(p.locator(".lib-entry:enabled")).to_have_count(0)
         expect(p.get_by_role("searchbox", name="Search the library")).to_be_focused()
     finally:
         restart.join(10)
-    expect(drawer(p).locator(".drawer-why")).to_have_text(
+    expect(drawer(p).locator(".drawer-why")).to_have_attribute(
+        "title",
         "The rig changed since the library was opened (it is now electric_board): close this, and open it again from the chain.",
         timeout=8000)
     expect(p.locator(".lib-entry:enabled")).to_have_count(0)
@@ -507,11 +507,12 @@ def test_a_plugin_the_agent_refuses_says_its_reason_in_place_and_sushi_is_not_to
         slot(p, "Add after delay…").click()
         # The amp is listed, off, with the library's reason; nothing to send.
         expect(entry(p, NAM)).to_be_disabled()
-        expect(entry(p, NAM).locator(".lib-note")).to_contain_text("Cannot be added: the amp runs in Carla")
+        expect(entry(p, NAM).locator(".lib-note")).to_have_attribute("title", re.compile("^Cannot be added: the amp runs in Carla"))
         entry(p, MVERB).click()
         said = p.locator('.add-slot[data-slot="delay"] .add-said')
-        expect(said).to_contain_text("Not added: MVerb")
-        expect(said).to_contain_text("is not in plugin-ports.txt")
+        expect(said).to_have_text("Not added")
+        expect(said).to_have_attribute("title", re.compile("^" + re.escape("Not added: MVerb")))
+        expect(said).to_have_attribute("title", re.compile(re.escape("is not in plugin-ports.txt")))
         expect(said).to_have_attribute("role", "alert")
         assert served.rig.writes() == [] and not any(c[0] == "walk" for c in served.rig.calls), \
             "refused from the manifest, before Sushi is asked anything"
@@ -532,9 +533,10 @@ def test_an_add_over_the_cpu_budget_is_refused_in_place_with_the_load_measured(b
     slot(p, "Add after overdrive…").click()
     entry(p, MDA_DELAY).click()
     said = p.locator('.add-slot[data-slot="overdrive"] .add-said')
-    expect(said).to_contain_text("Not added: the rig is using 86% of its 21.333 ms block, over the 80% a live "
-                                 "add may start from")
-    expect(said).to_contain_text("bypass or remove a plugin to make room")
+    expect(said).to_have_text("Not added")
+    expect(said).to_have_attribute("title", re.compile(re.escape(
+        "Not added: the rig is using 86% of its 21.333 ms block, over the 80% a live add may start from")))
+    expect(said).to_have_attribute("title", re.compile(re.escape("bypass or remove a plugin to make room")))
     expect(said).to_have_attribute("role", "alert")
     assert not any(c[0] in ("add", "walk") for c in lib.rig.calls), "refused before Sushi is asked anything"
     expect(shown(p)).to_have_text(["overdrive", "octave", "delay"])
@@ -547,13 +549,13 @@ def test_undo_takes_an_add_out_with_its_copy_and_puts_a_remove_back_with_its_set
     page = library_page(browser, lib)
     p = page.page
     unlock(p)
-    undo = p.locator("aside.changes button.undo")
+    undo = p.locator("button.undo")
     # An add, undone: the plugin and its copy go.
     slot(p, "Add after overdrive…").click()
     entry(p, DARC_MONO).click()
     name = "x42_comp_dynamic_compressor_mono"
     until(lambda: lib.rig.chains["board"][1:3] == [name, name + "_to_stereo"])
-    expect(undo).to_have_text(f"Undo · add {name}")
+    expect(undo).to_have_attribute("title", f"Undo add {name}")
     undo.click()
     until(lambda: lib.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
     expect(shown(p)).to_have_text(["overdrive", "octave", "delay"])
@@ -565,11 +567,10 @@ def test_undo_takes_an_add_out_with_its_copy_and_puts_a_remove_back_with_its_set
         p.keyboard.press("ArrowUp")
     until(lambda: abs(lib.rig.info["delay"]["Feedback"]["value"] - 0.40) < 1e-6)
     unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
-    unit(p, "delay").get_by_role("button", name="Remove delay…").click()
-    unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
+    unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()  # one tap since #209: no confirm
     until(lambda: lib.rig.chains["board"] == ["overdrive", "octave", "board_send"])
     expect(shown(p)).to_have_text(["overdrive", "octave"])
-    expect(undo).to_have_text("Undo · remove delay")
+    expect(undo).to_have_attribute("title", "Undo remove delay")
     undo.click()
     until(lambda: lib.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
     expect(shown(p)).to_have_text(["overdrive", "octave", "delay"])
@@ -656,7 +657,7 @@ def test_another_device_adding_and_removing_moves_nothing_in_the_open_drawer(bro
     expect(entry(p, MDA_DELAY)).to_be_enabled()
     # The place it was opened for, taken away from elsewhere: said, and nothing can be added there.
     assert post(lib, "/live/remove", {"processor": "delay"})["ok"]
-    expect(drawer(p).locator(".drawer-why")).to_have_text("delay is no longer on board: close this and choose another place.")
+    expect(drawer(p).locator(".drawer-why")).to_have_attribute("title", "delay is no longer on board: close this and choose another place.")
     expect(p.locator(".lib-entry:enabled")).to_have_count(0)
     assert handle.evaluate("(e) => e.isConnected"), "still the same search"
     page.close()
@@ -721,8 +722,7 @@ def test_an_add_a_move_and_a_remove_from_the_page_are_saved_with_the_files_comme
         p.get_by_role("button", name="Move mda_delay up", exact=True).click()
         until(lambda: served.rig.chains["board"] == ["overdrive", "octave", "mda_delay", "delay", "board_send"])
         unit(p, "octave").get_by_role("button", name="octave", exact=True).click()
-        unit(p, "octave").get_by_role("button", name="Remove octave…").click()
-        unit(p, "octave").get_by_role("button", name="Remove octave", exact=True).click()
+        unit(p, "octave").get_by_role("button", name="Remove octave", exact=True).click()  # one tap since #209: no confirm
         until(lambda: served.rig.chains["board"] == ["overdrive", "mda_delay", "delay", "board_send"])
         expect(shown(p)).to_have_text(["overdrive", "mda_delay", "delay"])
         p.get_by_role("button", name="Save to electric_board").click()
@@ -836,18 +836,16 @@ def test_the_focus_goes_somewhere_sensible_when_what_it_came_from_has_gone(brows
         # The place's plugin removed from elsewhere while the drawer is open: the place before it.
         slot(p, "Add after octave…").click()
         assert post(served, "/live/remove", {"processor": "octave"})["ok"]
-        expect(drawer(p).locator(".drawer-why")).to_have_text("octave is no longer on board: close this and choose another place.")
+        expect(drawer(p).locator(".drawer-why")).to_have_attribute("title", "octave is no longer on board: close this and choose another place.")
         p.keyboard.press("Escape")
         expect(slot(p, "Add after overdrive…")).to_be_focused()
         # A remove: to the row that takes its place, or the place there when it was the last.
         unit(p, "overdrive").get_by_role("button", name="overdrive", exact=True).click()
-        unit(p, "overdrive").get_by_role("button", name="Remove overdrive…").click()
-        unit(p, "overdrive").get_by_role("button", name="Remove overdrive", exact=True).click()
+        unit(p, "overdrive").get_by_role("button", name="Remove overdrive", exact=True).click()  # one tap since #209: no confirm
         until(lambda: served.rig.chains["board"] == ["delay", "board_send"])
         expect(unit(p, "delay").get_by_role("button", name="delay", exact=True)).to_be_focused()
         unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
-        unit(p, "delay").get_by_role("button", name="Remove delay…").click()
-        unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
+        unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()  # one tap since #209: no confirm
         until(lambda: served.rig.chains["board"] == ["board_send"])
         expect(slot(p, "Add at the start…")).to_be_focused()
         page.close()
@@ -866,25 +864,6 @@ def test_the_focus_goes_somewhere_sensible_when_what_it_came_from_has_gone(brows
         page.close()
 
 
-def test_an_armed_remove_and_a_places_refusal_do_not_outlive_a_switch_to_a_rig_with_the_same_names(browser, lib):
-    """`accustomed`, switched to live from elsewhere, is the same fake rig:
-    the same tracks and plugin names (review of #130: the confirm armed on
-    the rig before came back on the new rig's delay, one tap from removing it)."""
-    page = library_page(browser, lib)
-    p = page.page
-    unlock(p)
-    unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
-    unit(p, "delay").get_by_role("button", name="Remove delay…").click()
-    expect(unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)).to_be_visible()
-    assert post(lib, "/rig/switch", {"config_name": "accustomed"})["ok"]
-    expect(p.locator(".rig-name")).to_have_text("accustomed")
-    expect(unit(p, "delay").get_by_role("button", name="Remove delay…")).to_be_visible(timeout=6000)
-    expect(unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)).to_be_hidden()
-    expect(unit(p, "delay").locator(".row-said")).to_be_hidden()
-    assert lib.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"]
-    page.close()
-
-
 def test_a_drawer_open_across_a_switch_adds_nothing_to_the_rig_switched_to(browser, lib):
     page = library_page(browser, lib)
     p = page.page
@@ -892,8 +871,8 @@ def test_a_drawer_open_across_a_switch_adds_nothing_to_the_rig_switched_to(brows
     slot(p, "Add after overdrive…").click()
     expect(entry(p, MDA_DELAY)).to_be_enabled()
     assert post(lib, "/rig/switch", {"config_name": "accustomed"})["ok"]
-    expect(drawer(p).locator(".drawer-why")).to_have_text(
-        "The rig changed since the library was opened (it is now accustomed): close this, and open it again from the chain.")
+    expect(drawer(p).locator(".drawer-why")).to_have_attribute(
+        "title", "The rig changed since the library was opened (it is now accustomed): close this, and open it again from the chain.")
     expect(p.locator(".lib-entry:enabled")).to_have_count(0)
     assert lib.rig.writes() == []
     p.get_by_role("button", name="Close the library").click()
@@ -920,8 +899,7 @@ def test_an_add_in_flight_across_a_switch_is_said_as_the_rig_it_was_sent_to(brow
     expect(p.locator(".rig-name")).to_have_text("accustomed")
     expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-busy", "false", timeout=6000)
     held.set()
-    expect(p.locator(".notice")).to_have_text(
-        re.compile(r"^Added mda_delay to board on electric_board, which the page no longer shows\."))
+    expect(p.locator(".notice")).to_have_text(re.compile(r"^Added mda_delay to electric_board"))
     expect(p.locator(".add-said:visible")).to_have_count(0)
     page.close()
 
@@ -930,14 +908,14 @@ def test_a_locked_line_goes_when_the_page_is_unlocked(browser, lib):
     page = library_page(browser, lib)
     p = page.page
     unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
-    unit(p, "delay").get_by_role("button", name="Remove delay… (locked)").click()
-    expect(unit(p, "delay").locator(".row-said")).to_contain_text("Locked: removing a plugin")
+    unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
+    expect(unit(p, "delay").locator(".row-said")).to_have_attribute("title", re.compile("^Locked: removing a plugin"))
     p.get_by_role("button", name="Move delay up (locked)").click()
-    expect(p.locator(".problem.refused")).to_contain_text("Locked: reordering")
+    expect(p.locator(".problem.refused")).to_have_attribute("title", re.compile("^Locked: reordering"))
     unlock(p)
     expect(unit(p, "delay").locator(".row-said")).to_be_hidden()
     expect(p.locator(".problem.refused")).to_have_count(0)
-    expect(unit(p, "delay").get_by_role("button", name="Remove delay…")).to_be_visible()
+    expect(unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)).to_have_text("Remove")
     page.close()
 
 
@@ -1012,7 +990,7 @@ def test_an_add_refused_while_health_does_not_answer_says_so_and_frees_its_name(
     # not drawn while /health does not answer): said in the boxes at the top.
     refused = p.locator(".problem.refused")
     expect(refused).to_contain_text("Not added: mda_delay")
-    expect(refused).to_contain_text("Sushi would not create it (test)")
+    expect(refused).to_have_attribute("title", re.compile(re.escape("Sushi would not create it (test)")))
     expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-busy", "false")
     expect(p.locator(".notice")).to_have_count(0)
     # Its name is free again: the next add of it sends none, and is mda_delay.
@@ -1033,9 +1011,8 @@ def test_a_remove_refused_while_health_does_not_answer_ends_and_can_be_tried_aga
     lib.rig.remove = lambda connection, removal: (held.wait(10), real_remove(connection, removal))[1]
     lib.rig.refuse["delay"] = "Sushi would not delete it (test)"
     unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
-    unit(p, "delay").get_by_role("button", name="Remove delay…").click()
-    unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
-    expect(unit(p, "delay").get_by_role("button", name="Removing delay…")).to_be_visible()
+    unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()  # one tap since #209: no confirm
+    expect(unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)).to_have_text("Removing…")
     outage(p)
     held.set()
     p.wait_for_timeout(800)
@@ -1043,13 +1020,12 @@ def test_a_remove_refused_while_health_does_not_answer_ends_and_can_be_tried_aga
     # Its row was not on the page when the answer was placed (the chain is
     # not drawn while /health does not answer): said in the boxes at the top.
     expect(p.locator(".problem.refused")).to_contain_text("Not removed: delay")
-    expect(p.locator(".problem.refused")).to_contain_text("Sushi would not delete it (test)")
+    expect(p.locator(".problem.refused")).to_have_attribute("title", re.compile(re.escape("Sushi would not delete it (test)")))
     expect(p.locator(".notice")).to_have_count(0)
-    ask = unit(p, "delay").get_by_role("button", name="Remove delay…")
+    ask = unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)
     expect(ask).to_have_attribute("aria-disabled", "false")
     del lib.rig.refuse["delay"]
     ask.click()
-    unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
     until(lambda: lib.rig.chains["board"] == ["overdrive", "octave", "board_send"])
     expect(shown(p)).to_have_text(["overdrive", "octave"])
     page.close()
@@ -1065,10 +1041,10 @@ def test_a_drawer_opened_while_health_does_not_answer_says_why_and_takes_the_rig
     unlock(p)
     outage(p)
     p.get_by_role("button", name="Browse the library…").click()
-    expect(drawer(p).locator(".drawer-why")).to_have_text("The agent is not answering, so nothing can be added.")
+    expect(drawer(p).locator(".drawer-why")).to_have_attribute("title", "The agent is not answering, so nothing can be added.")
     expect(p.locator(".lib-entry:enabled")).to_have_count(0)
     p.unroute(HEALTH)
-    expect(drawer(p).locator(".drawer-why")).to_have_text("To add a plugin, use an “Add after…” in a chain.")
+    expect(drawer(p).locator(".drawer-why")).to_have_attribute("title", "To add a plugin, use an “Add after…” in a chain.")
     expect(p.locator(".lib-entry:enabled")).to_have_count(0)
     p.keyboard.press("Escape")
     expect(slot(p, "Add at the start…")).to_be_focused()

@@ -224,6 +224,59 @@ def test_a_channel_of_the_running_rig_loads_onto_another_live_with_names_of_its_
     assert world.state["rig"] == "config/rigs/guitar_vocal.yaml"
 
 
+def test_a_load_is_undone_by_the_one_undo_the_file_back_and_the_rig_switched_into_it(root):
+    """#209: POST /undo after a load puts the rig file's bytes back and
+    switches the running rig into it, as the undo of a revert does, and the
+    pedals' listener follows the rig after (#235's review)."""
+    agent, world, fake, runner = make_agent(root)
+    path = rig_file(root, "guitar_vocal")
+    before = path.read_bytes()
+    vocal = plugins_of(fake, "vocal")
+    status, body = load(agent, "vocal", "accustomed", "board")
+    assert status == 200 and body["how"] == "live", body
+    assert path.read_bytes() != before and plugins_of(fake, "vocal") != vocal
+    status, state = call(agent, "GET", "/undo")
+    assert status == 200, state
+    assert state["next"]["label"] == "load accustomed / board" and state["next"]["act"] == "load", state
+    syncs, real = [], agent._midi_sync
+
+    async def counting():
+        syncs.append(1)
+        await real()
+
+    agent._midi_sync = counting
+    status, body = call(agent, "POST", "/undo", json={"seq": state["next"]["seq"], "restart": False})
+    assert status == 200, body
+    assert body["said"] == "Undone: load accustomed / board" and body["how"] == "switched", body
+    assert path.read_bytes() == before, "the file as it was before the load, byte for byte"
+    assert plugins_of(fake, "vocal") == vocal, "the rig plays it again: a reading of the fake"
+    assert runner.calls == [], "nothing was restarted"
+    assert syncs, "the switch stopped the pedals' listener: it follows the rig after"
+
+
+def test_a_loads_undo_waits_for_unsaved_work_as_the_load_did(root):
+    """#235's review: a live change that could not be undone still plays, so
+    the load's Undo, which switches, is held `unsaved` until `discard`."""
+    agent, world, fake, runner = make_agent(root)
+    path = rig_file(root, "guitar_vocal")
+    before = path.read_bytes()
+    assert load(agent, "vocal", "accustomed", "board")[0] == 200
+    loaded = path.read_bytes()
+    turned = next(iter(fake.values["guitar_overdrive"]))
+    status, body = call(agent, "POST", "/live/parameter",
+                        json={"processor": "guitar_overdrive", "parameter": turned, "value": 0.25})
+    assert status == 200, body
+    fake.values["guitar_overdrive"][turned] = 0.75  # moved since from the panel: not undoable
+    status, body = call(agent, "POST", "/undo", json={})
+    assert status == 409 and body["code"] == "cant_undo", body
+    status, body = call(agent, "POST", "/undo", json={})
+    assert status == 409 and body["code"] == "unsaved", body
+    assert path.read_bytes() == loaded, "nothing put back"
+    status, body = call(agent, "POST", "/undo", json={"discard": True})
+    assert status == 200 and body["how"] == "switched", body
+    assert path.read_bytes() == before
+
+
 def test_a_channel_of_another_rig_loads_live_with_its_settings_and_bypass(root):
     """accustomed's board onto guitar_vocal's vocal: its chain as accustomed's
     file has it, settings, bypass and all, under the vocal's names."""

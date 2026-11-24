@@ -190,6 +190,7 @@ def test_saves_and_commits_are_one_list_newest_first():
     ({}, "must be a revert point"), ({"save": "../x"}, "must be a revert point"),
     ({"save": "commit:abc"}, "must be a revert point"), ({"save": "20261106T100000.123456Z", "go": 1}, "the body"),
     ({"save": "20261106T100000.123456Z", "discard": "yes"}, "true or false"), ([], "the body"),
+    ({"save": "20261106T100000.123456Z", "restart": "no"}, "true or false"),
 ])
 def test_a_revert_names_a_point_by_its_shape_and_nothing_else(body, said):
     with pytest.raises(AgentError, match=said):
@@ -197,8 +198,10 @@ def test_a_revert_names_a_point_by_its_shape_and_nothing_else(body, said):
 
 
 def test_a_revert_point_is_a_save_or_a_commit_and_discard_is_explicit():
-    assert revert_request({"save": "20261106T100000.123456Z"}) == ("20261106T100000.123456Z", False)
-    assert revert_request({"save": "commit:" + "f" * 40, "discard": True}) == ("commit:" + "f" * 40, True)
+    assert revert_request({"save": "20261106T100000.123456Z"}) == ("20261106T100000.123456Z", False, None)
+    assert revert_request({"save": "commit:" + "f" * 40, "discard": True}) == ("commit:" + "f" * 40, True, None)
+    assert revert_request({"save": "20261106T100000.123456Z", "restart": False}) == (
+        "20261106T100000.123456Z", False, False)
 
 
 def test_a_revert_waits_for_unsaved_work_as_an_edit_does():

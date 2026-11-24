@@ -442,7 +442,7 @@ def test_the_tabs_stay_while_a_command_runs_as_the_strips_do(browser):
 
         thread = threading.Thread(target=busy)
         thread.start()
-        expect(p.locator(".rack .empty")).to_have_text("The rig is changing; the rack comes back when it is up.", timeout=4000)
+        expect(p.locator(".rack .empty")).to_have_attribute("title", "The rig is changing; the rack comes back when it is up.", timeout=4000)
         expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"])
         assert handle.evaluate("(e) => e.isConnected && e.getAttribute('aria-selected') === 'true'"), "the same tab, still open"
         thread.join()
@@ -845,7 +845,7 @@ def test_a_refusal_and_a_crash_are_seen_whatever_tab_is_open(rack, served):
     expect(shown(rack)).to_have_text(["vocal_delay"])
     # The box is above the tabs, not in one; and the tab it is about says so.
     expect(alert).to_be_visible()
-    expect(alert).to_contain_text("Sushi would not set Feedback (test)")
+    expect(alert).to_have_attribute("title", re.compile(r"Sushi would not set Feedback \(test\)"))
     assert rack.locator(".tab-panel .problem, .tabs .problem").count() == 0
     assert rack.locator(".problems").bounding_box()["y"] < rack.get_by_role("tablist").bounding_box()["y"]
     expect(tab(rack, "board")).to_have_class(MARKED)
@@ -879,7 +879,7 @@ def test_an_amp_that_stops_is_said_on_its_tab_while_another_is_open(browser):
         expect(tab(p, "board")).to_have_attribute("title", "Carla is not running: restart the rig to bring the amp back.")
         assert boxes_of(p, ".tab") == widths, "the mark has a place of its own: no tab moved"
         tab(p, "board").click()
-        expect(amp).to_contain_text("Carla is not running: restart the rig to bring the amp back.")
+        expect(amp.locator(".missing")).to_have_attribute("title", "Carla is not running: restart the rig to bring the amp back.")
         page.close()
 
 
@@ -943,10 +943,10 @@ def test_undo_save_and_the_unsaved_count_are_as_they_were_whatever_tab_is_open(b
         tab(p, "Master").click()
         unsaved_count(p, 2)
         # Undo takes back the newest change, on a tab that is not open.
-        p.get_by_role("button", name="Undo · bypass vocal_delay").click()
+        p.get_by_role("button", name="Undo bypass vocal_delay").click()
         until(lambda: served.rig.bypassed["vocal_delay"] is False)
         unsaved_count(p, 1)
-        expect(p.get_by_role("button", name="Undo · overdrive · Drive")).to_be_visible()
+        expect(p.get_by_role("button", name="Undo overdrive Drive")).to_be_visible()
         # Save writes the board's change from the Master tab.
         p.get_by_role("button", name="Save to electric_board").click()
         expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
@@ -971,8 +971,9 @@ def test_a_rig_that_is_down_has_no_tabs_and_says_so(browser):
     with Served(lifecycle=UiLifecycle(up=None)) as served:
         page = Page(browser, served.url + "/#rack")
         p = page.page
-        expect(p.locator(".rack .empty")).to_have_text(
-            "No rig to show: nothing is running in Sushi. Choose one under RIGS to start it.")
+        expect(p.locator(".rack .empty")).to_have_text("No rig")
+        expect(p.locator(".rack .empty")).to_have_attribute(
+            "title", "Nothing is running in Sushi. Choose one under RIGS to start it.")
         expect(p.get_by_role("tab")).to_have_count(0)
         expect(p.locator(".tabs")).to_be_hidden()
         expect(p.get_by_role("tabpanel")).to_have_count(0)
@@ -1171,7 +1172,7 @@ def test_a_drag_survives_a_plugin_added_and_moved_while_their_plugins_are_read_s
         until(lambda: abs(served.rig.info["delay"]["Feedback"]["value"] - 0.55) < 1e-6)
         expect(shown(p)).to_have_text(["overdrive", "slap", "delay", "octave"], timeout=8000)
         # The answer, when it comes, names the new plugin and rebuilds its row alone.
-        expect(unit(p, "slap")).to_contain_text("no profile: every parameter", timeout=8000)
+        expect(unit(p, "slap")).to_contain_text("no profile", timeout=8000)
         assert other.evaluate("(e) => e.isConnected") and handle.evaluate("(e) => e.isConnected")
         served.rig.plugins_delay = 0.0
         page.close()
@@ -1415,7 +1416,7 @@ def test_another_rig_takes_no_input_from_the_rig_before_while_its_plugins_are_re
         served.rig.plugins_delay = 3.0
         writes = len(served.rig.writes())
         assert post(served, "/rig/switch", {"config_name": "accustomed"})["ok"]
-        expect(p.locator(".rack .empty")).to_have_text("Reading the rig…", timeout=4000)
+        expect(p.locator(".rack .empty")).to_have_text("Reading…", timeout=4000)
         expect(p.get_by_role("slider", name="overdrive Drive")).to_have_count(0)
         for _ in range(3):
             p.keyboard.press("ArrowDown")
@@ -1503,7 +1504,7 @@ def test_a_knob_focused_before_its_profile_arrives_keeps_the_focus_and_turns(bro
     drive = slider(p, "overdrive Drive")
     drive.focus()
     before = drive.element_handle()
-    expect(unit(p, "overdrive")).to_contain_text("no profile: every parameter")
+    expect(unit(p, "overdrive")).to_contain_text("no profile")
     for route in held:
         route.continue_()
     expect(unit(p, "overdrive")).to_contain_text("GxTubeScreamer · profile")
@@ -1637,7 +1638,7 @@ def test_a_row_rebuilt_gives_the_focus_back_to_the_same_control(browser, served,
     p.route("**/profiles", lambda route: held.append(route))
     p.goto(served.url + "/#rack")
     p.wait_for_selector(".unit")
-    expect(unit(p, "overdrive")).to_contain_text("no profile: every parameter")
+    expect(unit(p, "overdrive")).to_contain_text("no profile")
     if row == "slim":
         pedal(served, "overdrive", True)
         expect(unit(p, "overdrive")).to_have_class(MINIMISED)
@@ -1782,7 +1783,7 @@ def test_a_profile_arriving_under_a_drag_waits_for_the_drag_to_end(browser, serv
     p.on("pageerror", lambda error: page.errors.append(str(error)))
     release = hold(p, "**/profiles")
     p.goto(served.url + "/#rack")
-    expect(unit(p, "overdrive")).to_contain_text("no profile: every parameter", timeout=5000)  # past the wait, plain
+    expect(unit(p, "overdrive")).to_contain_text("no profile", timeout=5000)  # past the wait, plain
     dial = slider(p, "overdrive Drive")
     box = dial.locator("svg").bounding_box()
     x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
@@ -1793,7 +1794,7 @@ def test_a_profile_arriving_under_a_drag_waits_for_the_drag_to_end(browser, serv
     release()
     time.sleep(1.5)  # the profiles in, a poll
     assert handle.evaluate("(e) => e.isConnected && !!e.dataset.dragging"), "the dragged row was left as it was"
-    expect(unit(p, "overdrive")).to_contain_text("no profile: every parameter")
+    expect(unit(p, "overdrive")).to_contain_text("no profile")
     p.mouse.move(x, y - 64, steps=4)
     p.mouse.up()
     until(lambda: abs(served.rig.info["overdrive"]["Drive"]["value"] - 0.82) < 1e-6)

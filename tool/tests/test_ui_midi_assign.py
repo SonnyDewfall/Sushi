@@ -17,6 +17,8 @@ from the file). Nothing here is the rig machine, a phone or a pedal.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import yaml
 
@@ -134,6 +136,7 @@ def test_the_lights_and_states(blank):
         later: R.pedalSummary(b, third, 4000).map((r) => r.lit),
         states: ['listening', 'absent', 'waiting', 'failed'].map((s) =>
           R.pedalDeviceState(health({}, s, {problem: 'it broke'}), 'fbv').text),
+        waiting: R.pedalDeviceState(health({}, 'waiting', {}), 'fbv').title,
         down: R.pedalDeviceState({ok: true, body: {agent: {midi: {state: 'off', reason: 'no rig is running', feeds: []}}}}, 'fbv').text,
         locked: R.lockRefusal(true, 'pedal'), open: R.lockRefusal(false, 'pedal'),
       };""", MIDI)
@@ -142,7 +145,8 @@ def test_the_lights_and_states(blank):
                            ["C", "board/overdrive on/off", True, None], ["D", "nothing on this rig", False, None],
                            ["pedal", "vocal volume", True, 90]]
     assert out["later"] == [False] * 5, "a light goes out once nothing more is heard"
-    assert out["states"] == ["listening", "not connected", "waiting: this rig needs it, and it is not plugged in", "it broke"]
+    assert out["states"] == ["listening", "not connected", "waiting", "it broke"]
+    assert out["waiting"] == "Waiting: this rig needs it, and it is not plugged in"
     assert out["down"] == "not listened to: no rig is running"
     assert "assigning a pedal" in out["locked"] and out["open"] is None
 
@@ -182,14 +186,19 @@ def test_a_switch_is_assigned_to_an_effects_on_off_from_its_row_and_plays_now(br
     onoff.select_option("c")
     expect(summary(p, "c")).to_have_text("board/overdrive on/off")
     expect(badge(p, "overdrive")).to_have_text("C")
-    expect(p.locator("section.pedals .rigfile-result")).to_contain_text("It plays now.")
+    result = p.locator("section.pedals .rigfile-result")
+    expect(result).to_contain_text("Assigned C: board/overdrive on/off")
+    expect(result).to_have_attribute("title", re.compile(re.escape("It plays now.")))
     assert midi_of(s) == {"controller": "fbv", "controls": [{"control": "c", "bypass": "board/overdrive"}]}
     s.pedals.press("c")
     until(lambda: s.rig.bypassed["overdrive"] is True)
     page.close()
 
 
-def test_a_control_in_use_is_moved_only_after_a_confirm_naming_where_it_was(browser, pedals_served):
+def test_a_control_in_use_says_where_it_is_and_moves_at_once_saying_where_it_came_off(browser, pedals_served):
+    """#209: no "Move C?" confirm: the one Undo takes a move back
+    (test_ui_undo.py). The option still names where the control is now, and
+    the result where it came off."""
     s = pedals_served
     page = rack(browser, s)
     p = page.page
@@ -200,16 +209,10 @@ def test_a_control_in_use_is_moved_only_after_a_confirm_naming_where_it_was(brow
     mute = panel.get_by_label("vocal on/off")
     expect(mute.locator("option")).to_have_text(["none", "C (now board/overdrive on/off)", "D"])
     mute.select_option("c")
-    confirm = panel.get_by_role("group", name="Confirm the move")
-    expect(confirm).to_contain_text("C is on board/overdrive on/off. Move it to vocal on/off?")
-    expect(mute).to_have_value("c")  # the control picked, while it is asked about
-    confirm.get_by_role("button", name="Keep it").click()
-    expect(confirm).to_have_count(0)
-    expect(mute).to_have_value("")  # kept: none, as it was
-    assert midi_of(s)["controls"] == [{"control": "c", "bypass": "board/overdrive"}], "kept: nothing written"
-    mute.select_option("c")
-    panel.get_by_role("button", name="Move C").click()
     expect(summary(p, "c")).to_have_text("vocal on/off")
+    expect(p.locator(".pedal-panel .confirm")).to_have_count(0)
+    expect(p.locator("section.pedals .rigfile-result")).to_have_attribute(
+        "title", re.compile(re.escape("C came off bypass board/overdrive.")))
     expect(badge(p, "overdrive")).to_have_text("")
     expect(badge(p, "vocal")).to_have_text("C")
     assert midi_of(s)["controls"] == [{"control": "c", "mute": "vocal"}]
@@ -237,7 +240,8 @@ def test_locked_the_panel_shows_the_assignment_and_assigns_nothing(browser, peda
     panel = open_panel(p, "overdrive")
     onoff = panel.get_by_label("overdrive on/off")
     expect(onoff).to_be_disabled()
-    expect(panel).to_contain_text("Locked: assigning a pedal")
+    expect(panel.locator(".lock-says")).to_have_text("Locked")
+    expect(panel.locator(".lock-says")).to_have_attribute("title", re.compile("^Locked: assigning a pedal"))
     assert midi_of(s) is None
     unlock(p)
     expect(onoff).to_be_enabled()
@@ -257,11 +261,12 @@ def test_a_pedal_on_a_parameter_from_the_effects_row_offers_the_restart(browser,
     expect(sweep.locator("option")).to_have_text(["none", "Drive", "Tone", "Level"])
     sweep.select_option("Drive")
     result = p.locator("section.pedals .rigfile-result")
-    expect(result).to_contain_text("It plays when electric_board restarts")
+    expect(result).to_contain_text("Assigned pedal: board/overdrive/Drive")
+    expect(result).to_have_attribute("title", re.compile(re.escape("It plays when electric_board restarts")))
     assert midi_of(s)["controls"] == [{"control": "pedal", "parameter": "board/overdrive/Drive"}]
     expect(summary(p, "pedal")).to_have_text("board/overdrive/Drive")
-    result.get_by_role("button", name="Restart electric_board to play it").click()
-    p.locator("section.pedals").get_by_role("button", name="Restart now").click()
+    result.get_by_role("button", name="Restart").click()
+    p.locator("section.pedals").get_by_role("group", name="Restart?").get_by_role("button", name="Yes").click()
     until(lambda: ["restart"] in s.lifecycle.calls)
     page.close()
 
@@ -300,8 +305,9 @@ def test_the_compilers_refusal_is_said_in_the_panel_and_nothing_is_written(brows
     unlock(p)
     panel = open_panel(p, "echo")
     panel.get_by_label("echo on/off").select_option("c")
-    expect(panel.get_by_role("alert")).to_contain_text("Not assigned:")
-    expect(panel.get_by_role("alert")).to_contain_text("bypass names 'echo', which is not in board's chain")
+    expect(panel.get_by_role("alert")).to_have_text("Not assigned")
+    expect(panel.get_by_role("alert")).to_have_attribute("title", re.compile(
+        "^Not assigned: .*" + re.escape("bypass names 'echo', which is not in board's chain")))
     assert path.read_text() == before
     expect(summary(p, "c")).to_have_text("nothing on this rig")
     page.close()
@@ -335,7 +341,8 @@ def test_the_device_state_is_said_plainly(browser, pedals_served):
     expect(device).to_have_text("fbv · not connected")
     unlock(p)
     open_panel(p, "overdrive").get_by_label("overdrive on/off").select_option("c")
-    expect(device).to_have_text("fbv · waiting: this rig needs it, and it is not plugged in")
+    expect(device).to_have_text("fbv · waiting")
+    expect(device).to_have_attribute("title", "Waiting: this rig needs it, and it is not plugged in")
     s.pedals.plugged = True
     expect(device).to_have_text("fbv · listening")
     page.close()
@@ -411,7 +418,8 @@ def test_the_panel_says_the_locks_own_words(browser, pedals_served):
     words = rigjs(p, "return R.lockRefusal(true, 'pedal');")
     assert "assigning a pedal" in words
     panel = open_panel(p, "overdrive")
-    expect(panel.locator(".lock-says")).to_have_text(words)
+    expect(panel.locator(".lock-says")).to_have_text("Locked")
+    expect(panel.locator(".lock-says")).to_have_attribute("title", words)
     page.close()
 
 
@@ -436,13 +444,13 @@ def test_a_save_as_whose_file_waits_for_a_restart_says_so_and_offers_it(browser,
         status, answer = agent_client.ask(s.url, "POST", "/rig/midi/assign", {"control": "pedal", "volume": "board"})
         assert status == 200 and answer["how"] == "restart", answer
         p.get_by_role("button", name="Save as…").click()
-        p.get_by_label("New rig name").fill("foo")
+        p.get_by_label("Name", exact=True).fill("foo")
         p.get_by_role("button", name="Save as foo").click()
         result = p.locator(".save-result.ok")
         expect(result).to_contain_text("Saved as foo")
-        expect(result).to_contain_text("It plays as it was loaded until it restarts (")
-        result.get_by_role("button", name="Restart foo to play it").click()
-        p.locator("section.save").get_by_role("button", name="Restart now").click()
+        expect(result).to_have_attribute("title", re.compile(re.escape("It plays as it was loaded until it restarts (")))
+        result.get_by_role("button", name="Restart").click()
+        p.locator("section.save").get_by_role("group", name="Restart?").get_by_role("button", name="Yes").click()
         until(lambda: ["restart"] in s.lifecycle.calls)
         page.close()
 
@@ -470,11 +478,14 @@ def test_the_link_and_the_maps_restart_as_rig_js_says_them(blank):
     assert out["not"] == {"state": "listening", "text": "listening, not linked", "link": "not linked: no Sushi"}
     assert out["older"] == "listening", "an agent from before the link says nothing of it"
     assert out["unneeded"] == {"state": "listening", "text": "listening"}, "a board Sushi maps nothing of needs no link"
-    assert out["ranges"]["text"] == "Pedal ranges changed. Restart to apply."
-    assert out["ranges"]["offer"]["label"] == "Restart electric_board"
-    assert out["behind"]["offer"] == {"op": "restart", "name": "electric_board",
-                                      "label": "Restart electric_board to play them"}
-    assert "not playing yet" in out["behind"]["text"]
+    # A few words and a one-word offer (#209), the rest in the title.
+    assert out["ranges"]["text"] == "Ranges changed"
+    assert out["ranges"]["title"] == "Pedal ranges changed: they apply when electric_board restarts."
+    assert out["ranges"]["offer"] == {"op": "restart", "name": "electric_board", "label": "Restart"}
+    assert out["behind"]["offer"] == {"op": "restart", "name": "electric_board", "label": "Restart"}
+    assert out["behind"]["text"] == "Not playing yet"
+    assert out["behind"]["title"] == ("This file's pedal mappings are not playing yet: Sushi loads them when "
+                                      "electric_board restarts.")
     assert out["level"] is None and out["unknown"] is None
 
 
@@ -504,7 +515,7 @@ def _not_linked_line(browser, s):
 def test_a_sweep_refused_for_unsaved_work_is_saved_then_assigned_and_the_restart_offered(browser, pedals_served):
     """The owner's run (#210): the pedal assigned to a volume while knobs were
     turned and not saved. The agent refuses it (the restart that plays it
-    would drop them); the panel offers Save, then assign, and once both are
+    would drop them); the panel offers Save & assign, and once both are
     done the restart that plays it is offered, and has the focus."""
     s = pedals_served
     page = rack(browser, s)
@@ -516,21 +527,22 @@ def test_a_sweep_refused_for_unsaved_work_is_saved_then_assigned_and_the_restart
                             {"processor": "overdrive", "parameter": "Drive", "value": 0.4})[0] == 200
     panel = open_panel(p, "vocal")
     panel.get_by_label("vocal volume").select_option("pedal")
-    expect(panel.locator(".refused")).to_contain_text("Save first")
+    expect(panel.locator(".refused")).to_have_text("Not assigned")
+    expect(panel.locator(".refused")).to_have_attribute("title", re.compile(re.escape("save first"), re.IGNORECASE))
     assert midi_of(s) is None, "nothing written yet"
-    panel.get_by_role("button", name="Save, then assign").click()
-    offer = p.locator("section.pedals .rigfile-result").get_by_role("button", name="Restart electric_board to play it")
+    panel.get_by_role("button", name="Save & assign").click()
+    offer = p.locator("section.pedals .rigfile-result").get_by_role("button", name="Restart", exact=True)
     expect(offer).to_be_visible()
     expect(offer).to_be_focused()
     assert midi_of(s)["controls"] == [{"control": "pedal", "volume": "vocal"}]
     offer.click()
-    p.locator("section.pedals").get_by_role("button", name="Restart now").click()
+    p.locator("section.pedals").get_by_role("group", name="Restart?").get_by_role("button", name="Yes").click()
     until(lambda: ["restart"] in s.lifecycle.calls)
     page.close()
 
 
 def test_save_then_assign_waits_for_its_own_save_and_is_off_while_one_runs(browser, pedals_served):
-    """#210's review: with a save already under way, Save, then assign used
+    """#210's review: with a save already under way, Save & assign used
     the last save's answer and assigned without saving. Now the button is
     off while any save runs, and an assignment follows only the save it
     made itself, once that save has answered ok."""
@@ -544,7 +556,7 @@ def test_save_then_assign_waits_for_its_own_save_and_is_off_while_one_runs(brows
                             {"processor": "overdrive", "parameter": "Drive", "value": 0.4})[0] == 200
     panel = open_panel(p, "vocal")
     panel.get_by_label("vocal volume").select_option("pedal")
-    then = panel.get_by_role("button", name="Save, then assign")
+    then = panel.get_by_role("button", name="Save & assign")
     expect(then).to_be_enabled()
     held = []
     p.route("**/rig/save", lambda route: held.append(route))
@@ -557,7 +569,7 @@ def test_save_then_assign_waits_for_its_own_save_and_is_off_while_one_runs(brows
     expect(then).to_be_enabled()
     assert midi_of(s) is None, "a save the button did not make assigns nothing"
     then.click()
-    offer = p.locator("section.pedals .rigfile-result").get_by_role("button", name="Restart electric_board to play it")
+    offer = p.locator("section.pedals .rigfile-result").get_by_role("button", name="Restart", exact=True)
     expect(offer).to_be_visible()
     assert midi_of(s)["controls"] == [{"control": "pedal", "volume": "vocal"}]
     page.close()
@@ -577,8 +589,10 @@ def test_save_then_assign_assigns_nothing_when_its_save_is_refused(browser, peda
     p.route("**/rig/save", lambda route: route.fulfill(
         status=409, content_type="application/json",
         body='{"ok": false, "code": "not_saved", "reason": "the fake refuses this save"}'))
-    panel.get_by_role("button", name="Save, then assign").click()
-    expect(p.locator(".save-result:not(.rigfile-result)")).to_contain_text("the fake refuses this save")
+    panel.get_by_role("button", name="Save & assign").click()
+    refused = p.locator(".save-result:not(.rigfile-result)")
+    expect(refused).to_contain_text("the fake refuses this save")
+    expect(refused).to_have_attribute("title", "the fake refuses this save")
     assert midi_of(s) is None, "nothing assigned after a save that did not happen"
     expect(p.locator("section.pedals .rigfile-result .offer")).to_have_count(0)
     page.close()
@@ -593,10 +607,12 @@ def test_a_file_whose_map_waits_for_a_restart_offers_it_in_pedals(browser, pedal
     page = rack(browser, s)
     p = page.page
     behind = p.locator("section.pedals .pedal-behind")
-    expect(behind).to_contain_text("not playing yet: Sushi loads them when electric_board restarts")
+    expect(behind.locator(".said")).to_have_text("Not playing yet")
+    expect(behind).to_have_attribute("title", re.compile(re.escape(
+        "not playing yet: Sushi loads them when electric_board restarts")))
     unlock(p)
-    behind.get_by_role("button", name="Restart electric_board to play them").click()
-    p.locator("section.pedals").get_by_role("button", name="Restart now").click()
+    behind.get_by_role("button", name="Restart", exact=True).click()
+    p.locator("section.pedals").get_by_role("group", name="Restart?").get_by_role("button", name="Yes").click()
     until(lambda: ["restart"] in s.lifecycle.calls)
     expect(behind).to_have_count(0)
     page.close()
