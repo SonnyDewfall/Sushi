@@ -7120,3 +7120,40 @@ part-way. (2) Live steps were dropped by any lifecycle command that ran,
 even an `up` refused for a rig already up: now only when it succeeded or the
 run changed (`_run_identity` of `describe_rig`'s answer before and after).
 Not run on the rig. *(2026-11-24)*
+
+**Remove a channel from a rig (#190).** The rack could add a channel and
+remove a plugin, not take a whole channel out. Each strip's input line now
+has **Remove** beside Load…: its panel asks **Remove?** (Yes, No) over one
+line of what goes ("vocal · 1 plugin · 2 MIDI", each by name on hover: the
+chain, the send, and the controls of the rig's MIDI map that name the
+channel, from `GET /midi`), says **Last channel** and asks nothing on a rig
+with one, and is behind the lock as a load is. `POST
+/rig/channels/<c>/remove {"rig"?, "discard"?, "drop_midi"?, "restart"?}` is
+made as a load is: the rig file written in place, comments kept, compiled
+first, the file as it was kept as a revert point, then the running rig
+switched into it (`_revert_switch`), the pedals' listener and its links to
+Sushi following after (`_midi_sync`). Refused before anything is written:
+`last_channel`, `no_channel`, `changed`, `unsaved` (**Remove anyway**),
+`midi` (a parameter or bypass of its plugins, its mute, its volume, a blend
+of it and another, since a blend needs two channels: **Drop N and remove**,
+the controls named on the page), and with `"restart": false` a removal that
+would restart Sushi, `restarts`, which the page asks as **Restart?**. One
+Undo step (`act: "remove_channel"`, held by the lock): the bytes back and
+the rig switched into them, which is a restart, asked, since the live
+operations make no tracks. **Live where the running rig allows**, which
+needed a new live operation: `rigfile.diff(..., remove_tracks=...)` plans a
+track the caller names as one `remove_track` step (its processors, its
+send among them, go with it) instead of the `track_removed` restart, and
+`live.remove_live_track` takes each processor off back to front, then calls
+elkpy's `delete_track`. Only the removal passes `remove_tracks`: a rig
+switch never removes a track live. So the file's last channel, and one
+added since the rig started (nothing to take out), go live; one in front of
+another moves that one's engine input (`track`), and dropping a knob's
+mapping changes Sushi's `cc_mappings` (`midi`): both restart. `load_refusal`
+takes its words, and the revert point its keeping (`_keep_for_revert`), for
+both. Docs: the agent, web UI and building-a-rig pages. **Unverified**: Sushi
+1.3.0 deleting a track while it plays, and letting go of its engine
+connections, read from elkpy's source and never run; a failure there fails
+the step and the switch restarts into the edited file, as any live switch
+that fails part-way does. Shown against `test_agent.RigLive` and the UI's
+fake. Not tried on the rig. *(2026-11-24)*

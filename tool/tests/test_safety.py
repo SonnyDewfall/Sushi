@@ -73,7 +73,8 @@ def test_the_wait_is_the_depth_on_sushis_smoother_plus_one_block():
 
 
 def test_a_switch_dips_from_its_first_structural_step_to_the_bypass_after_its_last_add():
-    assert ramp.STRUCTURAL == {"add", "remove", "move"}
+    assert ramp.STRUCTURAL == {"add", "remove", "move", "remove_track"}  # a channel taken out (#190)
+    assert ramp.switch_span(["bypass", "remove_track", "parameter"]) == (1, 1)
     ops = ["bypass", "remove", "move", "add", "bypass", "add", "bypass", "parameter", "amp", "bypass"]
     assert ramp.switch_span(ops) == (1, 6), "the last add's bypass keeps it unheard at its defaults"
     assert ramp.switch_span(["remove", "move", "parameter"]) == (0, 1)

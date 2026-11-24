@@ -2139,7 +2139,7 @@ def _cc_targets(midi: Any) -> set[str]:
 
 def diff(
     running: dict[str, Any], next_config: dict[str, Any], live: dict[str, Any] | None = None,
-    *, root: Path | None = None, amp_off: bool = False,
+    *, root: Path | None = None, amp_off: bool = False, remove_tracks: Any = (),
 ) -> SwitchPlan | NeedsRestart:
     """How to turn the running rig into the next one live, or why not. Pure.
 
@@ -2157,6 +2157,15 @@ def diff(
     matters. `root` is where a relative model path is read from, so a model is
     compared as the file it names (`_amp_plan`).
 
+    `remove_tracks` names channel tracks the caller means to take out (a
+    channel removed from the running rig, #190): one the next rig lacks is a
+    `remove_track` step, its processors (its send among them) going with it,
+    rather than the `track_removed` restart every other missing track is.
+    Never the master. Every other rule still holds of the tracks that stay:
+    a channel removed in front of another moves that one's engine input
+    (`track`), which is a restart. A rig switch passes none, so no switch
+    between two rigs removes a track live.
+
     A processor survives the switch when the next rig has one of the same
     name, on the same track, of the same plugin. Its parameters and bypass are
     set where they differ. It is replaced (removed, then added fresh) where
@@ -2170,6 +2179,8 @@ def diff(
     1. **Bypass on**, for processors that stay and are off in the next rig: a
        pedal the next rig does not use goes quiet before anything around it
        changes, so it is never heard part-way between two settings.
+    1a. **Tracks removed** (`remove_tracks`), each whole, before anything
+       else changes shape.
     2. **Removes.** Sushi's processor names are one namespace, tracks
        included, so a replaced processor, or one moving to another track, can
        be created only once the old one is gone; and every move after this is
@@ -2256,8 +2267,9 @@ def diff(
     for name in order_n:
         if name not in by_track_r:
             need("track_added", f"track {name!r}")
+    gone = [name for name in order_r if name not in by_track_n and name in remove_tracks and name != MASTER]
     for name in order_r:
-        if name not in by_track_n:
+        if name not in by_track_n and name not in gone:
             need("track_removed", f"track {name!r}")
     common = [n for n in order_n if n in by_track_r]
     if [n for n in order_r if n in by_track_n] != common:
@@ -2299,8 +2311,12 @@ def diff(
         return {stereo.source_of(p["name"]) for t in tracks.values() for p in (t.get("plugins") or [])
                 if isinstance(p, dict) and stereo.is_copy(str(p.get("name", "")), p.get("uid"))}
 
-    chains_r, chains_n = chains(by_track_r), chains(by_track_n)
-    copied_r, copied_n = copied(by_track_r), copied(by_track_n)
+    # A track taken out whole (`remove_tracks`) takes its processors with it:
+    # none of them is compared, removed or kept on its own.
+    staying_r = {n: t for n, t in by_track_r.items() if n not in gone}
+    gone_processors = {p.get("name") for n in gone for p in by_track_r[n].get("plugins") or [] if isinstance(p, dict)}
+    chains_r, chains_n = chains(staying_r), chains(by_track_n)
+    copied_r, copied_n = copied(staying_r), copied(by_track_n)
     where_r = {p["name"]: (track, p) for track, ps in chains_r.items() for p in ps}
     where_n = {p["name"]: (track, p) for track, ps in chains_n.items() for p in ps}
     state_r = {e.get("processor"): e for e in running.get("initial_state") or [] if isinstance(e, dict)}
@@ -2385,6 +2401,8 @@ def diff(
             need("protected", f"{name!r} on {track!r} would have to be removed")
     for name in sorted(_cc_targets(running.get("midi")) & set(removed)):
         need("midi_target", f"{name!r} is driven by a cc_mapping and would be replaced")
+    for name in sorted(_cc_targets(running.get("midi")) & gone_processors):
+        need("midi_target", f"{name!r} is driven by a cc_mapping and its track would be removed")
     if reasons:
         return NeedsRestart(tuple(reasons))
 
@@ -2428,6 +2446,7 @@ def diff(
     for name in where_n:
         set_values(name, fresh=name not in survivors)
 
+    tracks_out = [SwitchStep("remove_track", {"track": name}) for name in gone]
     removes = [SwitchStep("remove", {"processor": name}) for name in removed]
     moves: list[SwitchStep] = []
     adds: list[SwitchStep] = []  # each add, and the bypass that follows it
@@ -2454,7 +2473,8 @@ def diff(
             adds.append(SwitchStep("bypass", {"processor": name, "bypassed": True}))
             if not (state_n.get(name) or {}).get("bypassed", False):
                 comes_in.append(SwitchStep("bypass", {"processor": name, "bypassed": False}))
-    return SwitchPlan(tuple(bypass_on + removes + moves + adds + parameters + amp_steps + comes_in + bypass_off))
+    return SwitchPlan(tuple(bypass_on + tracks_out + removes + moves + adds + parameters + amp_steps + comes_in
+                            + bypass_off))
 
 
 def apply_to_chains(chains: dict[str, list[str]], plan: SwitchPlan) -> dict[str, list[str]]:
@@ -2466,7 +2486,9 @@ def apply_to_chains(chains: dict[str, list[str]], plan: SwitchPlan) -> dict[str,
     out = {track: list(chain) for track, chain in chains.items()}
     for step in plan.steps:
         args = step.args
-        if step.op == "remove":
+        if step.op == "remove_track":
+            out.pop(args["track"], None)
+        elif step.op == "remove":
             # The processor's unit, as `agent.check_remove` takes it: with its
             # copy to stereo only when that directly follows it.
             for track, chain in out.items():

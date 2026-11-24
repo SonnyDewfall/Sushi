@@ -21,13 +21,13 @@ happens and one method:
   left it.
 - `file`: a write of a rig file (a channel added, an input changed, a pedal
   assigned, a Save over the running rig's file, a revert, a channel load, a
-  new rig). It
+  channel removed, a new rig). It
   holds the file's bytes before the write (`before`, None for a file that
   did not exist) and a digest of what was written (`after`), so the undo
   puts the old bytes back only while the file is still as the write left
   it. `apply` says what the forward change did to the running rig, which
   the undo does again: `switch` (it was switched into the file: a revert,
-  a channel load), `bindings` (the agent's pedal bindings followed the file
+  a channel load, a channel removed), `bindings` (the agent's pedal bindings followed the file
   live), `restart` (it waits for a restart) or `none` (another rig's file,
   or a Save, which changed nothing that plays).
 - `bin`: a rig deleted into the bin (rigbin.py); reversed by the restore.

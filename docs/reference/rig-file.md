@@ -95,9 +95,10 @@ that port into Sushi, so both channels hear it (`amp.amp_patchbay`), and
 it. Not yet run with the amp. Processor names are the whole rig's, so the second
 channel's plugins carry its name (`octave_compressor`, `octave_hall`).
 
-A rig of channels can be made, and a channel added or moved to another
-input, from the web UI's New rig screen and the rack
-([the agent](agent.md#new-rigs-and-channel-edits)). Those write these files, in place and keeping their
+A rig of channels can be made, and a channel added, moved to another
+input or removed, from the web UI's New rig screen and the rack
+([the agent](agent.md#new-rigs-and-channel-edits),
+[removing a channel](agent.md#removing-a-channel)). Those write these files, in place and keeping their
 comments, and only once the rig compiles and wires against the machine file
 as `up --rig` would compile and wire it; the machine file itself is never
 written, and a role it lacks is said with what to add.
