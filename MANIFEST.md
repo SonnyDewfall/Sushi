@@ -7225,20 +7225,21 @@ time here), and a wav_writer pushes each chunk into a ring buffer a worker
 empties, losing what does not fit, so each writer loses its own chunks. So
 the agent's mute is unchanged: it sets the send's bypass and needs Sushi's
 confirmation, as before. **The test** now records one wav_writer: the send,
-as the rig makes it, carries the channel's left (the stimulus plays on the
-left only), and a second send, a tap after it, carries the stem to the
-master's right, so the master is read on its own timeline, block by block,
-left against right. The three-phase assertion is as it was; the un-muted
+as the rig makes it, carries the stimulus on one side of the channel only,
+and a second send, a tap after it, carries the stem to the master's other
+side, so the master is read on its own timeline, block by block, the send's
+side against the stem's. It runs once with the sine on the left and once on
+the right, so each of the send's channels is heard muted and coming back. The three-phase assertion is as it was; the un-muted
 phase is 1.5 s (was 0.5 s); `read_live_bypass` is asserted after each change
 and again before the recording stops; a failure says each phase's length in
-blocks. A fast test holds the classifier to a made-up recording (a stream
-gap, a ramp, a late copy). Measured after: 130 pytest runs passed of 130, 60 of
-them beside the old probe for load; 20 more, run to read the phases, had 11 to
-14 s of copy, 10 to 12 s muted and 28 to 35 s of copy again, in audio.
-Tried against faults: the un-bypass not sent fails at its read-back, and
-not applied but read back as asked fails the three phases; the bypass never
-set fails as a bypassed send heard. **Not covered:** the rig's JACK
-frontend, which runs in real time and is where a stuck mute would matter;
-a send's right channel through the running mute (the offline tests hold
-each channel of the send). *(2026-11-24)*
+blocks. A fast test holds the classifier to a made-up recording, each side (a
+stream gap, a ramp, a late copy, the sides swapped). Measured after: 55 runs
+of each side passed of 55, 15 of them beside the old probe for load (and
+before the second side, 130 of the left alone, 60 under load); 20 more, run
+to read the phases, had 11 to 14 s of copy, 10 to 12 s muted and 28 to 35 s
+of copy again, in audio. Tried against faults, on each side: the un-bypass
+not sent fails at its read-back, and not applied but read back as asked
+fails the three phases; the bypass never set fails as a bypassed send heard.
+**Not covered:** the rig's JACK frontend, which runs in real time and is
+where a stuck mute would matter. *(2026-11-24)*
 

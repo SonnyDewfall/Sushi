@@ -230,11 +230,17 @@ PLAYING, MUTED, UNMUTED = 0.5, 0.5, 1.5
 ONE_CHANNEL = 1 / 16
 
 
-def running_config(tmp_path, sine) -> dict:
+# The channel the running test's sine plays on: each side checks its own
+# channel of the send, the tap carrying the stem to the other.
+LEFT, RIGHT = 0, 1
+
+
+def running_config(tmp_path, sine, side: int = LEFT) -> dict:
     """A channel playing `sine` (Sushi's own wav_streamer, looping) into its
     send, as the rig makes it, then a second send, the tap, carrying the
-    channel's left after the first send (its stem) to the master's right;
-    the master's return, then a wav_writer recording what the master hears.
+    channel's `side` after the first send (its stem) to the master's other
+    side; the master's return, then a wav_writer recording what the master
+    hears.
 
     One recording, so the stem and the master are on one timeline. With the
     stem on a wav_writer of its own (as this was until #243), the two
@@ -245,9 +251,12 @@ def running_config(tmp_path, sine) -> dict:
     Sushi 1.3.0's source and not isolated: the dummy frontend runs as fast
     as it can, and a wav_writer pushes each chunk into a ring buffer that a
     worker empties, losing a chunk that does not fit, so each writer loses
-    its own. `sine` plays on its left only: the master's left is then the
-    send's copy alone (its right carries nothing), and its right the stem
-    alone (the send adds zeros there)."""
+    its own. `sine` plays on `side` only: the master's `side` is then the
+    send's copy alone (the tap does not reach it), and the other side the
+    stem alone (the send adds zeros there). One side per run, so the running
+    test is run once for each, and each checks its own channel of the
+    send."""
+    other = 1 - side
     channel = {"name": "channel", "channels": 2, "inputs": [], "outputs": [], "plugins": [
         {"uid": "sushi.testing.wav_streamer", "name": "channel_src", "type": "internal"},
         {"uid": "sushi.testing.send", "name": "channel_send", "type": "internal"},
@@ -258,23 +267,24 @@ def running_config(tmp_path, sine) -> dict:
     return {"host_config": {"samplerate": SR}, "tracks": [channel, master], "initial_state": [
         {"processor": "channel_send", "properties": {"destination_name": "master_return"}},
         {"processor": "channel_tap", "properties": {"destination_name": "master_return"},
-         "parameters": {"start_channel": 0.0, "channel_count": ONE_CHANNEL, "dest_channel": ONE_CHANNEL}},
+         "parameters": {"start_channel": side * ONE_CHANNEL, "channel_count": ONE_CHANNEL,
+                        "dest_channel": other * ONE_CHANNEL}},
         {"processor": "channel_src", "properties": {"file": str(sine)}, "parameters": {"loop": 1.0, "playing": 1.0}},
         {"processor": "master_rec", "properties": {"destination_file": str(tmp_path / "master_rec")},
          "parameters": {"recording": 1.0}}]}
 
 
-def master_blocks(master) -> list[str]:
+def master_blocks(master, side: int = LEFT) -> list[str]:
     """Each 100 ms block of the master's recording, on its own timeline: the
-    send's copy on the left, the stem on the right. "copy" (the left is the
-    stem exactly), "muted" (the left has nothing of it), "between" (a bypass
+    send's copy on `side`, the stem on the other. "copy" (the send's side is
+    the stem exactly), "muted" (it has nothing of it), "between" (a bypass
     ramping), or "quiet" where the stem itself is silent, which says
     nothing: the streamer leaves a gap after its first loop, and may fall
     behind a frontend running faster than real time, which is the
     streamer's and not the mute's."""
     kinds = []
     for start in range(0, len(master) - BLOCK + 1, BLOCK):
-        sent, stem = master[start:start + BLOCK, 0], master[start:start + BLOCK, 1]
+        sent, stem = master[start:start + BLOCK, side], master[start:start + BLOCK, 1 - side]
         kinds.append("quiet" if np.max(np.abs(stem)) < 0.25 else
                      "copy" if np.max(np.abs(sent - stem)) < EXACT else
                      "muted" if np.max(np.abs(sent)) < EXACT else "between")
@@ -302,9 +312,12 @@ def runs(kinds: list[str]) -> str:
     return ", ".join(f"{kind} {n}" for kind, n in out)
 
 
-def test_the_master_is_read_on_its_own_timeline():
+@pytest.mark.parametrize("side", [LEFT, RIGHT], ids=["left", "right"])
+def test_the_master_is_read_on_its_own_timeline(side):
     """The classifier, on a made-up recording: the stem's gap and a ramp
-    say nothing, and a phase is a copy only where the left is the right."""
+    say nothing, and a phase is a copy only where the send's side is the
+    stem's. Read from the wrong side, the same recording is no copy."""
+    pair = (lambda sent, stem: np.stack([sent, stem] if side == LEFT else [stem, sent], axis=1))
     n = BLOCK
     tone = 0.5 * np.sin(2 * np.pi * 440 * np.arange(10 * n) / SR)
     stem = tone.copy()
@@ -312,18 +325,22 @@ def test_the_master_is_read_on_its_own_timeline():
     sent = stem.copy()
     sent[4 * n:7 * n] = 0.0                  # the mute
     sent[7 * n:8 * n] *= np.linspace(0, 1, n)  # its ramp back
-    kinds = master_blocks(np.stack([sent, stem], axis=1))
+    kinds = master_blocks(pair(sent, stem), side)
     assert kinds == ["copy", "quiet", "copy", "copy", "muted", "muted", "muted", "between", "copy", "copy"]
     assert what_the_master_did(kinds) == ["copy", "muted", "copy"]
     assert runs(kinds).startswith("copy 1, quiet 1, copy 2, muted 3")
-    # A left that is the stem a little late is not a copy.
+    # Read with the sides swapped, the stem is taken for the send: the
+    # mute's blocks are a stem that is silent, so the mute is not seen.
+    assert "muted" not in master_blocks(pair(sent, stem), 1 - side)
+    # A send that is the stem a little late is not a copy.
     late = np.concatenate([np.zeros(7), stem[:-7]])
-    assert "copy" not in master_blocks(np.stack([late, stem], axis=1))
+    assert "copy" not in master_blocks(pair(late, stem), side)
 
 
 @needs_sushi
 @pytest.mark.slow
-def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(tmp_path):
+@pytest.mark.parametrize("side", [LEFT, RIGHT], ids=["left", "right"])
+def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(tmp_path, side):
     """The mute the agent plays (#210), as the agent plays it: Sushi 1.3.0
     running (its dummy frontend, which processes on its own thread, faster
     than real time), the send's bypass set and cleared over gRPC by
@@ -338,7 +355,9 @@ def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(
     402 times here as it stood, Sushi took every bypass and un-bypass (read
     back at once and 0.2 s later, and the master's own recording playing
     again after the mute in all 402); the 6 failures were the stem's and the
-    master's recordings drifting apart, which `running_config` now avoids."""
+    master's recordings drifting apart, which `running_config` now avoids.
+    Run once with the sine on each side, so each of the send's two channels
+    is heard muted and coming back."""
     import glob
     import socket
     import subprocess
@@ -350,9 +369,10 @@ def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(
     seconds = np.arange(SR) / SR
     sine = tmp_path / "sine.wav"
     tone = 0.5 * np.sin(2 * np.pi * 440 * seconds)
-    signals.write_wav(sine, np.stack([tone, np.zeros_like(tone)], axis=1), SR)
+    silent = np.zeros_like(tone)
+    signals.write_wav(sine, np.stack([tone, silent] if side == LEFT else [silent, tone], axis=1), SR)
     config = tmp_path / "running.json"
-    config.write_text(json.dumps(running_config(tmp_path, sine)))
+    config.write_text(json.dumps(running_config(tmp_path, sine, side)))
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -390,7 +410,7 @@ def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(
     (master_file,) = glob.glob(str(tmp_path / "master_rec*.wav"))
     master = signals.read_wav(master_file).samples
     assert len(master) > 4 * SR, f"too little was recorded to say anything ({len(master)} frames)"
-    kinds = master_blocks(master)
+    kinds = master_blocks(master, side)
     said = what_the_master_did(kinds)
     phases = f"{said}, in 100 ms blocks of the master: {runs(kinds)}"
     assert said[:1] == ["copy"], f"the send did not reach the master before the mute: {phases}"
