@@ -7157,3 +7157,85 @@ connections, read from elkpy's source and never run; a failure there fails
 the step and the switch restarts into the edited file, as any live switch
 that fails part-way does. Shown against `test_agent.RigLive` and the UI's
 fake. Not tried on the rig. *(2026-11-24)*
+
+**The delay a sound reference holds is the earliest path, not the strongest
+(#143).** Two references held their delay to a path that was not the dry
+signal, with a tolerance of 0, and would have failed on delay alone had the
+paths traded places. Found by rendering one change at a time, here, with Sushi
+1.3.0's release AppImage over this machine's Ubuntu 24.04 packages and the
+two built plugins (the CI image's set; `nulltest --all` on master passed all
+44 checks first). (1) **electric-delay's 19440** (its rig reference and its
+frozen one) **is the delay pedal's echo**: lcrDelay's L, C and R delay all at
+0.15 of 2700 ms, 405 ms, 19440 samples at 48 kHz. Set all three to 0.10 and it
+moves to 12960; bypass the pedal and the strongest path is the dry at 0; 38882
+is the second echo, gone with Feedback at 0.5 (none). The echo outweighs the
+dry by 2 dB (0.169 against 0.135) only since the copy to stereo: lcrDelay's
+delay line is fed `in_l + in_r`, so with both sides fed the echo doubles
+(0.084 in the v1 render and with the copies taken out, the dry the same), and
+at a Dry/Wet of 0.55 instead of 0.61 the dry is the strongest again. (2)
+**electric_board's 4163** (its `.v1-mono` reference and its frozen one, both
+of a board that still has the gx_detune_ pair; the rig's own has measured 1
+since #152) **is not the delay pedal's echo**, as its note guessed: lcrDelay
+at its defaults is fully dry (Dry/Wet 0), and bypassing it changes nothing.
+It is each gx_detune_ unit's delayed copy: bypass both and the strongest is
+the dry at 1; bypass either and 4163 stays and 8323, the two in series, goes.
+The dry was 7 dB under the strongest, with 8323 at 0.77 of it. **The fix:**
+`nulltest.fingerprint` measures the delay with `analysis.estimate_latency`,
+the earliest of `find_delays`' peaks at a lag of 0 or more and at least 0.1 of
+the strongest (`estimate_delay`'s strongest when there is none, as for an
+octave fully wet, whose number is a correlation, not a lag), so the dry and an
+echo can trade places without moving it. Rendered under it, every reference
+measured as before but five, by delay alone: electric-delay's two 19440 to 0
+(the dry at 0.80 of the echo), electric_board's two 4163 to 1 (0.43), and
+`string-machine.strings` 276 to 103, its ensemble's two taps (fully wet, at
+0.86 of each other: the same hazard, not named in #143). Those five values are
+rewritten by hand, every other number and every tolerance as it was, and
+electric_board's note on its delay with them; the two frozen references' new
+sha256 are in `test_rig_fixtures.py`. After: `nulltest --all` here passes all
+44, and the earliest path was the same in four renders of each changed one
+(electric_board's included, gx_detune_ and all). Not yet run in CI's container
+at the time of writing. *(2026-11-24)*
+
+**A report to Elk of the two-links fault is drafted, and waits to be posted
+(#143).** `docs/upstream/sushi-pipewire-two-links.md`: under PipeWire, a Sushi
+1.3.0 input fed by two links carries only the first 64 frames of each quantum
+(#81, #106; the rig's 31 Oct measurement), with the versions, the steps, the
+measurement, the source line as #81 recorded it (`jack_frontend.cpp:345`,
+`jack_port_get_buffer(port, AUDIO_CHUNK_SIZE)` per chunk, not re-read) and
+the rig's workaround (a probe track on an input nothing else feeds). Not
+posted: its link goes here and in #143 once it is. *(2026-11-24)*
+
+**The earliest-path delay: the review of PR #237 (#143).** Seven findings.
+(1) **A strongest peak at a negative lag is the answer**, and no path at 0 or
+later is looked for against it. Before, a fully wet octave up (negative: on a
+log sweep an octave reads as 24083 samples, less the shifter's latency) into a
+reverb fell through to the first tail peak at 0 or later over the floor, at a
+lag set by the tail (simulated: 14 to 3349 samples); the two octave references'
+own tails were 0.059 and 0.073 of the strongest, under the 0.1 floor by a
+factor of two at most. Measured here, as before. (2) **`--calibrate` says each
+delay's margins** (`analysis.Latency`, `nulltest.delay_margins`): the chosen
+path's share of the strongest, the strongest earlier peak under the floor,
+and the strongest rival that would change the answer by overtaking; and warns
+when one is within a factor of two of the floor (0.05 to 0.2) or a rival at
+0.8. Measured on all 44: synth-lead 138 and pedals 3 are the strongest
+paths, nothing earlier, rivals 0.061 and none; `string-machine.strings` 103
+is 0.857 of the strongest (276), rival 0.726 (at -4); electric_board's 1 is
+0.43 (rival 0.23), electric-delay's 0 is 0.80. **The two octaves warn**: each
+has a second peak at 0.985 (electric-octave) and 0.975 (string-machine) of
+the strongest, so their -19380 and -20277 sit on a near tie, as they did
+before this change; renders are identical twice over, so nothing flips
+between runs, but a small change of the octave's sound could move them by
+hundreds of samples. Not changed here. (3) string-machine.strings' note says
+its 103 is the leading edge of a modulated tap, which its LFOs move;
+`estimate_latency`'s docstring says the same of a chorus fully wet. (4)
+`tests/rig_fixtures.py` names the two frozen references changed. (5)
+`selftest.measure_delay` takes the earliest path too: through electric-delay's
+chain the strongest is the echo, 76 quanta late. `null_test(align=True)`
+keeps the strongest, which is the alignment it needs. (6) The Elk draft claims
+no xrun count, which that run did not record, says the one-track repro was not
+run in that form, and gives its single-link control as the second input fed by
+A alone, not a disconnect. (7) The docstring no longer gives gx_detune_ as a
+source of negative lags (it gave delayed copies, at 4163), and says an octave
+down fully wet peaks at +24083 plus the latency and reads as one (tested on a
+synthetic shift). After: `nulltest --all` passes all 44 here, and
+`--calibrate --all` in a copy wrote every delay as committed. *(2026-11-24)*

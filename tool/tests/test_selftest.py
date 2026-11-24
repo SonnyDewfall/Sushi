@@ -172,6 +172,22 @@ def test_a_known_delay_is_recovered_in_samples_and_milliseconds():
     assert delay.ms == pytest.approx(5.354, abs=0.001)
 
 
+def test_the_delay_is_the_first_path_not_an_echo_louder_than_it():
+    """#143: through a copy of electric-delay's chain the strongest path is
+    the delay pedal's echo, 405 ms behind the dry, which would have read as
+    a buffer of 76 quanta. The dry one quantum late is the delay."""
+    stimulus = signals.pink_noise(SR, 2.0, seed=3)[:, 0]
+    returned = 0.8 * delayed(stimulus, 257) + delayed(stimulus, 257 + 19440)
+    delay = selftest.measure_delay(probe(stimulus, returned))
+    assert delay.samples == 257
+    assert selftest.delay_findings(delay, expected_quantum=256) == []
+
+
+def test_a_return_too_short_to_search_is_nothing_correlated():
+    stimulus = signals.pink_noise(SR, 1.0, seed=3)[:, 0]
+    assert selftest.measure_delay(probe(stimulus, stimulus[:1000])).samples is None
+
+
 def test_one_block_of_delay_is_what_the_quantum_asked_for():
     """Port to port through Sushi measured 257 samples at a quantum of 256."""
     delay = selftest.Delay(name="sushi", sample_rate=SR, samples=257)

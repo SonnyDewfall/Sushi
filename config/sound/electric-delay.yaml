@@ -9,7 +9,7 @@ measured:
   channel_rms_dbfs:
   - -27.3444
   - -27.3441
-  delay_samples: 19440
+  delay_samples: 0
   bands:
   - low_hz: 20.0
     high_hz: 80.0

@@ -45,7 +45,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from ._numpy import require_numpy
@@ -57,7 +57,8 @@ from .analysis import (
     band_differences_db,
     band_energies,
     check_finite,
-    estimate_delay,
+    Latency,
+    find_latency,
     peak_dbfs,
     rms_dbfs,
 )
@@ -117,6 +118,10 @@ class Fingerprint:
     # passed this check for its whole life (2026-11-02). None for a schema-1
     # reference, which did not record them.
     channel_rms_dbfs: tuple[float, ...] | None = None
+    # How `delay_samples` was chosen and how near it came to another answer
+    # (`analysis.Latency`), for `delay_margin_warnings` when a reference is
+    # made. Not written to a reference, and no part of comparing one.
+    latency: Latency | None = field(default=None, compare=False, repr=False)
 
 
 def fingerprint(
@@ -134,17 +139,23 @@ def fingerprint(
     through the chain is measured against it. Latency is worth fingerprinting
     separately from tone: a chain that gained 20 ms still nulls perfectly once
     aligned, so a comparison that only looked at spectrum would miss it.
+
+    The delay is the earliest path through the chain (`estimate_latency`),
+    not the strongest. Until 2026-11-24 it was the strongest, and two
+    references held it to the delay pedal's echo or the octave pair's (the
+    gx_detune_ units), where the dry signal was the weaker by 2 and 7 dB:
+    either would have failed on delay alone had the two traded places (#143).
     """
     np = require_numpy()
     arr = np.asarray(rendered)
 
-    delay = None
+    delay = latency = None
     left = arr[:, 0] if arr.ndim > 1 else arr
-    # A silent left side has no delay to measure, and `estimate_delay` would
+    # A silent left side has no delay to measure, and measuring it would
     # raise "no correlation" over it: a message about the measurement, where
     # the finding is the silence, which `heard_findings` names (#144).
     if stimulus_samples is not None and _audible(float(rms_dbfs(left))):
-        # Both reduced to their first channel, because `estimate_delay` refuses
+        # Both reduced to their first channel, because `find_latency` refuses
         # multichannel input rather than silently reducing it -- and every real
         # render is at least stereo, so without this the delay could never be
         # measured at all. Found by rendering through a passthrough and
@@ -161,13 +172,14 @@ def fingerprint(
         # and nothing here could see it. The delay is still channel 0's; each
         # channel's level is now its own (`channel_rms_dbfs`), so a channel
         # lost or changed is a finding of its own.
-        delay = int(
-            estimate_delay(
-                np.asarray(stimulus_samples)[:, 0] if np.asarray(stimulus_samples).ndim > 1
-                else stimulus_samples,
-                arr[:, 0] if arr.ndim > 1 else arr,
-            ).lag_samples
+        latency = find_latency(
+            np.asarray(stimulus_samples)[:, 0] if np.asarray(stimulus_samples).ndim > 1
+            else stimulus_samples,
+            arr[:, 0] if arr.ndim > 1 else arr,
         )
+        if latency is None:
+            raise ValueError("no correlation between the signals within the allowed lag (is either one silent?)")
+        delay = int(latency.peak.lag_samples)
 
     return Fingerprint(
         config=config,
@@ -179,7 +191,29 @@ def fingerprint(
         bands=tuple(band_energies(arr, sample_rate, edges_hz)),
         delay_samples=delay,
         channel_rms_dbfs=tuple(channel_rms_dbfs(arr)),
+        latency=latency,
     )
+
+
+def delay_margin_warnings(fp: Fingerprint) -> list[str]:
+    """Each way `fp`'s delay is near another answer (`analysis.Latency.near_floor`),
+    said when a reference is made of it, so a reference whose delay could
+    move between renders, with nothing else changed, is seen then and not
+    when it fails. Empty for a fingerprint with no delay measured."""
+    if fp.latency is None:
+        return []
+    return [f"delay {fp.delay_samples}: {why}" for why in fp.latency.near_floor()]
+
+
+def delay_margins(fp: Fingerprint) -> str | None:
+    """The delay's margins in one line, for `--calibrate` to print beside
+    every reference it makes; None with no delay measured."""
+    if fp.latency is None:
+        return None
+    lat = fp.latency
+    return (f"delay {fp.delay_samples}: {lat.ratio:.3f} of the strongest path (at "
+            f"{lat.strongest.lag_samples}); earliest peak under the floor {lat.earlier:.3f}; "
+            f"rival {lat.rival:.3f}")
 
 
 def _comparable(reference: Fingerprint, test: Fingerprint) -> list[Finding]:
