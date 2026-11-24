@@ -7061,3 +7061,12 @@ sha256 are in `test_rig_fixtures.py`. After: `nulltest --all` here passes all
 44, and the earliest path was the same in four renders of each changed one
 (electric_board's included, gx_detune_ and all). Not yet run in CI's container
 at the time of writing. *(2026-11-24)*
+
+**A report to Elk of the two-links fault is drafted, and waits to be posted
+(#143).** `docs/upstream/sushi-pipewire-two-links.md`: under PipeWire, a Sushi
+1.3.0 input fed by two links carries only the first 64 frames of each quantum
+(#81, #106; the rig's 31 Oct measurement), with the versions, the steps, the
+measurement, the source line as #81 recorded it (`jack_frontend.cpp:345`,
+`jack_port_get_buffer(port, AUDIO_CHUNK_SIZE)` per chunk, not re-read) and
+the rig's workaround (a probe track on an input nothing else feeds). Not
+posted: its link goes here and in #143 once it is. *(2026-11-24)*
