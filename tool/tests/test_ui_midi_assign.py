@@ -17,6 +17,8 @@ from the file). Nothing here is the rig machine, a phone or a pedal.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import yaml
 
@@ -182,14 +184,19 @@ def test_a_switch_is_assigned_to_an_effects_on_off_from_its_row_and_plays_now(br
     onoff.select_option("c")
     expect(summary(p, "c")).to_have_text("board/overdrive on/off")
     expect(badge(p, "overdrive")).to_have_text("C")
-    expect(p.locator("section.pedals .rigfile-result")).to_contain_text("It plays now.")
+    result = p.locator("section.pedals .rigfile-result")
+    expect(result).to_contain_text("Assigned C: board/overdrive on/off")
+    expect(result).to_have_attribute("title", re.compile(re.escape("It plays now.")))
     assert midi_of(s) == {"controller": "fbv", "controls": [{"control": "c", "bypass": "board/overdrive"}]}
     s.pedals.press("c")
     until(lambda: s.rig.bypassed["overdrive"] is True)
     page.close()
 
 
-def test_a_control_in_use_is_moved_only_after_a_confirm_naming_where_it_was(browser, pedals_served):
+def test_a_control_in_use_says_where_it_is_and_moves_at_once_saying_where_it_came_off(browser, pedals_served):
+    """#209: no "Move C?" confirm: the one Undo takes a move back
+    (test_ui_undo.py). The option still names where the control is now, and
+    the result where it came off."""
     s = pedals_served
     page = rack(browser, s)
     p = page.page
@@ -200,16 +207,10 @@ def test_a_control_in_use_is_moved_only_after_a_confirm_naming_where_it_was(brow
     mute = panel.get_by_label("vocal on/off")
     expect(mute.locator("option")).to_have_text(["none", "C (now board/overdrive on/off)", "D"])
     mute.select_option("c")
-    confirm = panel.get_by_role("group", name="Confirm the move")
-    expect(confirm).to_contain_text("C is on board/overdrive on/off. Move it to vocal on/off?")
-    expect(mute).to_have_value("c")  # the control picked, while it is asked about
-    confirm.get_by_role("button", name="Keep it").click()
-    expect(confirm).to_have_count(0)
-    expect(mute).to_have_value("")  # kept: none, as it was
-    assert midi_of(s)["controls"] == [{"control": "c", "bypass": "board/overdrive"}], "kept: nothing written"
-    mute.select_option("c")
-    panel.get_by_role("button", name="Move C").click()
     expect(summary(p, "c")).to_have_text("vocal on/off")
+    expect(p.locator(".pedal-panel .confirm")).to_have_count(0)
+    expect(p.locator("section.pedals .rigfile-result")).to_have_attribute(
+        "title", re.compile(re.escape("C came off bypass board/overdrive.")))
     expect(badge(p, "overdrive")).to_have_text("")
     expect(badge(p, "vocal")).to_have_text("C")
     assert midi_of(s)["controls"] == [{"control": "c", "mute": "vocal"}]
@@ -237,7 +238,8 @@ def test_locked_the_panel_shows_the_assignment_and_assigns_nothing(browser, peda
     panel = open_panel(p, "overdrive")
     onoff = panel.get_by_label("overdrive on/off")
     expect(onoff).to_be_disabled()
-    expect(panel).to_contain_text("Locked: assigning a pedal")
+    expect(panel.locator(".lock-says")).to_have_text("Locked")
+    expect(panel.locator(".lock-says")).to_have_attribute("title", re.compile("^Locked: assigning a pedal"))
     assert midi_of(s) is None
     unlock(p)
     expect(onoff).to_be_enabled()
@@ -257,7 +259,8 @@ def test_a_pedal_on_a_parameter_from_the_effects_row_offers_the_restart(browser,
     expect(sweep.locator("option")).to_have_text(["none", "Drive", "Tone", "Level"])
     sweep.select_option("Drive")
     result = p.locator("section.pedals .rigfile-result")
-    expect(result).to_contain_text("It plays when electric_board restarts")
+    expect(result).to_contain_text("Assigned pedal: board/overdrive/Drive")
+    expect(result).to_have_attribute("title", re.compile(re.escape("It plays when electric_board restarts")))
     assert midi_of(s)["controls"] == [{"control": "pedal", "parameter": "board/overdrive/Drive"}]
     expect(summary(p, "pedal")).to_have_text("board/overdrive/Drive")
     result.get_by_role("button", name="Restart").click()
@@ -300,8 +303,9 @@ def test_the_compilers_refusal_is_said_in_the_panel_and_nothing_is_written(brows
     unlock(p)
     panel = open_panel(p, "echo")
     panel.get_by_label("echo on/off").select_option("c")
-    expect(panel.get_by_role("alert")).to_contain_text("Not assigned:")
-    expect(panel.get_by_role("alert")).to_contain_text("bypass names 'echo', which is not in board's chain")
+    expect(panel.get_by_role("alert")).to_have_text("Not assigned")
+    expect(panel.get_by_role("alert")).to_have_attribute("title", re.compile(
+        "^Not assigned: .*" + re.escape("bypass names 'echo', which is not in board's chain")))
     assert path.read_text() == before
     expect(summary(p, "c")).to_have_text("nothing on this rig")
     page.close()
@@ -411,7 +415,8 @@ def test_the_panel_says_the_locks_own_words(browser, pedals_served):
     words = rigjs(p, "return R.lockRefusal(true, 'pedal');")
     assert "assigning a pedal" in words
     panel = open_panel(p, "overdrive")
-    expect(panel.locator(".lock-says")).to_have_text(words)
+    expect(panel.locator(".lock-says")).to_have_text("Locked")
+    expect(panel.locator(".lock-says")).to_have_attribute("title", words)
     page.close()
 
 
@@ -436,11 +441,11 @@ def test_a_save_as_whose_file_waits_for_a_restart_says_so_and_offers_it(browser,
         status, answer = agent_client.ask(s.url, "POST", "/rig/midi/assign", {"control": "pedal", "volume": "board"})
         assert status == 200 and answer["how"] == "restart", answer
         p.get_by_role("button", name="Save as…").click()
-        p.get_by_label("New rig name").fill("foo")
+        p.get_by_label("Name", exact=True).fill("foo")
         p.get_by_role("button", name="Save as foo").click()
         result = p.locator(".save-result.ok")
         expect(result).to_contain_text("Saved as foo")
-        expect(result).to_contain_text("It plays as it was loaded until it restarts (")
+        expect(result).to_have_attribute("title", re.compile(re.escape("It plays as it was loaded until it restarts (")))
         result.get_by_role("button", name="Restart").click()
         p.locator("section.save").get_by_role("group", name="Restart?").get_by_role("button", name="Yes").click()
         until(lambda: ["restart"] in s.lifecycle.calls)

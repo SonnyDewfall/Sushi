@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import urllib.request
 
 import pytest
@@ -497,8 +498,10 @@ def test_a_level_sushi_refuses_part_way_puts_back_the_ones_already_set(browser, 
     p = page.page
     slider(p, "hall Mix").focus()
     p.keyboard.press("ArrowUp")
-    expect(p.locator(".problem.refused")).to_contain_text("Sushi would not set early (test)")
-    expect(p.locator(".problem.refused")).to_contain_text("put back dry as it was")
+    refused = p.locator(".problem.refused")
+    expect(refused).to_contain_text("Not changed: hall · mix")
+    expect(refused).to_have_attribute("title", re.compile(re.escape("Sushi would not set early (test)")))
+    expect(refused).to_have_attribute("title", re.compile(re.escape("put back dry as it was")))
     until(lambda: [c[2] for c in hall_calls(hall_served)] == ["dry", "early", "dry"])
     assert levels(hall_served) == pytest.approx(SAVED_LEVELS, abs=1e-12), "all or none: none"
     assert [e for e in live_log(hall_served) if e["args"].get("processor") == "hall"] == [], "nothing logged"

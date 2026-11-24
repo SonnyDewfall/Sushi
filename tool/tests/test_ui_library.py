@@ -510,8 +510,9 @@ def test_a_plugin_the_agent_refuses_says_its_reason_in_place_and_sushi_is_not_to
         expect(entry(p, NAM).locator(".lib-note")).to_have_attribute("title", re.compile("^Cannot be added: the amp runs in Carla"))
         entry(p, MVERB).click()
         said = p.locator('.add-slot[data-slot="delay"] .add-said')
-        expect(said).to_contain_text("Not added: MVerb")
-        expect(said).to_contain_text("is not in plugin-ports.txt")
+        expect(said).to_have_text("Not added")
+        expect(said).to_have_attribute("title", re.compile("^" + re.escape("Not added: MVerb")))
+        expect(said).to_have_attribute("title", re.compile(re.escape("is not in plugin-ports.txt")))
         expect(said).to_have_attribute("role", "alert")
         assert served.rig.writes() == [] and not any(c[0] == "walk" for c in served.rig.calls), \
             "refused from the manifest, before Sushi is asked anything"
@@ -535,7 +536,7 @@ def test_an_add_over_the_cpu_budget_is_refused_in_place_with_the_load_measured(b
     expect(said).to_have_text("Not added")
     expect(said).to_have_attribute("title", re.compile(re.escape(
         "Not added: the rig is using 86% of its 21.333 ms block, over the 80% a live add may start from")))
-    expect(said).to_contain_text("bypass or remove a plugin to make room")
+    expect(said).to_have_attribute("title", re.compile(re.escape("bypass or remove a plugin to make room")))
     expect(said).to_have_attribute("role", "alert")
     assert not any(c[0] in ("add", "walk") for c in lib.rig.calls), "refused before Sushi is asked anything"
     expect(shown(p)).to_have_text(["overdrive", "octave", "delay"])

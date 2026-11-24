@@ -985,7 +985,9 @@ def test_a_refused_change_shows_the_agents_reason_and_the_rigs_value(rack, serve
     # Back to the rig's value, with the reason beside it: not a silent revert.
     expect(feedback).to_have_attribute("aria-valuetext", "0.35")
     # The agent remembered it too, and says so in the same glance.
-    expect(rack.locator(".problem.agent")).to_contain_text("Sushi would not set Feedback (test)")
+    agent = rack.locator(".problem.agent")
+    expect(agent).to_contain_text("Sushi would not set Feedback")
+    expect(agent).to_have_attribute("title", "Sushi would not set Feedback (test)")
     assert served.rig.info["delay"]["Feedback"]["value"] == 0.35
 
 
@@ -1684,8 +1686,10 @@ def test_a_start_refused_for_plugins_missing_from_plugins_says_which_and_the_fix
         expect(alert).to_contain_text("Not started: electric-delay")
         expect(alert).to_be_visible()
         expect(alert).to_have_attribute("title", re.compile(re.escape(f"{calf}: installed in ")))
-        expect(alert).to_have_attribute("title", re.compile(re.escape("Nothing was started. To fix it, run this, then start the rig again: "
-                                                                      "sushi-rig plugins add")))
+        # The title is the refusal as the agent wrote it, its lines kept.
+        expect(alert).to_have_attribute("title", re.compile(
+            re.escape("Nothing was started. To fix it, run this, then start the rig again:") + r"\s+"
+            + re.escape("sushi-rig plugins add")))
         expect(p.locator(".rig-name")).to_have_text("Rig down")
         page.close()
 
@@ -1700,9 +1704,10 @@ def test_stop_takes_a_confirm_because_it_cuts_the_sound(browser, served):
     expect(p.locator(".confirm")).to_have_count(0)
     p.get_by_role("button", name="Stop electric_board").click()
     assert served.lifecycle.calls == [], "one tap stops nothing"
-    p.get_by_role("button", name="Stop now").click()
+    p.locator(".confirm").get_by_role("button", name="Yes").click()
     expect(p.locator(".rig-name")).to_have_text("Rig down")
-    expect(p.locator(".notice")).to_contain_text("Stopped electric_board.")
+    expect(p.locator(".notice")).to_contain_text("Stopped")
+    expect(p.locator(".notice")).to_have_attribute("title", "Stopped electric_board.")
     assert served.lifecycle.calls == [["down"]]
     expect(p.get_by_role("button", name="Start electric_board")).to_be_enabled()
     page.close()
@@ -1945,9 +1950,11 @@ def test_the_rack_shows_the_amp_with_its_model_faders_and_quality_not_on_one(bro
     expect(card.locator(".shown")).to_contain_text("Quality1.00")
     expect(card.locator("details.amp-about pre")).to_contain_text("matches the rig")
     expect(p.locator(".tile").last).to_have_text("AMPClean Room")
-    # One name on both screens, the file's; what the file calls itself is said
-    # beside it, not instead of it.
-    expect(card.locator(".amp-declared")).to_have_text("The file calls itself Invented Twin Clean Room Mic")
+    # One name on both screens, the file's; what the file calls itself is in
+    # its title (#209: no sentence beside it), not instead of it.
+    expect(card.locator(".amp-model")).to_have_attribute("title", re.compile(
+        re.escape(" · It calls itself Invented Twin Clean Room Mic") + "$"))
+    expect(card.locator(".amp-declared")).to_have_count(0)
     expect(card.locator("select option", has_text="Edge")).to_have_text("Edge")
     page.close()
 
@@ -2290,7 +2297,8 @@ def test_a_name_the_rule_refuses_is_said_before_sending_and_a_taken_one_by_the_a
     p.get_by_role("button", name="Save as hall").click()
     refused = p.locator(".save-result.refused")
     expect(refused).to_contain_text("Not saved as hall")
-    expect(refused).to_contain_text("a rig called hall already exists (config/rigs/hall.yaml)")
+    expect(refused.locator(".said")).to_have_text("a rig called hall already exists")
+    expect(refused).to_have_attribute("title", re.compile(re.escape("a rig called hall already exists (config/rigs/hall.yaml)")))
     assert hall.read_text() == "# another rig\n"
     assert save_served.save.state["rig"] == "config/rigs/electric_board.yaml"
     expect(p.get_by_label("Name", exact=True)).to_have_value("hall"), "the form stays, to choose another"
@@ -2389,7 +2397,8 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
         "electric_board-2026-11-12-take-03", None, False), "a typed name does not hide what the default is"
     assert all("default" not in v for v in views[:4] + views[7:9]), "no default but while a take could start"
     assert views[5]["record"]["disabled"] and views[5]["bad"] and "lowercase letters" in views[5]["note"]
-    assert views[6]["note"] == "Will replace the earlier riff, which moves to _archive/riff/."
+    assert views[6]["note"] == "Replaces riff"
+    assert views[6]["noteTitle"] == "Will replace the earlier riff, which moves to _archive/riff/."
     rec = views[7]
     assert (rec["state"], rec["title"], rec["name"]) == ("recording", "Recording", "riff")
     assert rec["record"]["disabled"] and not rec["stop"]["disabled"], "two buttons, each what it says"
@@ -2538,9 +2547,11 @@ def test_a_name_the_rule_refuses_is_said_before_sending_and_a_reused_one_warns(b
     p.get_by_role("button", name="Stop", exact=True).click()
     expect(p.locator(".record-result")).to_contain_text("Recorded riff")
     p.get_by_label("Take name").fill("riff")
-    expect(p.locator("#take-note")).to_have_text("Will replace the earlier riff, which moves to _archive/riff/.")
+    expect(p.locator("#take-note")).to_have_text("Replaces riff")
+    expect(p.locator("#take-note")).to_have_attribute("title", "Will replace the earlier riff, which moves to _archive/riff/.")
     p.get_by_role("button", name="Record", exact=True).click()
-    expect(p.locator(".record-result")).to_contain_text("the earlier riff is in _archive/riff/")
+    expect(p.locator(".record-result")).to_contain_text("Recording riff")
+    expect(p.locator(".record-result")).to_have_attribute("title", re.compile(re.escape("the earlier riff is in _archive/riff/")))
     p.get_by_role("button", name="Stop", exact=True).click()
     assert (record_served.recorder.takes / "_archive" / "riff").is_dir()
     page.close()
@@ -3274,7 +3285,8 @@ def test_a_new_rig_is_made_from_the_pickers_screen_and_offered_to_switch_to(brow
     # The form is fresh again, and the picker lists the new rig.
     expect(p.get_by_label("Rig name")).to_have_value("")
     result.get_by_role("button", name="Switch to two-guitars").click()
-    expect(p.locator(".notice")).to_contain_text("Switched to two-guitars live")
+    expect(p.locator(".notice")).to_contain_text("Switched to two-guitars")
+    expect(p.locator(".notice")).to_have_attribute("title", re.compile("^" + re.escape("Switched to two-guitars live")))
     assert ["switch", "two-guitars"] in files_served.lifecycle.calls
     expect(p.locator(".rack-body")).to_be_visible()  # back on the rack
     page.close()
@@ -3335,7 +3347,7 @@ def test_the_agents_refusals_of_a_new_rig_are_shown_in_place(browser, files_serv
         p.get_by_label(f"Channel {n} starts from").select_option(label="electric_board · board (3 plugins)")
     p.get_by_role("button", name="Create copies").click()
     expect(refused).to_contain_text("Not made: copies")
-    expect(refused).to_contain_text("duplicate name 'overdrive'")
+    expect(refused).to_have_attribute("title", re.compile(re.escape("duplicate name 'overdrive'")))
     assert not (rigs / "copies.yaml").exists()
     # A role gone from the machine file since the page read it: said with
     # the lines to add, which the agent never writes itself.
@@ -3346,7 +3358,8 @@ def test_the_agents_refusals_of_a_new_rig_are_shown_in_place(browser, files_serv
     p.get_by_label("Channel 1 starts from").select_option("")
     p.get_by_label("Channel 2 input").select_option("keys-in")
     p.get_by_role("button", name="Create copies").click()
-    expect(refused).to_contain_text("role 'keys-in' feeds a track but the machine file does not define it")
+    expect(refused).to_have_attribute("title", re.compile(re.escape(
+        "role 'keys-in' feeds a track but the machine file does not define it")))
     expect(refused.locator(".machine-hint")).to_contain_text("has no role keys-in. sushi-rig does not edit the machine file")
     assert machine.read_text() == before
     page.close()

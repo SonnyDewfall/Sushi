@@ -3554,10 +3554,12 @@ export function undoOutcome(answer) {
 
 // A refusal in a few words, for the page (#209): what comes before its
 // first colon, semicolon, bracket or full stop, cut at a word under about
-// forty characters. The whole of it goes in the element's `title`.
+// forty characters. A leading "nothing was written: " is passed over: what
+// is wrong is what follows it. The whole of it goes in the element's `title`.
 export function shortSaid(text, max = 40) {
   if (typeof text !== "string" || !text) return "";
-  let cut = text.split(/: |; | \(|\. /)[0].trim();
+  const rest = text.replace(/^nothing (?:was|is) (?:written|changed|started): /i, "");
+  let cut = (rest || text).split(/: |; | \(|\. /)[0].trim();
   if (cut.length > max) cut = `${cut.slice(0, max).replace(/\s+\S*$/, "")}…`;
   return cut;
 }

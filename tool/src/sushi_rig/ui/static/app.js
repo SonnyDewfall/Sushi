@@ -1095,13 +1095,15 @@ function undoRegion(el, screen) {
 }
 
 // What an action said, in a few words (#209): its title ("Saved
-// electric_board", "Not assigned: C"), with everything else it said -- the
-// file written, what git says, the agent's reason -- in the box's `title`,
-// for a hover. `action` and `offer` are its buttons, if any.
+// electric_board", "Not assigned: C") and, for a refusal, what is wrong cut
+// to its first clause (`R.shortSaid`), with everything else it said -- the
+// file written, what git says, the agent's whole reason -- in the box's
+// `title`, for a hover. `action` and `offer` are its buttons, if any.
 function resultBox(result, { cls = "save-result", dismiss = null, offer = null } = {}) {
   const more = [result.ok ? result.text : result.reason, result.ok ? result.commit : null].filter(Boolean).join(" ");
   return h("div", { class: `${cls} ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert", title: more || null },
     h("strong", {}, result.title),
+    !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason)) : null,
     result.action ? h("button", { class: "rig-act danger", onclick: result.action.run }, result.action.label) : null,
     offer,
     dismiss ? h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: dismiss }, "×") : null);
@@ -3702,6 +3704,7 @@ function rigFileResult(result, dismiss, play) {
   return h("div", { class: `save-result rigfile-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert",
     title: more || null },
     h("strong", {}, result.title),
+    !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason)) : null,
     result.hint ? h("details", { class: "machine-hint-box" }, h("summary", {}, "Machine lines"), h("pre", { class: "machine-hint" }, result.hint)) : null,
     result.ok && result.offer ? h("button", { class: "rig-act primary offer", disabled: !!state.pending,
       onclick: () => play(result.offer) }, result.offer.op === "restart" ? "Restart" : result.offer.label) : null,

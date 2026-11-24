@@ -21,7 +21,7 @@ import pytest
 
 pytest.importorskip("aiohttp")
 
-from test_ui import Page, browser, expect  # noqa: E402,F401
+from test_ui import Page, blank, browser, expect, rigjs  # noqa: E402,F401
 from test_ui_tabs import unit  # noqa: E402
 from ui_fake import RIG_FILE, Served  # noqa: E402
 
@@ -294,3 +294,19 @@ def test_a_restart_asks_one_word_with_yes_and_no(browser, served):
     confirm.get_by_role("button", name="Yes").click()
     until(lambda: any(c[0] == "restart" for c in served.lifecycle.calls[calls:]))
     page.close()
+
+
+def test_a_refusal_is_cut_to_what_is_wrong_in_a_few_words(blank):
+    cut = rigjs(blank, """
+      return [
+        R.shortSaid("a rig called hall already exists (config/rigs/hall.yaml)"),
+        R.shortSaid("nothing was written: duplicate name 'overdrive' in track guitar; rename one"),
+        R.shortSaid("Sushi would not set Feedback (test)"),
+        R.shortSaid("the rig is using 86% of its 21.333 ms block, over the 80% a live add may start from"),
+        R.shortSaid("nothing was written"),
+        R.shortSaid(""),
+        R.shortSaid(null),
+      ];""")
+    assert cut == ["a rig called hall already exists", "duplicate name 'overdrive' in track…",
+                   "Sushi would not set Feedback", "the rig is using 86% of its 21.333 ms…",
+                   "nothing was written", "", ""]

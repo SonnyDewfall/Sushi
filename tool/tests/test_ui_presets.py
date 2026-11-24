@@ -18,6 +18,8 @@ rig machine, a phone or a pedal.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import yaml
 
@@ -270,7 +272,8 @@ def test_a_channel_is_added_from_a_preset_on_a_chosen_input(browser, files_serve
     expect(p.get_by_label("New channel width")).to_have_value("mono")
     p.get_by_role("button", name="Add keys").click()
     result = p.locator(".rigfile-result.ok")
-    expect(result).to_contain_text("Its chain and level are channel preset crunch's.")
+    expect(result).to_contain_text("Added keys to electric_board")
+    expect(result).to_have_attribute("title", re.compile(re.escape("Its chain and level are channel preset crunch's.")))
     keys = rig(files_served)["channels"][2]
     assert keys["name"] == "keys" and keys["input"] == "keys-in"
     assert [e["name"] for e in keys["chain"]] == ["keys_overdrive", "keys_octave", "keys_delay"]
@@ -291,7 +294,9 @@ def test_a_new_rig_is_made_of_two_channels_from_one_preset(browser, files_served
     p.get_by_label("Channel 2 starts from").select_option(label="preset crunch (3 plugins, mono)")
     p.get_by_role("button", name="Create two-guitars").click()
     result = p.locator(".rigfile-result.ok")
-    expect(result).to_contain_text("Chains copied: guitar from preset crunch, vocal from preset crunch.")
+    expect(result).to_contain_text("Made two-guitars")
+    expect(result).to_have_attribute("title", re.compile(re.escape(
+        "Chains copied: guitar from preset crunch, vocal from preset crunch.")))
     made = yaml.safe_load((files_served.save.root / "config" / "rigs" / "two-guitars.yaml").read_text())
     assert [[e["name"] for e in c["chain"]] for c in made["channels"]] == [
         ["guitar_overdrive", "guitar_octave", "guitar_delay"], ["vocal_overdrive", "vocal_octave", "vocal_delay"]]
