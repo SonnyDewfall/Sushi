@@ -7242,8 +7242,8 @@ synthetic shift). After: `nulltest --all` passes all 44 here, and
 
 **Remove a channel: PR #238's review, and the live removal tried on a real
 Sushi (#190).** Run against Sushi 1.3.0's release AppImage here (dummy
-frontend, gRPC; `tests/test_live_remove_track.py`, and the same rig by hand
-some six hundred times), `live.remove_live_track` took the track, its
+frontend, gRPC; the probe now in
+[`tool/spikes/live_remove_track/`](tool/spikes/live_remove_track/README.md), some nine hundred runs), `live.remove_live_track` took the track, its
 processors and its send out while it played, and the master went on with the
 other channel alone, nothing of the removed one in it. But not every time:
 with the processors taken off send first, as the agent does, 3 runs in 300
@@ -7261,11 +7261,12 @@ or unconfirmed. That is the lead for making it live, not yet enough to (one
 stuck run in a hundred would pass 300 about one time in twenty). So
 **`Live.at` gives no `remove_track`**: removing a playing
 channel is a restart, asked first ("Restart?"), and the live path stays for
-the stand-ins of the tests and a Sushi shown to do it every time. The test
-waits a second after connecting; a failure of it is one of the faults above.
-Two wav_writers drift apart on the dummy frontend (11168 frames in one run),
-so it reads the master by its spectrum (440 Hz left, 660 Hz removed), not
-against a second recording. Also from the review: a channel added to the
+the stand-ins of the tests and a Sushi shown to do it every time. The
+real-Sushi run was first a slow test (`tests/test_live_remove_track.py`);
+it is a probe now, since a stuck Sushi ignores SIGTERM and would hold up
+CI. Two wav_writers drift apart on the dummy frontend (11168 frames in one
+run), so it reads the master by its spectrum (440 Hz left, 660 Hz removed),
+not against a second recording. Also from the review: a channel added to the
 file and not yet playing is written out of the file alone (`how: "file"`, no
 unsaved refusal, no switch, so no `op: "rig"`, the live steps kept and no
 take stopped; its Undo `apply: "none"`); a removal written and not switched

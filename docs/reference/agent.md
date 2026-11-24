@@ -1205,15 +1205,16 @@ names none), and `live.remove_live_track` takes each processor off, back to
 front, then calls elkpy's `delete_track`; the agent's switch takes it where
 its `Live` has a `remove_track`. `Live.at`, the agent's own link, has none
 (PR #238's review). Against Sushi 1.3.0's release AppImage (dummy frontend,
-`tests/test_live_remove_track.py`, and some six hundred runs of the same rig
-by hand, 2026-11-24) the track, its processors and its send went, and the
+some nine hundred runs of [a probe](../../tool/spikes/live_remove_track/README.md),
+2026-11-24, whose README has the counts) the track, its processors and its send went, and the
 master went on with the other channel alone, nothing of the removed one in
 it; but not every time. About one command in twenty was applied and never
 confirmed (elkpy's notice of an async command, nearly always the first on a
 fresh connection), which fails the step and restarts the rig unasked; and a
 few times Sushi stopped applying graph changes at `delete_track` on the
 emptied track, neither applying nor confirming it, and then ignored SIGTERM.
-The tests drive the live path against a stand-in (`test_agent.RigLive`,
+`delete_track` sent alone, which takes the processors off inside Sushi, was
+clean 300 times in 300: the lead for making it live. The tests drive the live path against a stand-in (`test_agent.RigLive`,
 `tests/test_agent_channel_remove.py`).
 
 ## Recording from the web UI

@@ -1884,8 +1884,8 @@ class Live:
             cc_connections=lambda c: m.read_live_cc(address, c),
             # A channel's removal is a restart, asked first (#190, PR #238's
             # review). Live, through `m.remove_live_track`, it was run against
-            # Sushi 1.3.0 (tests/test_live_remove_track.py, and by hand some
-            # six hundred times) and mostly works, but not always: 3 runs in
+            # Sushi 1.3.0 some nine hundred times (the probe in
+            # tool/spikes/live_remove_track/) and mostly works, but not always: 3 runs in
             # 300 had Sushi stop at `delete_track`, neither applying nor
             # confirming it, then ignore SIGTERM; and a command sent soon
             # after connecting can be applied and never confirmed (elkpy's
@@ -7900,9 +7900,9 @@ class Agent:
         not be made to play it, `written: true`. One Undo (#209) step, `act:
         "remove_channel"`: the file put back, and the rig switched into it.
 
-        Not run against a live Sushi but for `remove_live_track` itself
-        (tests/test_live_remove_track.py): shown against the fakes of the
-        tests."""
+        Not run against a live Sushi but for `remove_live_track` itself (the
+        probe in tool/spikes/live_remove_track/): shown against the fakes of
+        the tests."""
         from . import rigedit
 
         try:

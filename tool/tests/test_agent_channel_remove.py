@@ -452,8 +452,8 @@ def test_a_removal_changed_since_cannot_be_undone(root):
 
 def test_the_agents_own_sushi_link_removes_no_track_live_so_every_removal_is_a_restart_asked(root):
     """PR #238's review: `Live.at` gives no `remove_track` (Sushi 1.3.0
-    was seen to leave a track's deletion unconfirmed, and once to stop
-    applying graph changes: tests/test_live_remove_track.py), so a removal
+    was seen to leave a track's deletion unconfirmed, and to stop applying
+    graph changes: tool/spikes/live_remove_track/), so a removal
     the stand-in takes out live is, on the agent's own link, a restart, and
     with `"restart": false` it is asked first, nothing written."""
     from sushi_rig.agent import Live
