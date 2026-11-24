@@ -35,9 +35,9 @@ Everything below the line is the report.
 
 When one of Sushi's JACK input ports has **two** connections into it, Sushi's
 processing receives the correct sum of the two for the first 64 frames of each
-period, and exact zeros for the rest of the period. With **one** connection
-into the same port the whole period arrives. At a period of 64 the fault is
-gone.
+period, and exact zeros for the rest of the period. A second input fed by
+**one** connection, in the same run, arrives whole. At a period of 64 the
+fault is gone.
 
 Nothing in Sushi's log says so at its default level (we did not record xruns
 in these runs), and the signal that does arrive is correctly aligned, so at a

@@ -503,7 +503,11 @@ def find_latency(reference, test, *, max_lag_samples: int | None = None,
     over = [peak for peak in peaks if share(peak) >= min_relative_height]
     if strongest.lag_samples < 0:
         # No path is first: the answer is the strongest, and only another
-        # peak overtaking it changes that.
+        # peak overtaking it changes that. A blend of the dry signal with a
+        # louder pitch-up copy is the case this does not hold still for: the
+        # answer jumps from the copy's lag to the dry's 0 as the mix crosses
+        # over, which `rival` warns of only near the crossing (PR #237's
+        # re-review). Every octave reference today is fully wet.
         return Latency(strongest, strongest, 1.0, 0.0, max((share(p) for p in peaks[1:]), default=0.0))
     chosen = min((peak for peak in over if peak.lag_samples >= 0), key=lambda peak: peak.lag_samples)
     earlier = [share(p) for p in peaks
