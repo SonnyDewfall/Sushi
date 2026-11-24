@@ -437,6 +437,18 @@ class UiRig:
                 for held in (self.info, self.bypassed, self.classes, self._id_of):
                     held.pop(name, None)
 
+    def remove_track(self, connection, track):
+        """A channel removed from the running rig (#190), as `Live.remove_track`
+        takes it: the track and all on it. Here so the agent plans a removal
+        live as it would on a Sushi that can (the switch itself is
+        `UiLifecycle.switch_held`'s, which `UiSave.switched` follows)."""
+        with self.lock:
+            self.calls.append(("remove_track", track))
+            self._refused(track)
+            for name in self.chains.pop(track) + [track]:
+                for held in (self.info, self.bypassed, self.classes, self._id_of):
+                    held.pop(name, None)
+
     def add_track(self, name):
         """A channel the rig file gained, as a restart brings it up: a track
         with only its send, in front of the master, as the compiler builds one."""
@@ -742,6 +754,11 @@ class UiSave:
             def plugins(chain):
                 return [n for n in chain if not n.endswith("_to_stereo")]
 
+            for track in [t for t in rig.chains if t not in fresh.chains and t != "master"]:
+                # A channel the file no longer has (#190): gone, with all on it.
+                for gone in rig.chains.pop(track) + [track]:
+                    for held in (rig.info, rig.bypassed, rig.classes, rig._id_of):
+                        held.pop(gone, None)
             for track, chain in fresh.chains.items():
                 # The fake's own tracks have no copies to stereo, which the
                 # compile has: a track is the file's when its plugins are.
@@ -1060,11 +1077,12 @@ class UiLifecycle:
             return Outcome(True, 0, f"{self.rig} restarted (headless mode)\n", "")
         return Outcome(False, 2, "", f"error: the fake does not know {args[0]!r}\n")
 
-    async def switch_held(self, origin, name, program, mark, discarded=None):
+    async def switch_held(self, origin, name, program, mark, discarded=None, remove_tracks=()):
         # `discarded`: the unsaved work a revert or a load drops, which the
         # agent's real switch puts back (`agent.discard_plan`); this stand-in
-        # changes no value, so it has nothing to put back.
-        self.calls.append(["switch", name])
+        # changes no value, so it has nothing to put back. `remove_tracks`:
+        # a channel removed (#190), which `UiSave.switched` takes out.
+        self.calls.append(["switch", name] + ([{"remove_tracks": list(remove_tracks)}] if remove_tracks else []))
         await asyncio.sleep(self.delay)
         if self.refuse_switch:
             raise SwitchRefused(*self.refuse_switch)

@@ -1853,6 +1853,10 @@ class Live:
     connect_cc: Callable[[Any, dict[str, Any]], None] | None = None
     disconnect_cc: Callable[[Any, dict[str, Any]], None] | None = None
     cc_connections: Callable[[Any], list[dict[str, Any]]] | None = None
+    # -- a channel removed from the running rig (#190): (track) -> None, the
+    # track and everything on it; None is "only at a restart". `at` gives
+    # None: see there, and live.py's `remove_live_track`.
+    remove_track: Callable[[Any, str], None] | None = None
 
     @classmethod
     def at(cls, address: str = DEFAULT_GRPC_ADDRESS) -> "Live":
@@ -1878,6 +1882,17 @@ class Live:
             connect_cc=lambda c, mapping: m.connect_live_cc(mapping, address, c),  # #210
             disconnect_cc=lambda c, mapping: m.disconnect_live_cc(mapping, address, c),
             cc_connections=lambda c: m.read_live_cc(address, c),
+            # A channel's removal is a restart, asked first (#190, PR #238's
+            # review). Live, through `m.remove_live_track`, it was run against
+            # Sushi 1.3.0 some nine hundred times (the probe in
+            # tool/spikes/live_remove_track/) and mostly works, but not always: 3 runs in
+            # 300 had Sushi stop at `delete_track`, neither applying nor
+            # confirming it, then ignore SIGTERM; and a command sent soon
+            # after connecting can be applied and never confirmed (elkpy's
+            # notice), which fails the step and restarts the rig unasked.
+            # The path stays, for a stand-in Sushi in the tests and for a
+            # Sushi that can be shown to do it every time.
+            remove_track=None,
         )
 
 
@@ -2108,6 +2123,7 @@ class Agent:
         self._bin_routes(app)  # deleting a rig file into the bin, and Undo (#129): see its block
         self._undo_routes(app)  # One Undo for everything (#209): see its block
         self._channel_load_routes(app)  # a channel from another rig (#208): see its block
+        self._channel_remove_routes(app)  # a channel removed from the running rig (#190): see its block
         self._help_routes(app)  # the user guide at /help/ (#167): see its block
         return app
 
@@ -5128,7 +5144,7 @@ class Agent:
                 await self._midi_sync()
 
     async def _switch_held(self, origin, name, program, mark, discarded: list[dict[str, Any]] | None = None,
-                           ) -> dict[str, Any]:
+                           remove_tracks: tuple[str, ...] = ()) -> dict[str, Any]:
         started = self.clock()
         described = self.describe()
         if not described.get("running"):
@@ -5170,7 +5186,8 @@ class Agent:
             # As the live attempt will see the amp: none at all for a run
             # with no amp, so its `_amp` alone never forces a restart.
             decided = rigfile.diff(running, upcoming, root=self._amp_root(),
-                                   amp_off=state.get("amp_requested") is False)
+                                   amp_off=state.get("amp_requested") is False,
+                                   remove_tracks=self._removable(remove_tracks))
         except Exception as exc:  # noqa: BLE001 -- unreadable is a reason to restart, said
             running = None
             decided = rigfile.NeedsRestart((rigfile.RestartReason(
@@ -5188,7 +5205,7 @@ class Agent:
         if take is not None:
             answer["take"] = take
         if isinstance(decided, rigfile.SwitchPlan):
-            tried = await self._switch_live(origin, name, running, upcoming, state, discarded)
+            tried = await self._switch_live(origin, name, running, upcoming, state, discarded, remove_tracks)
             failure = tried.pop("failed", None)  # a RestartReason, said under `why` below
             answer.update(tried)
             if tried["ok"]:
@@ -5241,7 +5258,7 @@ class Agent:
 
     async def _switch_live(
         self, origin, name: str, running: dict[str, Any], upcoming: dict[str, Any], state: dict[str, Any],
-        discarded: list[dict[str, Any]] | None = None,
+        discarded: list[dict[str, Any]] | None = None, remove_tracks: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         """Apply the plan and verify it; `{"ok", "plan", "applied", "counts"}`,
         and `failed` (a `RestartReason`) when it did not go through. Never
@@ -5268,7 +5285,8 @@ class Agent:
                 async with self._live_lock:
                     before = await self._sushi(origin, self.live.snapshot, controller, reading=True)
                     plan = rigfile.diff(running, upcoming, {**before, "amp": {"parameters": amp.sent()}},
-                                        root=self._amp_root(), amp_off=amp_off)
+                                        root=self._amp_root(), amp_off=amp_off,
+                                        remove_tracks=self._removable(remove_tracks))
                     if isinstance(plan, rigfile.SwitchPlan) and discarded:
                         # Work dropped on purpose (a revert or a load with
                         # discard): what it touched goes back too, where
@@ -5325,6 +5343,13 @@ class Agent:
             amp.run = amp_live.run_of(after_state)
         return {**progress, "ok": True}
 
+    def _removable(self, tracks: tuple[str, ...]) -> tuple[str, ...]:
+        """The tracks of `tracks` a live switch may take out (#190): all of
+        them where this agent's Sushi link can remove a track
+        (`Live.remove_track`), none where it cannot, so the plan restarts
+        rather than fail at the step."""
+        return tuple(tracks) if getattr(self.live, "remove_track", None) is not None else ()
+
     async def _switch_step(self, origin, controller, step: rigfile.SwitchStep) -> None:
         """One step of a plan, through what the route for it uses: the same
         reads and checks (`check_remove`, `_apply_move`, ...) and each chain
@@ -5349,6 +5374,21 @@ class Agent:
             after = await self._sushi(origin, self.live.walk, controller, reading=False)
             confirm_chain((after or {}).get("chains") or {}, removal.track, removal.expected,
                           f"removed {removal.processor!r} from {removal.track!r}")
+        elif step.op == "remove_track":
+            # A channel removed from the running rig (#190): the track, its
+            # chain and its send, then a read-back that it is gone.
+            track = args["track"]
+            reading = await self._sushi(origin, self.live.walk, controller, reading=True)
+            if track not in ((reading or {}).get("chains") or {}):
+                raise Unconfirmed(f"there is no track {track!r} to remove, so the rig is not the one the plan "
+                                  "was made from")
+            try:
+                await self._sushi(origin, self.live.remove_track, controller, track, reading=False)
+            finally:
+                self._load_stale()  # as an add or a remove through the routes (#137)
+            after = await self._sushi(origin, self.live.walk, controller, reading=False)
+            if track in ((after or {}).get("chains") or {}):
+                raise Unconfirmed(f"track {track!r} was removed and reads back still there")
         elif step.op == "amp":
             # The call POST /amp/parameter makes, with its checks: Carla must
             # answer, or the step fails and the switch restarts.
@@ -7056,19 +7096,23 @@ class Agent:
     async def _revert_switch(self, request, name: str, said: dict[str, Any], *,
                              mark: Callable[[dict[str, Any]], None] | None = None,
                              done: str = "reverted", discarded: list[dict[str, Any]] | None = None,
-                             command: list[str] | None = None) -> dict[str, Any]:
+                             command: list[str] | None = None,
+                             remove_tracks: tuple[str, ...] = ()) -> dict[str, Any]:
         """The running rig into its reverted file, by the live switch, held
         under the lifecycle lock the caller holds. What it says, as a
         switch's answer does, and `ok: false` with `code: "not_switched"`
         when the rig was not made to play the file that is now written.
         A channel load (#208) comes this way too, with its own `mark` for
-        the log entry and its own word for what was `done`."""
+        the log entry and its own word for what was `done`, and a channel
+        removed (#190), with the track it may take out live
+        (`remove_tracks`, `rigfile.diff`'s)."""
         if mark is None:
             def mark(entry: dict[str, Any]) -> None:
                 entry["args"]["revert"] = said["id"]
 
         try:
-            switched = await self._switch_held(request, name, None, mark, discarded)
+            switched = await (self._switch_held(request, name, None, mark, discarded, remove_tracks=remove_tracks)
+                              if remove_tracks else self._switch_held(request, name, None, mark, discarded))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- the file is written whatever went wrong: said, with `written`
@@ -7158,7 +7202,7 @@ class Agent:
         """`GET /undo`: what the next press of Undo would step back (`next`:
         `label`, `kind`, `op` for a live one, `act` for another (what was
         done: `channel`, `input`, `pedal`, `save`, `save_as`, `revert`,
-        `new_rig`, `delete`, `load`; the page's lock reads it), `can` and `why` when it cannot
+        `new_rig`, `delete`, `load`, `remove_channel`; the page's lock reads it), `can` and `why` when it cannot
         be), `depth` (steps held) and `limit`. `next` is null with nothing
         to undo. A live step's `can` is true until it is tried: whether the
         rig is still as the change left it is Sushi's to say."""
@@ -7443,7 +7487,8 @@ class Agent:
                     await self._midi_sync()  # the switch stopped the listener; it follows the rig now
 
     def _would_restart(self, compiled: dict[str, Any], run: dict[str, Any],
-                       discarded: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
+                       discarded: list[dict[str, Any]] | None = None,
+                       remove_tracks: tuple[str, ...] = ()) -> list[dict[str, str]]:
         """Why a switch of the running rig into `compiled` would restart
         Sushi rather than switch live, as `_switch_held` and `_switch_live`
         decide it, or [] for a live one: `rigfile.diff` of the two configs,
@@ -7461,7 +7506,8 @@ class Agent:
         try:
             running = self.switching.read_config(run["described"].get("config"))
             decided = rigfile.diff(running, compiled, root=self._amp_root(),
-                                   amp_off=state.get("amp_requested") is False)
+                                   amp_off=state.get("amp_requested") is False,
+                                   remove_tracks=self._removable(remove_tracks))
         except Exception as exc:  # noqa: BLE001 -- unreadable is a restart, as the switch says it
             return reasons + [{"code": "unreadable", "detail": f"the running rig's compiled config could not be "
                                                                f"read: {type(exc).__name__}: {exc}"}]
@@ -7762,13 +7808,23 @@ class Agent:
         except rigfile.RigFileError as exc:
             raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
         planned["before"], planned["after"] = before, path.read_bytes()  # for the one Undo (#209)
+        return self._keep_for_revert(path, before, kept_as,
+                                     f"before loading {planned['name']} onto {planned['channel']}", "the load")
+
+    def _keep_for_revert(self, path: Path, before: bytes, kept_as: str | None, how: str,
+                         what: str) -> dict[str, Any]:
+        """Keep `before`, rig file `path` as it was before `what` was written
+        over it, as a revert point (`saves.keep`), unless a save keeps those
+        bytes already (`kept_as`); what was kept. A point that could not be
+        kept is said, never raised: the write is done. Off the loop."""
+        from . import saves
+
         if kept_as is not None:
             return {"id": kept_as, "how": "kept by that save already"}
-        how = f"before loading {planned['name']} onto {planned['channel']}"
         try:
-            meta = saves.keep(root, rig, before, {"file": self._save_shown(path), "how": how})
-        except Exception as exc:  # noqa: BLE001 -- the load is written; said, as a save's lost snapshot is
-            why = " ".join(f"the load was written, but the file as it was could not be kept for Revert: "
+            meta = saves.keep(self._midi_root(), path.stem, before, {"file": self._save_shown(path), "how": how})
+        except Exception as exc:  # noqa: BLE001 -- written; said, as a save's lost snapshot is
+            why = " ".join(f"{what} was written, but the file as it was could not be kept for Revert: "
                            f"{type(exc).__name__}: {exc}".split())
             print(f"sushi-rig agent: {why}", file=sys.stderr, flush=True)
             return {"kept": False, "how": how, "why": why}
@@ -7782,6 +7838,234 @@ class Agent:
 
     # ======================================================================= #
     # (end of a channel from another rig)
+    # ======================================================================= #
+
+    # ======================================================================= #
+    # A channel removed from the running rig (#190):
+    # POST /rig/channels/{channel}/remove
+    # ======================================================================= #
+    #
+    # Kept in one block, as a load's is, and made as a load is made: the rig
+    # file written in place (comments kept), then the running rig switched
+    # into it (`_revert_switch`), live where the switch can take the track
+    # out (`rigfile.diff`'s `remove_tracks`, `Live.remove_track`, which the
+    # agent's own Sushi link does not offer: `Live.at`), by restart where it
+    # cannot. Outside it the agent calls in at `app`
+    # (`_channel_remove_routes`). What goes, and what in the MIDI map names
+    # the channel, is rigedit.py's, pure; what a rig may be is the compiler's.
+    # Locks as a load's: lifecycle (`busy: "channel remove"`), then live.
+
+    def _channel_remove_routes(self, app) -> None:
+        app.router.add_post("/rig/channels/{channel}/remove", self.remove_channel_route)
+
+    async def remove_channel_route(self, request):
+        """`POST /rig/channels/{channel}/remove {"rig"?, "discard"?,
+        "drop_midi"?, "restart"?}` (`rigedit.remove_request`): take channel
+        `channel` out of the running rig, its chain and its send with it, and
+        every control of the rig's MIDI map that names it once that is said
+        yes to (`drop_midi`).
+
+        The rig file is written first, in place with `write_rig` (comments
+        kept), compiled before it is (the compiler's refusal, nothing
+        written), and the file as it was is kept as a revert point
+        (`saves.keep`) unless a save keeps it already. The running rig is
+        then switched into it as a load's is (`_revert_switch`), which, with
+        the agent's own Sushi link, is a restart: `Live.at` removes no track
+        live (see there). Given a link that can (`Live.remove_track`, a
+        stand-in in the tests), the last channel of the file is taken out
+        live; a channel in front of another (whose engine input then moves)
+        and a MIDI map Sushi loads only at the start restart all the same.
+        The answer says which and why. Its `op: "rig"` entry is the new
+        baseline. The pedals' listener, and its links to Sushi, follow the
+        rig after (`_midi_sync`, #210). A channel the running rig has no
+        track for (added to the file since it started) is written out of the
+        file alone, `how: "file"`: no unsaved work is at stake, nothing is
+        switched, and its Undo plays nothing.
+
+        Refused before anything is written, each a 409 with its reason:
+        `no_rig`, `panel`, `v1` (as a save); `changed`, when `rig` is given
+        and is not the running rig; `no_channel`; `last_channel`, the rig's
+        only channel (a rig needs one); `midi`, when controls of the MIDI
+        map name the channel (`mappings`: each, with why; a blend's too,
+        since a blend needs two channels), unless `"drop_midi": true`, which
+        takes them out and says so (`dropped`); `rig_problem`, the compiler's
+        own words; `plugins_missing`; `unsaved` while the rig holds live work
+        no save has written, unless `"discard": true`; and `restarts`, with
+        `why`, when `"restart": false` was sent and the switch would restart
+        Sushi (the page's "Restart?", as a revert's).
+
+        200 with `file`, `channel`, `removed` (`plugins`, the chain's names,
+        and `send`), `dropped`, `how`, `why`, `kept_before`, `library`. 409
+        `not_switched` (or 504) when the file was written and the rig could
+        not be made to play it, `written: true`. One Undo (#209) step, `act:
+        "remove_channel"`: the file put back, and the rig switched into it.
+
+        Not run against a live Sushi but for `remove_live_track` itself (the
+        probe in tool/spikes/live_remove_track/): shown against the fakes of
+        the tests."""
+        from . import rigedit
+
+        try:
+            asked = rigedit.remove_request(await self._json_body(request))
+        except rigedit.EditRequestError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        channel = request.match_info["channel"]
+        self._refuse_while_busy()
+        answer: dict[str, Any]
+        path: Path | None = None
+        switched = False
+        async with self._lock:
+            self.busy = "channel remove"
+            try:
+                run = await self._rigfile_run()
+                refusal = save_refusal(run["state"], run["described"])
+                if refusal is not None:
+                    raise _conflict(*refusal)
+                path = run["running"]
+                if asked["rig"] is not None and path.stem != asked["rig"]:
+                    raise _conflict(f"the running rig is {path.stem}, not {asked['rig']}, so nothing was removed: "
+                                    "look at the rig and remove it again", "changed")
+                discarded: list[dict[str, Any]] = []
+                try:
+                    planned = await self._rigfile_thread(
+                        request, path, lambda: self._plan_removal(path, channel, asked["drop_midi"], run))
+                    async with self._live_lock:
+                        if planned["playing"]:
+                            refusal = load_refusal(run["state"], self.log, f"removing {channel}", "remove it")
+                            if refusal is not None and not asked["discard"]:
+                                raise RigFileRefused(*refusal)
+                            discarded = (unsaved_entries(self.log, since=run["state"].get("started_at"))
+                                         if refusal is not None else [])
+                            if asked["restart"] is False:
+                                restarts = await asyncio.to_thread(self._would_restart, planned["compiled"], run,
+                                                                   discarded, (channel,))
+                                if restarts:
+                                    raise RigFileRefused(
+                                        f"nothing was written: removing {channel} restarts Sushi: "
+                                        + "; ".join(f"{r['code']}: {r['detail']}" for r in restarts)
+                                        + '; remove it with "restart": true to go ahead', "restarts",
+                                        {"why": restarts})
+                        kept = await self._rigfile_thread(request, path, lambda: self._write_removal(path, planned))
+                except RigFileRefused as exc:
+                    error = _conflict(" ".join(str(exc).split()), exc.code)
+                    if exc.extra:
+                        error.agent_extra = exc.extra
+                    raise error
+                answer = {
+                    "ok": True, "rig": path.stem, "file": self._save_shown(path), "channel": channel,
+                    "written": True, "discarded": bool(discarded),
+                    "removed": {"plugins": planned["plugins"], "send": planned["send"]},
+                    "dropped": planned["dropped"], "kept_before": kept,
+                }
+                if not planned["playing"]:
+                    # In the file and not a track of the running rig (added
+                    # since it started, waiting for a restart): nothing plays
+                    # it, so the file alone is written. No unsaved work is at
+                    # stake and none is refused over, nothing is switched, so
+                    # the live steps stay Undo's and no take is stopped; its
+                    # Undo puts the file back and plays nothing (`apply:
+                    # "none"`).
+                    self._history_file(path, planned["before"], planned["after"], f"remove channel {channel}",
+                                       run=run, apply="none", act="remove_channel")
+                    answer["how"] = "file"
+                else:
+                    # One Undo (#209): the file put back and the rig switched
+                    # into it, as a load's is, whatever the switch below does.
+                    self._history_file(path, planned["before"], planned["after"], f"remove channel {channel}",
+                                       run=run, apply="switch", act="remove_channel")
+
+                    def mark(entry: dict[str, Any]) -> None:
+                        entry["args"]["remove_channel"] = channel
+
+                    switched = True
+                    answer.update(await self._revert_switch(
+                        request, path.stem, {"id": f"remove:{channel}", "what": f"without {channel}"}, mark=mark,
+                        done="written", discarded=discarded, command=["remove", f"{channel} from {path.stem}"],
+                        remove_tracks=(channel,)))
+                    if discarded:
+                        answer["discard"] = discard_said(discarded, answer)
+                    if not answer.get("ok"):
+                        # As a load's: the pedals follow what runs, not the file.
+                        answer["midi_note"] = (
+                            "the pedals' bindings follow the rig as it runs (its compiled config, "
+                            f"{run['described'].get('config')}), not the file just written: restart the rig to "
+                            "play the file, and its pedals with it")
+            finally:
+                self.busy = None
+                if switched:
+                    await self._midi_sync()  # the switch stopped the listener; it follows the rig now
+        await self._rigfile_git_after(answer, path)
+        if answer["ok"]:
+            return web.json_response(answer)
+        return web.json_response(answer, status=504 if answer.get("abandoned") else 409)
+
+    def _plan_removal(self, path: Path, channel: str, drop_midi: bool, run: dict[str, Any]) -> dict[str, Any]:
+        """What removing `channel` from rig file `path` writes, decided and
+        compiled before anything is written, or the refusal
+        (`RigFileRefused`). Off the loop."""
+        import yaml
+
+        from . import channelcopy, rigedit
+
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise RigFileRefused(f"{path.name} is not a rig file", "rig_problem")
+        try:
+            edited, entry = rigedit.without_channel(raw, channel)
+        except LookupError as exc:
+            raise RigFileRefused(str(exc), "no_channel") from exc
+        if not [c for c in edited.get("channels") or [] if isinstance(c, dict)]:
+            raise RigFileRefused(f"nothing was written: {channel} is {path.stem}'s only channel, and a rig needs "
+                                 "one: add another first, or delete the rig", "last_channel")
+        named = rigedit.midi_naming(raw.get("midi"), channel)
+        if named and not drop_midi:
+            count = f"{len(named)} control{'s' if len(named) != 1 else ''}"
+            raise RigFileRefused(
+                f"nothing was written: {count} of {path.stem}'s MIDI map name{'s' if len(named) == 1 else ''} "
+                f"{channel}: {'; '.join(rigedit.named_said(n) for n in named)}. Remove it dropping them too "
+                '({"drop_midi": true}), or edit the midi: section first', "midi", {"mappings": named})
+        if named:
+            edited["midi"] = channelcopy.drop_orphaned(edited.get("midi"), named)
+        compiled = self._rigfile_compile(edited, run)
+        self._rigfile_plugins(compiled, path.stem, run, "changed", "remove it again")
+        chain = entry.get("chain") if isinstance(entry.get("chain"), list) else []
+        # Written out of the file alone only when nothing that plays can be
+        # this channel: it is no track of the running rig, and every channel
+        # track of the running rig is still a channel of the file. A channel
+        # renamed by hand while it plays (`vocal` running, `vox` in the file)
+        # is a track the file no longer names, so it goes through the switch,
+        # which asks (re-review of PR #238).
+        try:
+            running = self.switching.read_config(run["described"].get("config"))
+            tracks = {t.get("name") for t in running.get("tracks") or [] if isinstance(t, dict)} - {rigfile.MASTER}
+            filed = {c.get("name") for c in raw.get("channels") or [] if isinstance(c, dict)}
+            playing = channel in tracks or not tracks <= filed
+        except Exception:  # noqa: BLE001 -- not known: switched, which plays whatever it is
+            playing = True
+        return {"raw": edited, "compiled": compiled, "channel": channel, "dropped": named, "playing": playing,
+                "plugins": [p.get("name") for p in chain if isinstance(p, dict)],
+                "send": f"{channel}{rigfile.SEND_SUFFIX}"}
+
+    def _write_removal(self, path: Path, planned: dict[str, Any]) -> dict[str, Any]:
+        """Write a planned removal into the rig file, then keep the file as it
+        was for Revert… (`_keep_for_revert`, as a load does); what was kept.
+        Off the loop, under the live lock."""
+        from . import saves
+
+        root = self._midi_root()
+        before = path.read_bytes()
+        kept, _ = saves.snapshots(root, path.stem)
+        kept_as = saves.kept_as(before, kept, lambda sid: saves.snapshot_bytes(root, path.stem, sid))
+        try:
+            rigfile.write_rig(path, planned["raw"])
+        except rigfile.RigFileError as exc:
+            raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
+        planned["before"], planned["after"] = before, path.read_bytes()  # for the one Undo (#209)
+        return self._keep_for_revert(path, before, kept_as, f"before removing {planned['channel']}",
+                                     f"the removal of {planned['channel']}")
+
+    # ======================================================================= #
+    # (end of a channel removed from the running rig)
     # ======================================================================= #
 
     # ======================================================================= #
@@ -8633,11 +8917,14 @@ def channel_load_request(body: Any) -> tuple[dict[str, str], bool, bool, str | N
     return {"rig": source["rig"], "channel": source["channel"]}, flags[0], flags[1], rig
 
 
-def load_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[str, str] | None:
+def load_refusal(state: dict[str, Any], log: list[dict[str, Any]], doing: str = "loading a channel",
+                 again: str = "load") -> tuple[str, str] | None:
     """`(reason, "unsaved")` when loading a channel onto the running rig must
     wait, or None. Pure. A revert's rule (`revert_refusal`, panel aside,
     which the route has refused already): the load writes the rig file and
-    plays it, so live work no save has written would be lost by it."""
+    plays it, so live work no save has written would be lost by it. A
+    channel's removal (#190) is held by the same rule, in its own words
+    (`doing`, and the verb to do it `again` with)."""
     unsaved = unsaved_entries(log, since=state.get("started_at"))
     if not unsaved:
         return None
@@ -8645,8 +8932,8 @@ def load_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[str,
     newest = unsaved[-1]
     count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
     return (f"{name} is running with {count} made through the agent and not saved (the newest: "
-            f"{describe_change(newest)}, at {newest.get('at')}), and loading a channel writes the rig file and "
-            'plays it: Save first, or load with discard ({"discard": true}) to drop them', "unsaved")
+            f"{describe_change(newest)}, at {newest.get('at')}), and {doing} writes the rig file and "
+            f'plays it: Save first, or {again} with discard ({{"discard": true}}) to drop them', "unsaved")
 
 
 def running_amp(state: dict[str, Any], raw: Any) -> str | None:
