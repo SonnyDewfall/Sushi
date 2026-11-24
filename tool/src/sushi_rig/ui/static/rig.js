@@ -2036,7 +2036,7 @@ export function volumeNudged(db, direction, max = VOLUME_MAX_DB, hard = false) {
 // lock: the agent has no performance lock yet (#29), so another client is
 // not held by it.
 const STRUCTURAL = { move: "reordering", add: "adding a plugin", remove: "removing a plugin",
-  load_channel: "loading a channel" };
+  load_channel: "loading a channel", remove_channel: "removing a channel" };
 
 export function lockRefusal(locked, op) {
   if (locked && op === "amp_model") {
@@ -2696,6 +2696,89 @@ export function loadOutcome(channel, from, answer, asked = {}) {
     : `Played by a restart${(body.why || []).length ? ` (${body.why.map((r) => r.detail).join("; ")})` : ""}.`;
   const kept = body.kept_before && body.kept_before.id ? " Revert… goes back." : "";
   return { ok: true, title: `Loaded ${name} onto ${channel}`, notes, offer: null,
+    text: `${how} Wrote ${body.file}; not committed.${kept}` };
+}
+
+// ---------------------------------------------------------------- a channel removed (#190)
+// A strip's Remove: the channel out of the running rig, its chain and send
+// with it (POST /rig/channels/<c>/remove). Asked first ("Remove?"), naming
+// what goes; a refusal's second tap drops unsaved work or the MIDI controls
+// that name it, and a removal that restarts Sushi asks "Restart?" first.
+
+// `restart: false` until "Restart?" was answered Yes, as the one Undo's.
+export function channelRemoveCall(channel, { discard = false, dropMidi = false, restart = false } = {}, rig = null) {
+  const json = { restart: !!restart };
+  if (rig) json.rig = rig;
+  if (discard) json.discard = true;
+  if (dropMidi) json.drop_midi = true;
+  return { path: `/rig/channels/${encodeURIComponent(channel)}/remove`, json };
+}
+
+// The controls of a rig's MIDI map (GET /midi's `assignments.controls`)
+// that name `channel`, as rigedit.midi_naming finds them: a parameter or a
+// bypass of its plugin, its mute or volume, a blend of it and another.
+export function midiNaming(controls, channel) {
+  const out = [];
+  for (const c of Array.isArray(controls) ? controls : []) {
+    if (!c || typeof c !== "object") continue;
+    const binding = ["parameter", "bypass", "mute", "volume", "blend"].find((b) => b in c);
+    if (!binding) continue;
+    const t = c[binding];
+    const named = binding === "blend" ? Array.isArray(t) && t.includes(channel)
+      : binding === "mute" || binding === "volume" ? t === channel
+        : typeof t === "string" && t.split("/")[0] === channel;
+    if (named) out.push({ control: c.control, binding, target: t });
+  }
+  return out;
+}
+
+// What goes with channel `c` (the file's: `{name, plugins}`), for the ask:
+// `{words, title, midi}`. `words` is on the page ("vocal · 2 plugins ·
+// 1 MIDI"), the rest its title. `controls` is null when the map is not known.
+export function channelGoes(c, controls) {
+  const plugins = (c && c.plugins) || [];
+  const midi = midiNaming(controls, c.name);
+  const words = [c.name, `${plugins.length} plugin${plugins.length === 1 ? "" : "s"}`, ...(midi.length ? [`${midi.length} MIDI`] : [])].join(" · ");
+  const said = midi.map((m) => `${m.control} (${m.binding} ${Array.isArray(m.target) ? m.target.join(", ") : m.target})`);
+  const title = `${c.name}, its chain (${plugins.join(", ") || "empty"}) and its send (${c.name}_send)`
+    + (midi.length ? `, and MIDI ${said.join(", ")}` : "") + " go.";
+  return { words, title, midi };
+}
+
+// What a removal said: `{ok, title, text, reason, notes, offer, ask}`. A
+// refusal a second tap answers offers it: unsaved work (drop it), MIDI
+// controls that name the channel (drop them, each named on the page); a
+// removal that restarts Sushi asks (`ask: "restart"`). `asked` is what the
+// call already said yes to, kept by the next.
+export function removeOutcome(channel, answer, asked = {}) {
+  const body = answer.body || {};
+  if (!answer.ok) {
+    // Written, and the rig not made to play it (`not_switched`, or 504): said
+    // as that, since the file no longer has the channel.
+    const title = body.written ? "Not switched" : "Not removed";
+    const out = { ok: false, title, reason: answer.reason, notes: [], offer: null, ask: null };
+    if (body.midi_note) out.notes.push(`${body.midi_note}.`);
+    if (answer.code === "unsaved") out.offer = { ...asked, label: "Remove anyway", discard: true };
+    if (answer.code === "midi") {
+      const mappings = body.mappings || [];
+      out.notes = mappings.map((m) => `${m.control}: ${m.binding} ${Array.isArray(m.target) ? m.target.join(", ") : m.target}. ${m.why}.`);
+      out.midi = mappings.map((m) => m.control).join(", ");
+      out.offer = { ...asked, label: `Drop ${mappings.length} and remove`, dropMidi: true };
+    }
+    if (answer.code === "restarts") {
+      out.ask = "restart";
+      out.offer = { ...asked, restart: true };
+    }
+    return out;
+  }
+  const notes = [];
+  for (const d of body.dropped || []) notes.push(`Dropped MIDI ${d.control} (${d.binding} ${Array.isArray(d.target) ? d.target.join(", ") : d.target}).`);
+  if (body.discard && body.discard.note) notes.push(`${body.discard.note}.`);
+  // `file`: a channel not yet playing, taken out of the file alone.
+  const how = body.how === "live" ? "Live." : body.how === "file" ? "Removed from file."
+    : `Restarted${(body.why || []).length ? ` (${body.why.map((r) => r.detail).join("; ")})` : ""}.`;
+  const kept = body.kept_before && body.kept_before.id ? " Revert… goes back." : "";
+  return { ok: true, title: `Removed ${channel}`, notes, offer: null, ask: null,
     text: `${how} Wrote ${body.file}; not committed.${kept}` };
 }
 
@@ -3482,12 +3565,13 @@ export function undoCall(next, { discard = false, restart = false } = {}) {
 // What the lock holds is what it holds of the change itself (`lockRefusal`):
 // the rig's structure (a move, an add, a remove), the amp's model (it
 // restarts the amp), a pedal's assignment, and what switches the rig back
-// (a revert's or a channel load's Undo: the rig's structure, as a load is).
+// (a revert's, a channel load's or a channel removal's Undo: the rig's
+// structure, as a load and a removal are).
 // A knob, a fader and a bypass are let through, as they are locked, and so
 // are the rack's file edits that are not behind the lock (a channel, an
 // input, a save, a delete).
 const UNDO_STRUCTURAL = ["move", "add", "remove", "amp_model"];
-const UNDO_LOCKED_ACTS = ["pedal", "load", "revert"];
+const UNDO_LOCKED_ACTS = ["pedal", "load", "revert", "remove_channel"];
 
 // The button: `{disabled, title, cant}`. `answer` is GET /undo's (request's
 // shape), `screen` "rack" or "stage": on the stage it is for the live edits.

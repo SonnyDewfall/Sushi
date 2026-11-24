@@ -1236,6 +1236,30 @@ def remove_live_processor(
         _wait(c.audio_graph.delete_processor_from_track(processor_id, track_id), strict=True)
 
 
+def remove_live_track(track: str, address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> None:
+    """Delete track `track` and everything on it (a channel removed from the
+    running rig, #190): each processor from the back of its chain to the
+    front, its send first, then the track. Strict, each command as
+    `add_live_processor`'s. A processor is taken off before the track goes,
+    rather than left for `DeleteTrack` to take with it, since what Sushi
+    does with a track's processors when it is deleted is not known here.
+
+    NOT RUN AGAINST A LIVE SUSHI. Read from elkpy 1.3.0's installed source:
+    `AudioGraphController.delete_track(self, track_id: int)`, beside the
+    `delete_processor_from_track` the removes use. What is unverified: that
+    Sushi 1.3.0 deletes a track while it plays, and that the engine inputs
+    and outputs it was connected to are let go with it. A command that fails
+    raises, the agent's switch then restarts into the next rig."""
+    with _connection(address, controller) as c:
+        chains, ids = _walk_chains(c)
+        if track not in chains:
+            raise LiveError(f"there is no track {track!r} to remove (the tracks are {sorted(chains)})")
+        track_id = ids[track]
+        for name in reversed(chains[track]):
+            _wait(c.audio_graph.delete_processor_from_track(ids[name], track_id), strict=True)
+        _wait(c.audio_graph.delete_track(track_id), strict=True)
+
+
 # --------------------------------------------------------------------------- #
 # elkpy's prints, for a long-running caller (the agent, #111)
 # --------------------------------------------------------------------------- #

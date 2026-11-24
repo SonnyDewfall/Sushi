@@ -138,7 +138,7 @@ SETTLE = settle(None)
 # The steps of a live switch (`rigfile.SwitchStep.op`) that change the graph.
 # A plan puts them together, after the bypasses that go on and before the
 # parameters (`rigfile.diff`).
-STRUCTURAL = frozenset({"remove", "move", "add"})
+STRUCTURAL = frozenset({"remove", "move", "add", "remove_track"})
 
 
 def switch_span(ops: list[str]) -> tuple[int, int] | None:

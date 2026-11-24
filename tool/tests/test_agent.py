@@ -2538,8 +2538,20 @@ class RigLive(FakeLive):
             for table in (self.plugins, self.values, self.properties, self.bypassed, self.ids):
                 table.pop(name, None)
 
+    def remove_track(self, connection, track):
+        # A channel removed from the running rig (#190): the track and all
+        # on it, as `live.remove_live_track` deletes them.
+        self._enter("remove_track", connection, track)
+        for name in self.chains.pop(track):
+            for table in (self.plugins, self.values, self.properties, self.bypassed, self.ids):
+                table.pop(name, None)
+        self.tracks.remove(track)
+        self.values.pop(track, None)
+        self.ids.pop(track, None)
+
     def writes(self):
-        return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move", "add", "remove")]
+        return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move", "add", "remove",
+                                                  "remove_track")]
 
 
 HEADLESS = {"supervisor_pid": 4242, "pgid": 4242, "mode": "headless", "config_name": "electric-delay",

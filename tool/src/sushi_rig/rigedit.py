@@ -166,6 +166,90 @@ def with_input(raw: dict[str, Any], channel: str, change: dict[str, str]) -> dic
                       f"{', '.join(map(str, names)) or 'none'})")
 
 
+# --------------------------------------------------------------------------- #
+# A channel removed (#190): the rig file without it, and what named it
+# --------------------------------------------------------------------------- #
+#
+# What goes with a channel: its chain, its send (the compiler's, never in the
+# file) and every control of the rig's MIDI map that names it. A parameter
+# or a bypass names one of its plugins (`channel/plugin`), a mute or a volume
+# the channel, and a blend it and another: a blend needs two channels, so it
+# goes too. Nothing else in a rig file names a channel. Whether what is left
+# is a rig is the compiler's to say, as for every edit.
+
+_REMOVE_KEYS = ("rig", "discard", "drop_midi", "restart")
+
+
+def remove_request(body: Any) -> dict[str, Any]:
+    """`{"rig", "discard", "drop_midi", "restart"}` from `POST
+    /rig/channels/{channel}/remove`'s body, every key optional: `rig`, the
+    rig the page drew (None when not said), refused as `changed` when
+    another is running; `discard` and `drop_midi`, true to drop unsaved work
+    or the MIDI map's controls that name the channel; `restart`, false to be
+    asked before a removal that restarts Sushi, true once asked (None
+    restarts where it must, as a load from curl does)."""
+    body = _only({} if body is None else body, _REMOVE_KEYS, "the body of a channel's removal")
+    rig = body.get("rig")
+    if rig is not None and (not isinstance(rig, str) or not rig.strip()):
+        raise EditRequestError(f"the removal: 'rig' must name the rig it is meant for, not {rig!r}")
+    out: dict[str, Any] = {"rig": rig}
+    for key in ("discard", "drop_midi", "restart"):
+        value = body.get(key)
+        if value is not None and not isinstance(value, bool):
+            raise EditRequestError(f"the removal: {key!r} must be true or false, not {value!r}")
+        out[key] = bool(value) if key != "restart" else value
+    return out
+
+
+def without_channel(raw: dict[str, Any], channel: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """`(raw without channel `channel`, the channel's entry)`; `raw` is left
+    as it is. `LookupError` for a channel it does not have. Its MIDI map is
+    left as it is: `midi_naming` says what in it names the channel."""
+    out = copy.deepcopy(raw)
+    channels = out.get("channels") if isinstance(out.get("channels"), list) else []
+    index = next((i for i, e in enumerate(channels) if isinstance(e, dict) and e.get("name") == channel), None)
+    if index is None:
+        names = [e.get("name") for e in channels if isinstance(e, dict)]
+        raise LookupError(f"{out.get('name')} has no channel called {channel} (it has: "
+                          f"{', '.join(map(str, names)) or 'none'})")
+    entry = channels.pop(index)
+    return out, entry
+
+
+def midi_naming(midi: Any, channel: str) -> list[dict[str, Any]]:
+    """Each control of a rig file's `midi:` section that names channel
+    `channel`, as `{"control", "binding", "target", "why"}`, in the file's
+    order: a parameter or a bypass of one of its plugins, its mute, its
+    volume, a blend of it and another. Pure; an entry the compiler would
+    refuse anyway is passed over."""
+    controls = midi.get("controls") if isinstance(midi, dict) else None
+    out = []
+    for entry in controls if isinstance(controls, list) else []:
+        bound = assignment_of(entry)
+        if bound is None:
+            continue
+        binding, target = bound
+        if binding in ("parameter", "bypass"):
+            named = isinstance(target, str) and target.split("/")[0] == channel
+            why = "its plugin goes with the channel"
+        elif binding in ("mute", "volume"):
+            named = target == channel
+            why = f"it is the channel's {binding}"
+        else:  # blend
+            named = isinstance(target, list) and channel in target
+            why = "a blend needs two channels"
+        if named:
+            out.append({"control": entry.get("control"), "binding": binding,
+                        "target": list(target) if isinstance(target, list) else target, "why": why})
+    return out
+
+
+def named_said(named: dict[str, Any]) -> str:
+    """One control `midi_naming` found, in words: "pad1 (bypass vocal/eq):
+    its plugin goes with the channel"."""
+    return f"{named['control']} ({said_assignment(named['binding'], named['target'])}): {named['why']}"
+
+
 def channels_of(raw: Any) -> list[dict[str, Any]]:
     """A rig file's channels as the page lists them: name, input, width,
     level and the names of the plugins in its chain, as the file says (a

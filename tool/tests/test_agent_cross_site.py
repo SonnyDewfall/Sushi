@@ -411,7 +411,7 @@ def test_every_registered_route_is_behind_the_guard():
     writes = [(m, p) for m, p in routes if m in STATE_CHANGING]
     paths = {path for _, path in writes}
     # Not vacuous: the routes #160 and #162 guarded by hand, and others.
-    assert {"/rigs/x/delete", "/rigs/x/restore", "/rig/channels/x/load",
+    assert {"/rigs/x/delete", "/rigs/x/restore", "/rig/channels/x/load", "/rig/channels/x/remove",
             "/rig/up", "/rig/down", "/live/parameter", "/rig/save", "/record/start", "/takes/open",
             "/rig/midi/assign",  # #192's pedal assignment
             "/visualiser/tap", "/visualiser/tap/release"} <= paths, paths
