@@ -344,10 +344,9 @@ REFUSALS = [
      "no_source", "there is no rig called 'nope'"),
     ("a from naming no channel", {"name": "copy", "channels": [mono("a", **{"from": {"rig": "accustomed", "channel": "x"}})]},
      "no_source", "accustomed has no channel called x (it has: board)"),
-    ("two copies of one chain", {"name": "copies", "channels": [
-        mono("a", **{"from": {"rig": "accustomed", "channel": "board"}}),
-        mono("b", **{"from": {"rig": "accustomed", "channel": "board"}})]},
-     "rig_problem", "duplicate name"),
+    ("a copy whose names would be too long", {"name": "copies", "channels": [
+        mono("a" * 60, **{"from": {"rig": "accustomed", "channel": "board"}})]},
+     "name", "would be the name of compressor there"),
 ]
 
 
@@ -399,7 +398,9 @@ def test_a_new_rig_can_start_a_channel_from_another_rigs_channel(root):
                                              "file": "config/rigs/guitar_vocal.yaml", "plugins": 5,
                                              "git": "unchanged"}
     channel = rig_doc(root, "vocal-only")["channels"][0]
-    assert channel["chain"] == source["chain"]
+    # Copied as a load copies (#208): each plugin named for the new channel,
+    # settings and all as written.
+    assert channel["chain"] == [{**p, "name": p["name"].replace("vocal_", "voice_", 1)} for p in source["chain"]]
     assert "# voice: its chain and level copied from config/rigs/guitar_vocal.yaml's vocal." in rig_text(root, "vocal-only")
     compile_named_rig("vocal-only", root, machine_file(root))
 
@@ -479,13 +480,13 @@ def test_a_channel_added_with_a_copied_chain_brings_its_entries_and_comments_sta
     before = rig_text(root, "guitar_vocal")
     status, answer = call(agent, "POST", "/rigs/guitar_vocal/channels/add", json=mono(
         "board", **{"from": {"rig": "accustomed", "channel": "board"}}))
-    # accustomed's board has plugins named as guitar_vocal's guitar has none:
-    # the compiler decides whether the names clash, and here they do not.
+    # Each plugin is named for the new channel (#208): accustomed's board's
+    # names are unprefixed, so each gains "board_".
     assert status == 200, answer
     after = rig_text(root, "guitar_vocal")
     assert all(line in after for line in before.splitlines()), "every line of the file is kept, comments too"
     assert [p["name"] for p in rig_doc(root, "guitar_vocal")["channels"][2]["chain"]] == \
-        [p["name"] for p in rig_doc(root, "accustomed")["channels"][0]["chain"]]
+        [f"board_{p['name']}" for p in rig_doc(root, "accustomed")["channels"][0]["chain"]]
     compile_named_rig("guitar_vocal", root, machine_file(root))
 
 

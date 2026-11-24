@@ -232,5 +232,57 @@ def test_a_channel_is_added_from_another_rigs_channel(browser, files_served):
     expect(p.locator(".rigfile-result.ok")).to_contain_text("Added keys to electric_board")
     keys = rig(files_served)["channels"][2]
     assert keys["name"] == "keys" and keys["input"] == "keys-in"
-    assert [e["name"] for e in keys["chain"]] == ["drive", "echo"], "a start copies the chain as written (#125)"
+    assert [e["name"] for e in keys["chain"]] == ["keys_drive", "keys_echo"], "named for the channel, as a load names"
+    page.close()
+
+
+def test_a_loads_answer_stays_with_its_channel_and_its_second_tap_goes_there(browser, files_served):
+    """Review of PR #234: a load onto one strip, waiting, leaves the other
+    strips' Load… shut; its refusal is shown in its own panel only, and
+    the second tap it offers loads onto that channel, naming the rig the
+    page drew (`rig`)."""
+    page = rack(browser, files_served)
+    p = page.page
+    unlock(p)
+    status = p.evaluate("""async () => (await fetch('/live/parameter', {method: 'POST', headers: {'content-type':
+      'application/json'}, body: JSON.stringify({processor: 'vocal_send', parameter: 'gain', value: 0.7})})).status""")
+    assert status == 200
+    held, sent = [], []
+
+    def hold(route):
+        sent.append((route.request.url, route.request.post_data_json))
+        held.append(route)
+
+    p.route("**/rig/channels/*/load", hold)
+    group = panel(p, "vocal")
+    group.get_by_label("Channel to load onto vocal").select_option(label="spare / lead")
+    group.get_by_role("button", name="Load", exact=True).click()
+    expect(group.get_by_role("button", name="Loading…")).to_be_visible()
+    board = p.get_by_role("button", name="Load a channel onto board")
+    expect(board).to_be_disabled()
+    assert sent == [(sent[0][0], {"from": {"rig": "spare", "channel": "lead"}, "rig": "electric_board"})]
+    assert sent[0][0].endswith("/rig/channels/vocal/load")
+    held.pop().continue_()
+    result = group.locator(".load-result")
+    expect(result).to_contain_text("Not loaded: spare / lead onto vocal")
+    expect(board).to_be_enabled()
+    # Another strip's panel shows none of it.
+    other = panel(p, "board")
+    expect(other.locator(".load-result")).to_have_count(0)
+    expect(p.locator(".load-result")).to_have_count(0)
+    # Back to the vocal: its answer is gone with the panel it was in, and a
+    # load there again is the vocal's, its second tap the vocal's too.
+    p.unroute("**/rig/channels/*/load")
+    p.route("**/rig/channels/*/load", lambda route: sent.append(
+        (route.request.url, route.request.post_data_json)) or route.continue_())
+    group = panel(p, "vocal")
+    group.get_by_label("Channel to load onto vocal").select_option(label="spare / lead")
+    group.get_by_role("button", name="Load", exact=True).click()
+    expect(group.locator(".load-result")).to_contain_text("Not loaded: spare / lead onto vocal")
+    group.get_by_role("button", name="Load anyway").click()
+    expect(group.locator(".load-result")).to_contain_text("Loaded spare / lead onto vocal")
+    assert [url.rsplit("/", 2)[-2] for url, _ in sent] == ["vocal", "vocal", "vocal"]
+    assert sent[-1][1] == {"from": {"rig": "spare", "channel": "lead"}, "discard": True, "rig": "electric_board"}
+    assert [e["name"] for e in rig(files_served)["channels"][1]["chain"]] == ["vocal_drive", "vocal_echo"]
+    assert page.errors == []
     page.close()

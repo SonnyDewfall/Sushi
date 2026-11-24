@@ -694,7 +694,10 @@ role and `mono` or `stereo`, and a master on `monitor-out` (as `convert`
 writes every rig's), with empty chains, unless a channel says `from: {rig,
 channel}`, which copies that channel's chain and `level:` from that rig's
 file as it stands now (not as git last committed it: a tone saved and not yet
-committed is the one you hear; the answer says what git says of that file).
+committed is the one you hear; the answer says what git says of that file,
+read once the lifecycle lock is let go). Each plugin is named for the new
+channel as a load names it (`<channel>_<base>`, below), so two channels may
+start from one channel, and a rig's channel from that rig's own.
 `POST /rigs/<rig>/channels/add` adds a channel to the end of a rig file, and
 `POST /rigs/<rig>/channels/<channel>/input` sets a channel's input, its
 width, or both. Both edit the file in place with `write_rig`, keeping its
@@ -998,7 +1001,7 @@ compiler's (`rig.compile_rig_draft`). The page lists the channels from
 `GET /rigs` and `GET /rigs/<rig>/channels`, as "start from" does.
 
 - **`POST /rig/channels/<channel>/load {"from": {"rig", "channel"},
-  "discard"?, "drop_midi"?}`**: the channel's chain and level replaced by
+  "rig"?, "discard"?, "drop_midi"?}`**: the channel's chain and level replaced by
   the source's, each plugin named for the channel (`processor_name`:
   `lead_compressor` on `lead`, the source channel's prefix taken off and
   this one's put on, always, so two base names never become one name), its
@@ -1013,7 +1016,9 @@ compiler's (`rig.compile_rig_draft`). The page lists the channels from
   where `rigfile.diff` can do it, by restart where not, the answer saying
   `how` and `why`. Its `op: "rig"` entry carries `args.load` and is the
   baseline: nothing is unsaved after it and undo stops there. Refused, each
-  before anything is written: `no_rig`, `panel`, `v1`, `no_source` (no such
+  before anything is written: `no_rig`, `panel`, `v1`, `changed` (`rig`
+  given, the rig the page drew, and another running by the time the lock
+  is won: a Program Change between), `no_source` (no such
   rig in config/rigs/, which is looked up by name and never made a path; no
   such channel in it; a file that will not read), `no_channel`, `name`,
   `rig_problem` (the compiler's words, a name another channel has among
@@ -1031,7 +1036,8 @@ compiler's (`rig.compile_rig_draft`). The page lists the channels from
   Sushi's `cc_mappings`, loaded only with the config, so one followed or
   dropped makes the load a restart; a pedal's bypass is the agent's, and
   stays live. The answer's `from` names the source file and what git says
-  of it, `amp` says whether the amp is in front of the channel (and when a
+  of it (read after the lifecycle lock, `null` if git does not answer
+  within the save's timeout), `amp` says whether the amp is in front of the channel (and when a
   guitar channel heard through the amp in its own rig lands where none
   is), and `width` when the source is the other width. **Discarded work is
   put back** (`discard_plan`, shared with a revert with `discard`): the
@@ -1047,9 +1053,9 @@ compiler's (`rig.compile_rig_draft`). The page lists the channels from
   page (`403 cross_site`), as every write does ([Another site's page, and
   DNS rebinding](#another-sites-page-and-dns-rebinding)).
 - **"Start from"** (`from: {"rig", "channel"}` in `POST /rigs/new` and
-  `POST /rigs/<rig>/channels/add`, #125, below) copies a channel's chain
-  with its names as written, so two copies of one channel in one rig are
-  the compiler's `duplicate name`.
+  `POST /rigs/<rig>/channels/add`, #125, above) copies a channel's chain
+  as a load does, each plugin named for the new channel, so two copies of
+  one channel in one rig compile.
 
 **The amp is not part of a channel.** It is one Carla instance patched in
 front of `guitar-in` (`amp.amp_patchbay`), so it is in front of every

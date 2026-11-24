@@ -6217,6 +6217,8 @@ class Agent:
         lifecycle lock (`_rigfile_git_after`), and without what was only for
         the route (`run`, `path`)."""
         await self._rigfile_git_after(answer, answer["path"])
+        await self._sources_git_after([c.get("from") for c in answer.get("channels") or []]
+                                      + [(answer.get("change") or {}).get("from")])
         return {k: v for k, v in answer.items() if k not in ("run", "path")}
 
     def _rigfile_copy(self, change: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -6225,9 +6227,16 @@ class Agent:
         or `(None, None)`. Read from the file as it stands, not from git's
         commit of it: a tone saved and not yet committed is the one the
         player hears, and copying an older one would be the silent kind of
-        wrong. What git says of that file is in the answer (`from`)."""
-        from . import rigedit
-        from .save import file_git_state
+        wrong.
+
+        The chain is copied as a load copies it (`channelcopy.source_of`,
+        `loaded_chain`): each plugin named for the new channel, so two
+        channels may start from one channel, and a channel of a rig may
+        start from that rig's own channel (#208, as a preset could, #127).
+        A name past the naming rule is `name`; a clash is the compiler's.
+        What git says of the source file (`said["git"]`) is filled in after
+        the lifecycle lock is let go (`_sources_git_after`), never under it."""
+        from . import channelcopy
 
         source = change.get("from")
         if not source:
@@ -6241,15 +6250,43 @@ class Agent:
 
         try:
             raw = yaml.safe_load(path.read_text())
-            copied = rigedit.source_channel(raw, source["rig"], source["channel"])
+            copied_from = channelcopy.source_of(raw, source["rig"], source["channel"])
         except LookupError as exc:
             raise RigFileRefused(f"{change['name']} cannot start from it: {exc}", "no_source") from exc
         except Exception as exc:  # noqa: BLE001 -- a source that will not read is said
             raise RigFileRefused(f"{path.name} could not be read to start {change['name']} from: "
                                  f"{type(exc).__name__}: {exc}", "no_source") from exc
-        state = file_git_state(root, path) or {}
+        bad = channelcopy.name_problems(change["name"], copied_from)
+        if bad:
+            raise RigFileRefused(f"nothing was written: {'; '.join(bad)}", "name")
+        copied: dict[str, Any] = {"chain": channelcopy.loaded_chain(copied_from, change["name"])}
+        if copied_from.level:
+            copied["level"] = copied_from.level
         return copied, {"rig": source["rig"], "channel": source["channel"], "file": self._save_shown(path),
-                        "plugins": len(copied["chain"]), "git": state.get("file")}
+                        "plugins": len(copied["chain"]), "git": None}
+
+    async def _sources_git_after(self, sources: list[dict[str, Any] | None]) -> None:
+        """Each copy's `from` given `git`, what git says of the rig file it
+        was copied from: read once the lifecycle lock is let go and within
+        `SAVE_TIMEOUT`, as `_rigfile_git_after` reads the file written
+        (review of PR #234). Past the deadline each stays `null`, not known."""
+        from .save import file_git_state
+
+        found = [s for s in sources if s]
+        if not found:
+            return
+        root = self._midi_root()
+
+        def read() -> list[Any]:
+            return [(file_git_state(root, root / "config" / "rigs" / f"{s['rig']}.yaml") or {}).get("file")
+                    for s in found]
+
+        try:
+            states = await asyncio.wait_for(asyncio.to_thread(read), SAVE_TIMEOUT)
+        except asyncio.TimeoutError:
+            states = [None] * len(found)
+        for s, state in zip(found, states):
+            s["git"] = state
 
     def _rigfile_compile(self, raw: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         """`rig.compile_rig_draft` against the run's machine file, or the
@@ -6915,7 +6952,7 @@ class Agent:
 
     async def load_channel_route(self, request):
         """`POST /rig/channels/{channel}/load {"from": {"rig", "channel"},
-        "discard"?, "drop_midi"?}`: load channel `from.channel` of rig
+        "rig"?, "discard"?, "drop_midi"?}`: load channel `from.channel` of rig
         `from.rig` (config/rigs/) onto the running rig's channel `channel`:
         its chain replaced by the source's, settings and bypass as that file
         has them, each plugin named for the channel
@@ -6933,7 +6970,8 @@ class Agent:
         (`saves.keep`) unless a save already keeps it, so Revert… goes back.
 
         Refused before anything is written, each a 409 with its reason:
-        `no_rig`, `panel`, `v1` (as a save); `no_source` (no such rig in
+        `no_rig`, `panel`, `v1` (as a save); `changed`, when `rig` is given
+        and is not the running rig (the page sends the rig it drew); `no_source` (no such rig in
         config/rigs/, no such channel in it, or a file that will not read);
         `no_channel`; `name` (a name a load makes that the naming rule
         refuses); `midi`, when a mapping of the rig's MIDI map would point at
@@ -6953,7 +6991,7 @@ class Agent:
 
         Not run against a live Sushi: shown against the fakes of the tests."""
         try:
-            source, discard, drop_midi = channel_load_request(await self._json_body(request))
+            source, discard, drop_midi, meant = channel_load_request(await self._json_body(request))
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
         channel = request.match_info["channel"]
@@ -6969,6 +7007,9 @@ class Agent:
                 if refusal is not None:
                     raise _conflict(*refusal)
                 path = run["running"]
+                if meant is not None and path.stem != meant:
+                    raise _conflict(f"the running rig is {path.stem}, not {meant}, so nothing was loaded: look at "
+                                    "the rig and load again", "changed")
                 try:
                     planned = await self._rigfile_thread(
                         request, path, lambda: self._plan_load(path, source, channel, drop_midi, run))
@@ -7017,6 +7058,7 @@ class Agent:
                 if path is not None:
                     await self._midi_sync()  # the switch stopped the listener; it follows the rig now
         await self._rigfile_git_after(answer, path)
+        await self._sources_git_after([answer.get("from")])
         if answer["ok"]:
             return web.json_response(answer)
         return web.json_response(answer, status=504 if answer.get("abandoned") else 409)
@@ -7050,7 +7092,6 @@ class Agent:
         import yaml
 
         from . import channelcopy
-        from .save import file_git_state
 
         source, source_path = self._read_source(source_ref["rig"], source_ref["channel"])
         name = source.name
@@ -7092,14 +7133,13 @@ class Agent:
         if source.width != old.get("width"):
             width = (f"{name} is {source.width}; {channel} stays {old.get('width')}, as its input "
                      f"({old.get('input')}) is")
-        state = file_git_state(self._midi_root(), source_path) or {}
         return {
             "raw": edited, "source": source,
             "names": {e["name"]: n["name"] for e, n in zip(source.chain, entry["chain"])},
             "followed": followed, "dropped": dropped, "width": width,
             "amp": channelcopy.amp_note(source, channel, str(old.get("input")), rig_amp),
             "from": {"rig": source.rig, "channel": source.channel, "file": self._save_shown(source_path),
-                     "plugins": len(source.chain), "git": state.get("file")},
+                     "plugins": len(source.chain), "git": None},  # filled after the lock
             "name": name, "channel": channel,
         }
 
@@ -7963,27 +8003,35 @@ def discard_said(discarded: list[dict[str, Any]], answer: dict[str, Any]) -> dic
                         + (" (a plugin added, removed or moved cannot be put back live)" if structural else "")))}
 
 
-def channel_load_request(body: Any) -> tuple[dict[str, str], bool, bool]:
-    """`(source, discard, drop_midi)` from a load's body, or `AgentError`
-    (400): `from`, `{"rig", "channel"}`, each text (the rig is looked up in
-    config/rigs/ by the route, never made a path as given); `discard` and
-    `drop_midi`, true or absent. Anything beside them is refused."""
-    keys = {"from", "discard", "drop_midi"}
-    shape = ('the body of a load is {"from": {"rig": "<rig>", "channel": "<channel>"}}, with "discard": true to '
-             'drop unsaved work and "drop_midi": true to drop MIDI mappings it would orphan')
+def channel_load_request(body: Any) -> tuple[dict[str, str], bool, bool, str | None]:
+    """`(source, discard, drop_midi, rig)` from a load's body, or
+    `AgentError` (400): `from`, `{"rig", "channel"}`, each text (the rig is
+    looked up in config/rigs/ by the route, never made a path as given);
+    `discard` and `drop_midi`, true or absent; `rig`, the rig the page
+    meant to load onto, text or absent (review of PR #234: a Program Change
+    between the page's render and the click must not land the load on
+    another rig's channel of the same name). Anything beside them is
+    refused."""
+    keys = {"from", "discard", "drop_midi", "rig"}
+    shape = ('the body of a load is {"from": {"rig": "<rig>", "channel": "<channel>"}}, with "rig": "<rig>" for '
+             'the rig it is meant for, "discard": true to drop unsaved work and "drop_midi": true to drop MIDI '
+             'mappings it would orphan')
     if not isinstance(body, dict) or not set(body) <= keys:
         raise AgentError(f"{shape}, not {body!r}")
     source = body.get("from")
     if not isinstance(source, dict) or set(source) != {"rig", "channel"} or not all(
             isinstance(source[k], str) and source[k].strip() for k in ("rig", "channel")):
         raise AgentError(f"{shape}, not {body!r}")
+    rig = body.get("rig")
+    if rig is not None and not (isinstance(rig, str) and rig.strip()):
+        raise AgentError(f"'rig' must name the rig the load is for, not {rig!r}")
     flags = []
     for key in ("discard", "drop_midi"):
         value = body.get(key, False)
         if not isinstance(value, bool):
             raise AgentError(f"{key!r} must be true or false, not {value!r}")
         flags.append(value)
-    return {"rig": source["rig"], "channel": source["channel"]}, flags[0], flags[1]
+    return {"rig": source["rig"], "channel": source["channel"]}, flags[0], flags[1], rig
 
 
 def load_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[str, str] | None:

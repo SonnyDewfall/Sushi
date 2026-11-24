@@ -118,7 +118,9 @@ const state = {
   pedalUi: { open: null, confirm: null, pending: null, result: null, restartConfirm: false, device: null,
     lights: {}, refused: null, row: null },
   // A strip's Load… panel (#208): a channel of another rig onto this one.
-  loadUi: { channel: null, choice: null, pending: false, result: null, rig: null },
+  // `pending` and `result` name the channel and rig the load was for, so an
+  // answer is shown in its own strip's panel only.
+  loadUi: { channel: null, choice: null, pending: null, result: null, rig: null },
   open: new Set(),           // units opened, by name
   // The rack's tabs and rows (#135):
   tab: { rig: null, id: null },  // the tab the player chose (or the one remembered), and the rig it is for
@@ -4081,7 +4083,7 @@ function stripsRegion(el, model, unsaved) {
     const lu = state.loadUi;
     const loadOpen = lu.channel === name && lu.rig === view.rig;
     const rebuilt = patch(slot, JSON.stringify([view.blocked ? "blocked" : c === undefined ? "reading" : c, editing,
-      editing ? [w.change, choices] : null, !!w.pending, view.rig || null,
+      editing ? [w.change, choices] : null, !!w.pending, view.rig || null, !!lu.pending,
       loadOpen ? [lu.choice, lu.pending, lu.result, R.sourceChoices(state.rigs, state.rigChannels, { rig: view.rig, channel: name }),
         state.locked, !!state.pending] : null]), () => (
       view.blocked ? null
@@ -4127,8 +4129,10 @@ function wiringRow(view, c, choices) {
       onclick: () => { w.editing = c.name; w.change = { input: c.input, width: c.width }; w.result = null; render(); } }, "Change input"));
     const lu = state.loadUi;
     const open = lu.channel === c.name && lu.rig === view.rig;
+    // While a load waits, another strip's Load… stays shut: its answer is the
+    // waiting load's strip's, never another's.
     row.append(h("button", { class: "rig-act small load-toggle", "aria-expanded": open ? "true" : "false",
-      "aria-label": `Load a channel onto ${c.name}`,
+      "aria-label": `Load a channel onto ${c.name}`, disabled: !!lu.pending && !open,
       onclick: () => {
         Object.assign(state.loadUi, open ? { channel: null } : { channel: c.name, rig: view.rig, choice: null, result: null });
         render();
@@ -4167,37 +4171,37 @@ function loadPanel(view, c) {
       g.options.map((o) => h("option", { value: o.value, title: o.title }, o.label)))));
   select.value = R.sourceValue(lu.choice);
   select.addEventListener("change", () => { lu.choice = R.sourceFrom(select.value); lu.result = null; render(); });
-  const result = lu.result;
+  const result = lu.result && lu.result.channel === c.name && lu.result.rig === view.rig ? lu.result : null;
   return h("div", { class: "load-panel", role: "group", "aria-label": `Load onto ${c.name}` },
     h("label", { class: "selector" }, h("span", { class: "label" }, "From"), select),
     h("button", { type: "button", class: "save-act primary load-go", title: locked,
-      disabled: lu.pending || !!state.pending || !!locked || !lu.choice,
-      onclick: () => loadChannel(c.name, lu.choice, {}) }, lu.pending ? "Loading…" : "Load"),
+      disabled: !!lu.pending || !!state.pending || !!locked || !lu.choice,
+      onclick: () => loadChannel(c.name, view.rig, lu.choice, {}) }, lu.pending ? "Loading…" : "Load"),
     locked ? h("p", { class: "sub" }, locked) : null,
     result ? h("div", { class: `save-result load-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
       h("strong", {}, result.title),
       h("span", { class: "said" }, result.ok ? result.text : result.reason),
       result.notes.length ? h("ul", { class: "load-notes" }, result.notes.map((n) => h("li", {}, n))) : null,
-      result.offer ? h("button", { class: "rig-act offer", disabled: lu.pending || !!locked,
-        onclick: () => loadChannel(c.name, result.from, result.offer) }, result.offer.label) : null,
+      result.offer ? h("button", { class: "rig-act offer", disabled: !!lu.pending || !!locked,
+        onclick: () => loadChannel(result.channel, result.rig, result.from, result.offer) }, result.offer.label) : null,
       h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { lu.result = null; render(); } }, "×")) : null,
     h("button", { type: "button", class: "save-act load-close", onclick: () => { lu.channel = null; render(); } }, "Close"),
     helpAnchor("loadChannel"));
 }
 
-async function loadChannel(channel, from, asked) {
+async function loadChannel(channel, rig, from, asked) {
   const lu = state.loadUi;
   if (lu.pending || !from || R.lockRefusal(state.locked, "load_channel")) return;
-  lu.pending = true;
+  lu.pending = { channel, rig };
   render();
-  const call = R.channelLoadCall(channel, from, asked);
+  const call = R.channelLoadCall(channel, from, asked, rig);
   let answer;
   try {
     answer = await request("POST", call.path, call.json);
   } finally {
-    lu.pending = false;
+    lu.pending = null;
   }
-  lu.result = { ...R.loadOutcome(channel, from, answer, asked), from };
+  lu.result = { ...R.loadOutcome(channel, from, answer, asked), from, channel, rig };
   render();
   if (answer.ok || (answer.body || {}).written) {
     const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};

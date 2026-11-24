@@ -60,8 +60,7 @@ channel of every rig, grouped by rig:
 - **Loaded plugins get the channel's name in front.** Every plugin in a rig
   needs a name of its own, so `string-machine / strings`' `compressor` is
   called `lead_compressor` when it is loaded onto a channel called `lead`.
-  **Start from** copies the names as they are, so two channels started from
-  the same channel in one rig are refused, with the names that clash.
+  **Start from** names them the same way.
 - **It is a copy, not a link.** Editing the other rig later changes nothing
   in a rig that used its channel. Load it again to bring the change in.
 - **The other rig's MIDI map does not come with it.** Pedals and knobs set

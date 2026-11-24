@@ -168,13 +168,16 @@ def another(root, name, rig="guitar_vocal", change=None):
 @pytest.mark.parametrize("body", [None, [], {"from": "accustomed"}, {"from": {"rig": "a"}},
                                   {"from": {"rig": "a", "channel": "b", "x": 1}}, {"from": {"rig": "", "channel": "b"}},
                                   {"from": {"rig": "a", "channel": 3}}, {"from": {"rig": "a", "channel": "b"}, "x": 1},
-                                  {"from": {"rig": "a", "channel": "b"}, "discard": "yes"}, {"preset": "crunch"}])
+                                  {"from": {"rig": "a", "channel": "b"}, "discard": "yes"}, {"preset": "crunch"},
+                                  {"from": {"rig": "a", "channel": "b"}, "rig": ""},
+                                  {"from": {"rig": "a", "channel": "b"}, "rig": 3}])
 def test_a_load_names_a_rig_and_a_channel_and_nothing_else(body):
     with pytest.raises(AgentError):
         channel_load_request(body)
-    assert channel_load_request({"from": {"rig": "a", "channel": "b"}}) == ({"rig": "a", "channel": "b"}, False, False)
-    assert channel_load_request({"from": {"rig": "a", "channel": "b"}, "discard": True, "drop_midi": True}) == (
-        {"rig": "a", "channel": "b"}, True, True)
+    assert channel_load_request({"from": {"rig": "a", "channel": "b"}}) == (
+        {"rig": "a", "channel": "b"}, False, False, None)
+    assert channel_load_request({"from": {"rig": "a", "channel": "b"}, "discard": True, "drop_midi": True,
+                                 "rig": "r"}) == ({"rig": "a", "channel": "b"}, True, True, "r")
 
 
 def test_the_preset_routes_are_gone(root):
@@ -211,8 +214,10 @@ def test_a_channel_of_the_running_rig_loads_onto_another_live_with_names_of_its_
     assert text.startswith("# Guitar and vocals as a v2 rig (#30)"), "the file's comments are kept"
     assert "_to_stereo" not in text
     assert body["names"]["compressor"] == "vocal_compressor"
+    # What git says of the source is read after the lock (review of PR #234),
+    # so of the running rig's own file it says what the load made it.
     assert body["from"] == {"rig": "guitar_vocal", "channel": "guitar", "file": "config/rigs/guitar_vocal.yaml",
-                            "plugins": 6, "git": "unchanged"}
+                            "plugins": 6, "git": "changed"}
     entry = body["entry"]
     assert entry["op"] == "rig" and entry["args"]["load"] == {"rig": "guitar_vocal", "channel": "guitar", "onto": "vocal"}
     # The load is a baseline: nothing unsaved after it, and undo stops at it.
@@ -439,6 +444,23 @@ def test_a_file_a_save_keeps_already_is_not_kept_twice(root):
     status, body = load(agent, "board", "accustomed", "board")
     assert status == 200, body
     assert body["kept_before"] == {"id": save["snapshot"]["id"], "how": "kept by that save already"}
+
+
+def test_a_load_meant_for_another_rig_than_the_running_one_writes_nothing(root):
+    """Review of PR #234: the page names the rig it drew the channel in, so
+    a Program Change between its render and the click cannot land the load
+    on another rig's channel of the same name."""
+    agent, world, fake, _ = make_agent(root)
+    before = {name: rig_file(root, name).read_bytes() for name in ("guitar_vocal", "accustomed")}
+    status, body = call(agent, "POST", "/rig/channels/vocal/load",
+                        json={"from": {"rig": "accustomed", "channel": "board"}, "rig": "electric-chorus"})
+    assert status == 409 and body["code"] == "changed", body
+    assert body["reason"].startswith("the running rig is guitar_vocal, not electric-chorus, so nothing was loaded")
+    assert {name: rig_file(root, name).read_bytes() for name in before} == before and fake.writes() == []
+    assert not agent._lock.locked() and agent.busy is None
+    status, body = call(agent, "POST", "/rig/channels/vocal/load",
+                        json={"from": {"rig": "accustomed", "channel": "board"}, "rig": "guitar_vocal"})
+    assert status == 200 and body["rig"] == "guitar_vocal", body
 
 
 def test_a_rig_or_a_channel_that_is_not_there_is_refused_before_anything_is_written(root):
@@ -710,3 +732,87 @@ def test_curl_and_the_agents_own_page_may_load(root, headers, own):
     status, body = guarded(agent, "/rig/channels/guitar/load", {"from": {"rig": "accustomed", "channel": "board"}},
                            headers, own)
     assert status == 200, body
+
+
+# --------------------------------------------------------------------------- #
+# "Start from" copies as a load does (review of PR #234)
+# --------------------------------------------------------------------------- #
+
+def test_a_new_rig_of_two_channels_from_one_channel_compiles_with_names_of_their_own(root):
+    agent, world, fake, _ = make_agent(root)
+    status, body = call(agent, "POST", "/rigs/new", json={"name": "two-guitars", "channels": [
+        {"name": "left", "input": "guitar-in", "width": "mono", "from": {"rig": "guitar_vocal", "channel": "guitar"}},
+        {"name": "right", "input": "vocal-in", "width": "mono",
+         "from": {"rig": "guitar_vocal", "channel": "guitar"}}]})
+    assert status == 200, body
+    raw = yaml.safe_load(rig_file(root, "two-guitars").read_text())
+    left, right = raw["channels"]
+    gv = yaml.safe_load(rig_file(root, "guitar_vocal").read_text())["channels"][0]["chain"]
+    assert [p["name"] for p in left["chain"]] == [p["name"].replace("guitar_", "left_", 1) for p in gv]
+    assert [p["name"] for p in right["chain"]] == [p["name"].replace("guitar_", "right_", 1) for p in gv]
+    assert [{k: v for k, v in p.items() if k != "name"} for p in left["chain"]] == [
+        {k: v for k, v in p.items() if k != "name"} for p in gv], "settings and all, as written"
+    compile_named_rig("two-guitars", root, root / MACHINE)
+    said = {c["name"]: c["from"] for c in body["channels"]}
+    assert said["left"]["rig"] == "guitar_vocal" and said["left"]["plugins"] == len(gv)
+
+
+def test_a_channel_added_from_its_own_rigs_channel_has_names_of_its_own(root):
+    agent, world, fake, _ = make_agent(root)
+    status, body = call(agent, "POST", "/rigs/guitar_vocal/channels/add", json={
+        "name": "spare", "input": "vocal-in", "width": "mono", "from": {"rig": "guitar_vocal", "channel": "guitar"}})
+    assert status == 200, body
+    raw = yaml.safe_load(rig_file(root, "guitar_vocal").read_text())
+    guitar, _, spare = raw["channels"]
+    assert [p["name"] for p in spare["chain"]] == [p["name"].replace("guitar_", "spare_", 1) for p in guitar["chain"]]
+    assert body["change"]["from"]["channel"] == "guitar"
+    compile_named_rig("guitar_vocal", root, root / MACHINE)
+
+
+def test_a_start_from_whose_names_would_be_too_long_writes_nothing(root):
+    agent, world, fake, _ = make_agent(root)
+    long = "a" * 60
+    status, body = call(agent, "POST", "/rigs/new", json={"name": "long", "channels": [
+        {"name": long, "input": "guitar-in", "width": "mono", "from": {"rig": "guitar_vocal", "channel": "guitar"}}]})
+    assert status == 409 and body["code"] == "name", body
+    assert not rig_file(root, "long").exists()
+
+
+def test_git_of_the_source_is_read_after_the_lifecycle_lock(root, monkeypatch):
+    """Review of PR #234: what git says of the file a chain was copied from
+    is read once the lock is let go, as the written file's is (2026-11-06)."""
+    import sushi_rig.save as save
+
+    agent, world, fake, _ = make_agent(root)
+    held = []
+    real = save.file_git_state
+    monkeypatch.setattr(save, "file_git_state", lambda r, p: held.append((p.name, agent._lock.locked())) or real(r, p))
+    status, body = load(agent, "vocal", "accustomed", "board")
+    assert status == 200 and body["from"]["git"] == "unchanged", body
+    status, body = call(agent, "POST", "/rigs/new", json={"name": "solo", "channels": [
+        {"name": "a", "input": "guitar-in", "width": "mono", "from": {"rig": "accustomed", "channel": "board"}}]})
+    assert status == 200 and body["channels"][0]["from"]["git"] == "unchanged", body
+    status, body = call(agent, "POST", "/rigs/solo/channels/add", json={
+        "name": "b", "input": "vocal-in", "width": "mono", "from": {"rig": "accustomed", "channel": "board"}})
+    assert status == 200 and body["change"]["from"]["git"] == "unchanged", body
+    sources = [locked for name, locked in held if name == "accustomed.yaml"]
+    assert len(sources) == 3 and not any(sources), held
+
+
+def test_a_git_that_does_not_answer_leaves_the_sources_git_not_known(root, monkeypatch):
+    import threading
+
+    import sushi_rig.agent as agent_module
+    import sushi_rig.save as save
+
+    agent, world, fake, _ = make_agent(root)
+    release = threading.Event()
+    monkeypatch.setattr(agent_module, "SAVE_TIMEOUT", 0.5)
+    monkeypatch.setattr(save, "file_git_state", lambda r, p: release.wait(5) and None)
+    try:
+        status, body = load(agent, "vocal", "accustomed", "board")
+    finally:
+        release.set()
+    assert status == 200 and body["from"]["git"] is None, body
+    assert rig_file(root, "guitar_vocal").read_text().count("accustomed / board") == 1, "the load is written"
+    assert not agent._lock.locked()

@@ -114,24 +114,6 @@ def input_request(body: Any) -> dict[str, str]:
 # The files, as dicts
 # --------------------------------------------------------------------------- #
 
-def source_channel(raw: Any, rig: str, channel: str) -> dict[str, Any]:
-    """What `from` copies of `channel` in rig file `raw`: its `chain` and,
-    if it has one, its `level`. `LookupError` saying why when there is no
-    such channel. The chain is copied as written, settings and all, so the
-    new channel starts with that channel's sound; its strip is not (a
-    channel's strip is held at unity, rigfile.py), and neither is a MIDI map
-    naming it, which belongs to the rig it came from."""
-    channels = raw.get("channels") if isinstance(raw, dict) else None
-    for entry in channels if isinstance(channels, list) else []:
-        if isinstance(entry, dict) and entry.get("name") == channel:
-            out: dict[str, Any] = {"chain": copy.deepcopy(entry.get("chain") or [])}
-            if "level" in entry:
-                out["level"] = entry["level"]
-            return out
-    names = [e.get("name") for e in channels or [] if isinstance(e, dict)]
-    raise LookupError(f"{rig} has no channel called {channel} (it has: {', '.join(map(str, names)) or 'none'})")
-
-
 def channel_entry(request: dict[str, Any], copied: dict[str, Any] | None = None) -> dict[str, Any]:
     """A channel as the rig files write one: name, input, width, its level
     if one was copied, and its chain, empty unless copied."""

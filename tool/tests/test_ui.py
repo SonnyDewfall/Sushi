@@ -3320,14 +3320,16 @@ def test_the_agents_refusals_of_a_new_rig_are_shown_in_place(browser, files_serv
     expect(refused).to_contain_text("Not made: hall")
     expect(refused).to_contain_text("a rig called hall already exists (config/rigs/hall.yaml)")
     assert (rigs / "hall.yaml").read_text() == "# made elsewhere\n"
-    # Two channels started from one chain: the compiler refuses the names twice.
+    # A channel started from a chain whose names, made for it, would be past
+    # the naming rule (a copy is named for its channel, #208): the agent's
+    # refusal, in its words. Two channels from one chain are made (test_agent_channel_load).
     p.get_by_label("Rig name").fill("copies")
     p.get_by_role("button", name="Add channel").click()
-    for n in (1, 2):
-        p.get_by_label(f"Channel {n} starts from").select_option(label="electric_board / board")
+    p.get_by_label("Channel 1 name").fill("a" * 60)
+    p.get_by_label("Channel 1 starts from").select_option(label="electric_board / board")
     p.get_by_role("button", name="Create copies").click()
     expect(refused).to_contain_text("Not made: copies")
-    expect(refused).to_contain_text("duplicate name 'overdrive'")
+    expect(refused).to_contain_text(f"'{'a' * 60}_overdrive' would be the name of overdrive there")
     assert not (rigs / "copies.yaml").exists()
     # A role gone from the machine file since the page read it: said with
     # the lines to add, which the agent never writes itself.

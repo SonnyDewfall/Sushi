@@ -525,7 +525,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   dropped. A refusal a second tap answers offers it, keeping any yes
   already given: **Load anyway** (`discard`, dropping the unsaved changes),
   **Drop N and load** (`drop_midi`, dropping N MIDI mappings, each mapping listed with
-  what it did and why it would do nothing). After a load the page reads the
+  what it did and why it would do nothing). The call names the rig the
+  page drew (`rig`), which the agent refuses as `changed` if another is
+  running by then. An answer is its channel's: it is shown in that strip's
+  panel only and its second tap loads onto that channel, and while a load
+  waits the other strips' **Load…** is off. After a load the page reads the
   rig's file again; the chain itself follows `/live` as it always does.
   "Start from" on Add channel and the New rig screen offers the same
   channels with the same labels. This replaced #127's channel presets and

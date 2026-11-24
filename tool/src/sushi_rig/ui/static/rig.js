@@ -2787,8 +2787,11 @@ export function wiringView(health, channelsAnswer, unsaved) {
 // A strip's Load…: a channel of any rig of config/rigs (`sourceChoices`)
 // loaded onto a channel of the running rig (POST /rig/channels/<c>/load).
 
-export function channelLoadCall(channel, from, { discard = false, dropMidi = false } = {}) {
+// `rig` is the rig the page drew the channel in: the agent refuses the load
+// (`changed`) when another is running by then.
+export function channelLoadCall(channel, from, { discard = false, dropMidi = false } = {}, rig = null) {
   const json = { from: { rig: from.rig, channel: from.channel } };
+  if (rig) json.rig = rig;
   if (discard) json.discard = true;
   if (dropMidi) json.drop_midi = true;
   return { path: `/rig/channels/${encodeURIComponent(channel)}/load`, json };
