@@ -53,10 +53,13 @@ newest 50 for each rig are kept.
 3. If you have unsaved changes, the page asks **Drop changes?** instead:
    **Yes** reverts and throws those changes away (Undo cannot bring them
    back); **No** leaves everything as it was.
+4. If going back means restarting the rig, the page asks **Restart?** first,
+   since the sound stops for a few seconds: **Yes** reverts, **No** leaves
+   everything as it was.
 
-The rig then changes to that save. Where it can, it changes without stopping;
-where it cannot, it restarts, and the sound stops for a few seconds. A box
-headed **Reverted** says which it was.
+The rig then changes to that save, without stopping where it can. A box
+headed **Reverted** says how. **Undo** asks the same two questions when
+taking a revert back needs them.
 
 Usually you can come back the same way, because the save you left is still in
 the list. The question in step 3 tells you when it is not.

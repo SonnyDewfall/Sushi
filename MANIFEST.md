@@ -7028,3 +7028,25 @@ it, and a take that is not whole says "1 problem" on its result. The UI tests
 of the stage, the takes, the phone line, the visualiser's line and the lock
 read the new words, with what was said whole in the element's title. Not run
 on the rig. *(2026-11-24)*
+
+**One Undo, PR #235's review (#209).** Eight findings, fixed. (1) The Undo
+of a revert or a channel load switched the rig and left the MIDI listener
+stopped: it now follows the rig after (`_midi_sync`), as the revert does.
+(2) That switch dropped unsaved live work with no word (a step a press
+could not undo still plays): it is held as a revert is, 409 `unsaved` with
+the step kept, until `"discard": true`; the page asks "Drop changes?". (3)
+What a file step does to the rig is decided at the Undo: a rig running now
+in a run other than the write's (switched to, or restarted, since) plays
+what was written, so putting it back offers a restart. (4) `POST /undo`
+takes `{"seq"}`, the step the page showed: another is 409 `changed`, with
+`next`, and the live undo is told which log entry it is for. (5) Locked,
+the button holds the Undo of a load and of a revert; with `"restart":
+false`, which the page sends, a revert or a switch back that would restart
+Sushi is 409 `restarts` with why, and the page asks "Restart?" first. (6)
+The words beside the button name the step dropped ("Can't undo: delete
+clean") and say when Sushi or the agent did not answer. (7) A press never
+passes over a step to undo an older one: a live step the live log no
+longer holds is `cant_undo` "too old", and a drag put back only in part is
+"Partly undone". (8) `up`, `down` and `restart` end the live steps, as a
+switch does. `ui_fake.UiSave` now follows a switch into another rig of its
+config/rigs/, as the state file does. Not run on the rig. *(2026-11-24)*

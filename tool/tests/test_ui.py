@@ -2244,7 +2244,8 @@ def test_after_a_save_a_change_is_unsaved_again_and_so_is_an_undo(browser, save_
     unsaved_count(p, 0)
     expect(undo).to_have_attribute("title", "Undo save electric_board")
     undo.click()
-    until(lambda: drive_of(rig_file(save_served)) is None or abs(drive_of(rig_file(save_served)) - 0.61) > 1e-6)
+    # The file read once per look: two reads could straddle the write.
+    until(lambda: (lambda drive: drive is None or abs(drive - 0.61) > 1e-6)(drive_of(rig_file(save_served))))
     unsaved_count(p, 1)
     expect(undo).to_have_attribute("title", "Undo overdrive Drive")
     undo.click()

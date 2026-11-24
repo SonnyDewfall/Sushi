@@ -430,3 +430,193 @@ def test_a_channel_muted_from_a_footswitch_is_unmuted_by_undo(served):
     assert served.rig.bypassed["vocal_send"] is False
     status, body = undo(served)
     assert status == 200 and body["said"] == "Undone: pedal c", body
+
+
+# ------------------------------------------------------------- PR #235's review
+
+def _revert_to_commit(served):
+    """A knob saved, then the rig reverted to its commit: a revert to undo."""
+    call(served, "POST", "/live/bypass", {"processor": "delay", "bypassed": True})
+    assert call(served, "POST", "/rig/save", {})[0] == 200
+    saved = rig_file(served).read_bytes()
+    points = call(served, "GET", "/rigs/electric_board/saves")[1]["points"]
+    commit = next(p for p in points if p["kind"] == "commit")
+    status, body = call(served, "POST", "/rigs/electric_board/revert", {"save": commit["id"]})
+    assert status == 200, body
+    return saved, commit
+
+
+def _count_syncs(served):
+    agent, calls = served.agent, []
+    real = agent._midi_sync
+
+    async def counting():
+        calls.append(1)
+        await real()
+
+    agent._midi_sync = counting
+    return calls
+
+
+def test_undoing_a_revert_has_the_pedals_follow_the_rig_as_the_revert_does(served):
+    """Review 1: the switch back stops the MIDI listener (`_switch_held`), so
+    the Undo, as the revert, has it follow the rig after; without it the
+    pedals were dead until the next lifecycle command."""
+    calls = _count_syncs(served)
+    saved, _ = _revert_to_commit(served)
+    by_revert = len(calls)
+    assert by_revert >= 1
+    status, body = undo(served)
+    assert status == 200 and body["how"] == "switched", body
+    assert len(calls) - by_revert >= 1, "the listener follows the rig the undo switched into"
+    assert rig_file(served).read_bytes() == saved
+
+
+def test_undo_across_a_switch_waits_for_unsaved_work_as_a_revert_does(served):
+    """Review 2: a live change that could not be undone (moved from the panel)
+    is dropped from the history but still plays. The revert's Undo, which
+    switches, would drop it: refused `unsaved`, the step kept, until the
+    page says to drop it (`discard`)."""
+    saved, _ = _revert_to_commit(served)
+    assert call(served, "POST", "/live/bypass", {"processor": "delay", "bypassed": True})[0] == 200
+    served.rig.bypassed["delay"] = False  # moved since from elsewhere
+    status, body = undo(served)
+    assert status == 409 and body["code"] == "cant_undo", body
+    served.rig.bypassed["delay"] = True  # and back, still unsaved
+    reverted = rig_file(served).read_bytes()
+    status, body = undo(served)
+    assert status == 409 and body["code"] == "unsaved", body
+    assert body["step"]["label"] == "revert electric_board"
+    assert rig_file(served).read_bytes() == reverted, "nothing put back"
+    assert call(served, "GET", "/undo")[1]["next"]["label"] == "revert electric_board", "the step stays"
+    status, body = call(served, "POST", "/undo", {"discard": True})
+    assert status == 200 and body["how"] == "switched", body
+    assert body["discard"], "what was dropped is said"
+    assert rig_file(served).read_bytes() == saved
+
+
+def test_an_edit_of_a_rig_not_running_then_switched_to_offers_a_restart(served):
+    """Review 3: what a step does is decided at the Undo. An edit of `clean`
+    made while it was not running needed nothing then; switched to since,
+    `clean` plays what was written, so putting it back offers a restart."""
+    clean = rig_file(served, "clean")
+    clean.write_text(rig_file(served).read_text())
+    status, body = call(served, "POST", "/rigs/clean/channels/add", {"name": "keys", "input": "keys-in", "width": "mono"})
+    assert status == 200 and body["running"] is False, body
+    written = clean.read_bytes()
+    status, body = call(served, "POST", "/rig/switch", {"config_name": "clean"})
+    assert status == 200, body
+    status, body = undo(served)
+    assert status == 200, body
+    assert body["said"] == "Undone: add channel keys"
+    assert body["how"] == "restart" and body["offer"] == "restart", body
+    assert clean.read_bytes() != written
+
+
+def test_a_save_undone_after_a_restart_offers_a_restart(served):
+    path = rig_file(served)
+    original = path.read_bytes()
+    call(served, "POST", "/live/parameter", {"processor": "overdrive", "parameter": "Drive", "value": 0.9})
+    assert call(served, "POST", "/rig/save", {})[0] == 200
+    assert call(served, "POST", "/rig/restart", {})[0] == 200
+    status, body = undo(served)
+    assert status == 200, body
+    assert body["said"] == "Undone: save electric_board"
+    assert body["how"] == "restart" and body["offer"] == "restart", "the rig plays the save until it restarts"
+    assert path.read_bytes() == original
+
+
+def test_an_undo_for_a_step_no_longer_the_newest_is_refused_changed(served):
+    """Review 4: the page sends the step it showed (`seq`); another page's
+    change, or one landing since, makes it not the newest: 409 `changed`,
+    nothing undone, `next` saying what is newest now."""
+    call(served, "POST", "/live/bypass", {"processor": "delay", "bypassed": True})
+    shown = call(served, "GET", "/undo")[1]["next"]
+    call(served, "POST", "/live/parameter", {"processor": "overdrive", "parameter": "Drive", "value": 0.9})
+    status, body = call(served, "POST", "/undo", {"seq": shown["seq"]})
+    assert status == 409 and body["code"] == "changed", body
+    assert body["next"]["label"] == "overdrive Drive"
+    assert value(served, "overdrive", "Drive") == pytest.approx(0.9) and served.rig.bypassed["delay"] is True
+    status, body = call(served, "POST", "/undo", {"seq": body["next"]["seq"]})
+    assert status == 200 and body["said"] == "Undone: overdrive Drive", body
+
+
+@pytest.mark.parametrize("body", [{"seq": "1"}, {"seq": True}, {"discard": "yes"}, {"restart": 1}, {"skip": True}, []])
+def test_an_undo_body_of_the_wrong_shape_is_400(served, body):
+    assert call(served, "POST", "/undo", body)[0] == 400
+
+
+def test_the_live_undo_refuses_a_pick_that_is_not_the_one_asked_for():
+    from sushi_rig.agent import Agent
+
+    Agent._expect_pick((4, {}), None)
+    Agent._expect_pick((4, {}), 4)
+    with pytest.raises(Exception) as caught:
+        Agent._expect_pick((5, {}), 4)
+    assert getattr(caught.value, "agent_code", None) == "changed" or "changed" in str(caught.value.reason)
+
+
+def test_a_live_step_the_live_log_no_longer_holds_is_cant_undo_not_skipped_past(served):
+    """Review 7: a step whose log entries were trimmed is said, `cant_undo`
+    "too old", not passed over to undo an older one in the same press."""
+    served.agent.log_limit = 2
+    call(served, "POST", "/live/bypass", {"processor": "delay", "bypassed": True})
+    call(served, "POST", "/live/bypass", {"processor": "overdrive", "bypassed": False})
+    status, body = undo(served)
+    assert status == 200 and body["said"] == "Undone: enable overdrive", body
+    status, body = undo(served)
+    assert status == 409 and body["code"] == "cant_undo" and "too old" in body["reason"], body
+    assert body["skipped"]["label"] == "bypass delay"
+    assert served.rig.bypassed["delay"] is True, "nothing older was undone in its place"
+
+
+@pytest.mark.parametrize("command", ["restart", "down"])
+def test_a_lifecycle_command_ends_the_live_steps_and_keeps_the_files(served, command):
+    """Review 8: a bypass on the rig that was up is not undone on the run
+    after a restart, a down or an up, which may be another rig."""
+    status, body = call(served, "POST", "/rigs/electric_board/channels/vocal/input", {"input": "keys-in"})
+    assert status == 200, body
+    call(served, "POST", "/live/bypass", {"processor": "delay", "bypassed": True})
+    call(served, "POST", "/live/bypass", {"processor": "overdrive", "bypassed": False})
+    assert call(served, "GET", "/undo")[1]["depth"] == 3
+    status, body = call(served, "POST", f"/rig/{command}", {"discard": True} if command == "restart" else {})
+    assert status == 200, body
+    if command == "down":
+        assert call(served, "POST", "/rig/up", {"config_name": "electric_board"})[0] == 200
+    nxt = call(served, "GET", "/undo")[1]
+    assert nxt["next"]["label"] == "input vocal" and nxt["depth"] == 1, nxt
+
+
+def test_a_revert_or_its_undo_that_would_restart_sushi_is_asked_about_first(served):
+    """Review 5: a revert is one tap since Undo takes it back, but a restart
+    cuts the sound. With `"restart": false` (what the page sends first), a
+    revert or an Undo whose switch would restart Sushi is 409 `restarts`,
+    with why and nothing written; with `"restart": true` it goes ahead."""
+    path = rig_file(served)
+    status, body = call(served, "POST", "/rigs/electric_board/channels/add",
+                        {"name": "keys", "input": "keys-in", "width": "mono"})
+    assert status == 200, body
+    assert call(served, "POST", "/rig/restart", {})[0] == 200  # the rig plays keys now
+    with_keys = path.read_bytes()
+    points = call(served, "GET", "/rigs/electric_board/saves")[1]["points"]
+    commit = next(p for p in points if p["kind"] == "commit")
+    status, body = call(served, "POST", "/rigs/electric_board/revert", {"save": commit["id"], "restart": False})
+    assert status == 409 and body["code"] == "restarts", body
+    assert body["why"] and path.read_bytes() == with_keys, "nothing written"
+    status, body = call(served, "POST", "/rigs/electric_board/revert", {"save": commit["id"], "restart": True})
+    assert status == 200, body
+    reverted = path.read_bytes()
+    # The Undo of that revert puts keys back: a switch only a restart makes.
+    assert call(served, "POST", "/rig/restart", {})[0] == 200  # the rig plays the revert
+    status, body = call(served, "POST", "/undo", {"restart": False})
+    assert status == 409 and body["code"] == "restarts" and body["why"], body
+    assert body["step"]["label"] == "revert electric_board" and path.read_bytes() == reverted
+    status, body = call(served, "POST", "/undo", {"restart": True})
+    assert status == 200 and body["said"] == "Undone: revert electric_board", body
+    assert path.read_bytes() == with_keys
+
+
+def test_a_revert_that_switches_live_is_not_asked_about(served):
+    _, commit = _revert_to_commit(served)
+    status, body = call(served, "POST", "/undo", {"restart": False})
+    assert status == 200 and body["how"] == "switched", body

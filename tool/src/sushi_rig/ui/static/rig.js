@@ -1766,8 +1766,13 @@ export function savesCall(rig) {
   return { path: `/rigs/${encodeURIComponent(rig)}/saves` };
 }
 
-export function revertCall(rig, id, discard = false) {
-  return { path: `/rigs/${encodeURIComponent(rig)}/revert`, json: discard ? { save: id, discard: true } : { save: id } };
+// `restart`: false (the page's first tap) has a revert that would restart
+// Sushi refused as `restarts`, to be asked "Restart?" (#235's review), true
+// once it was; left out, as curl leaves it, the switch restarts where it must.
+export function revertCall(rig, id, discard = false, restart = null) {
+  const json = discard ? { save: id, discard: true } : { save: id };
+  if (restart !== null) json.restart = !!restart;
+  return { path: `/rigs/${encodeURIComponent(rig)}/revert`, json };
 }
 
 // The list a "Revert…" opens, from GET /rigs/<rig>/saves: each point by
@@ -3539,13 +3544,26 @@ export function pedalOutcome(what, answer) {
 // it. The history is the agent's (history.py), shared by every page and
 // kept until the agent restarts, so a reload keeps it.
 export const UNDO_CALL = { path: "/undo", json: {} };
+// A press, for the step the button showed (`next`, GET /undo's): its `seq`,
+// so a step another page or a later change put on top is refused
+// (`changed`), not undone in its place. `restart: false` until "Restart?"
+// was answered Yes, so a switch back that would restart Sushi is asked
+// about first; `discard` once "Drop changes?" was.
+export function undoCall(next, { discard = false, restart = false } = {}) {
+  const json = { restart: !!restart };
+  if (next && Number.isInteger(next.seq)) json.seq = next.seq;
+  if (discard) json.discard = true;
+  return { path: UNDO_CALL.path, json };
+}
 // What the lock holds is what it holds of the change itself (`lockRefusal`):
 // the rig's structure (a move, an add, a remove), the amp's model (it
-// restarts the amp) and a pedal's assignment. A knob, a fader and a bypass
-// are let through, as they are locked, and so are the rack's file edits that
-// are not behind the lock (a channel, an input, a save, a revert, a delete).
+// restarts the amp), a pedal's assignment, and what switches the rig back
+// (a revert's or a channel load's Undo: the rig's structure, as a load is).
+// A knob, a fader and a bypass are let through, as they are locked, and so
+// are the rack's file edits that are not behind the lock (a channel, an
+// input, a save, a delete).
 const UNDO_STRUCTURAL = ["move", "add", "remove", "amp_model"];
-const UNDO_LOCKED_ACTS = ["pedal"];
+const UNDO_LOCKED_ACTS = ["pedal", "load", "revert"];
 
 // The button: `{disabled, title, cant}`. `answer` is GET /undo's (request's
 // shape), `screen` "rack" or "stage": on the stage it is for the live edits.
@@ -3570,12 +3588,25 @@ export function undoOutcome(answer) {
   if (answer.ok) {
     const restart = body.how === "restart";
     return { ok: true, text: restart ? `${body.said} · restart` : body.said, title: body.reason || null,
-      offer: restart && body.rig ? { op: "restart", name: body.rig } : null };
+      offer: restart && body.rig ? { op: "restart", name: body.rig } : null, ask: null };
   }
-  if (answer.code === "cant_undo") return { ok: false, text: "Can't undo", title: answer.reason, offer: null };
-  if (answer.code === "nothing_to_undo") return { ok: false, text: "Nothing to undo", title: answer.reason, offer: null };
-  if (answer.code === "busy") return { ok: false, text: "Busy", title: answer.reason, offer: null };
-  return { ok: false, text: "Not undone", title: answer.reason, offer: null };
+  const refused = (text) => ({ ok: false, text, title: answer.reason, offer: null, ask: null });
+  // Held, not refused (#235's review): the page asks, and presses again.
+  if (answer.code === "unsaved" || answer.code === "panel") return { ...refused("Drop changes?"), ask: "drop" };
+  if (answer.code === "restarts") return { ...refused("Restart?"), ask: "restart" };
+  // Which step was dropped, on the page, not only in the title a phone
+  // cannot show.
+  if (answer.code === "cant_undo") {
+    const label = body.skipped && body.skipped.label;
+    return refused(label ? `Can't undo: ${label}` : "Can't undo");
+  }
+  if (answer.code === "nothing_to_undo") return refused("Nothing to undo");
+  if (answer.code === "changed") return refused("Changed: press again");
+  if (answer.code === "busy") return refused("Busy");
+  if (answer.status === 0) return refused("Agent not answering");
+  if (answer.status === 502 || answer.status === 503) return refused("Sushi not answering");
+  if (answer.status === 504) return refused("Timed out");
+  return refused(`Not undone: ${shortSaid(answer.reason || "")}`);
 }
 
 // A refusal in a few words, for the page (#209): what comes before its

@@ -492,6 +492,9 @@ def test_the_master_volume_is_on_the_racks_header_and_saved_as_the_masters_level
         until(lambda: served.rig.info["master"]["gain"]["value"] == 0)
         expect(field).to_have_value("−∞ dB")
         expect(fader).to_have_value("-61")
+        # The button names the step it undoes (#235's review: a press for a
+        # step no longer the newest is refused, not undone in its place).
+        expect(p.locator("button.undo")).to_have_attribute("title", "Undo master gain")
         p.locator("button.undo").click()
         until(lambda: abs(served.rig.info["master"]["gain"]["value"] - 111.5 / 144) < 1e-6)
         page.close()

@@ -1131,6 +1131,40 @@ class CantUndo(AgentError):
     POST /undo answers it 409 `cant_undo` and drops the step."""
 
 
+class UndoHeld(AgentError):
+    """A step of the one Undo's history (#209) that can be put back, but not
+    without the page's word: 409 with `code` (`unsaved`, `panel`: live work
+    it would drop, answered with `"discard": true`; `restarts`: the switch
+    would restart Sushi, answered with `"restart": true`). The step stays."""
+
+    def __init__(self, reason: str, code: str, extra: dict[str, Any] | None = None) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.extra = extra or {}
+
+
+def one_undo_request(body: Any) -> dict[str, Any]:
+    """What a `POST /undo` body asks (#209), or `AgentError` (400). Every key
+    is optional: `seq`, the step the page showed (`GET /undo`'s
+    `next.seq`), refused as `changed` when the newest is another; `discard`,
+    true to drop unsaved live work a switch back would drop; `restart`,
+    false to have a switch back that would restart Sushi asked about first
+    (`restarts`), true once it has been. Absent, `restart` restarts where it
+    must, as a revert from curl does."""
+    if body is None:
+        body = {}
+    if not isinstance(body, dict) or not set(body) <= {"seq", "discard", "restart"}:
+        raise AgentError(f'the body of an undo is {{}}, or {{"seq": <n>, "discard"?: true, "restart"?: '
+                         f"true or false}}, not {body!r}: it steps back the newest change")
+    seq = body.get("seq")
+    if seq is not None and (not isinstance(seq, int) or isinstance(seq, bool)):
+        raise AgentError(f"'seq' must be the step's number, as GET /undo gives it, not {seq!r}")
+    for key in ("discard", "restart"):
+        if key in body and not isinstance(body[key], bool):
+            raise AgentError(f"'{key}' must be true or false, not {body[key]!r}")
+    return {"seq": seq, "discard": body.get("discard", False), "restart": body.get("restart")}
+
+
 class UndoBarrier(AgentError):
     """A rig switch stands between the undo and anything older: answered 409
     `nothing_to_undo` with this reason."""
@@ -2274,6 +2308,7 @@ class Agent:
         they were. A restart's check for unsaved work (`restart_refusal`).
         """
         self._refuse_while_busy()
+        ran = False
         async with self._lock:
             self.busy = command
             try:
@@ -2290,9 +2325,15 @@ class Agent:
                 take = (await self._finish_take(origin or _MidiOrigin("POST", f"/rig/{command}"), command)
                         if command in ("down", "restart") else None)
                 await self._midi_stop(f"stopped while '{command}' runs")
+                ran = True
                 outcome, args = await self._lifecycle_steps(steps, fallback)
             finally:
                 self.busy = None
+                if ran:
+                    # The one Undo's live steps (#209) were made to the rig
+                    # that was up: after a down, an up or a restart, what is
+                    # up is another run, which they must not be undone on.
+                    self.history.drop_live()
                 await self._midi_sync()
         return outcome, args, take
 
@@ -3224,21 +3265,25 @@ class Agent:
             raise web.HTTPBadRequest(reason=str(exc))
         return await self._live_undo(request, skip)
 
-    async def _live_undo(self, request, skip: bool):
+    async def _live_undo(self, request, skip: bool, expect: int | None = None):
         """`live_undo`'s work, once the body is read: also what `POST /undo`
-        (#209) calls for a live entry of its history."""
+        (#209) calls for a live entry of its history, with `expect`, the log
+        index it picked: a newer change landing before either pick here is
+        refused (409 `changed`), not undone in its place."""
         self._refuse_while_busy()  # before the fast path: busy is the truer answer
         picked = self._pick_undo()
         if picked is None:
             raise _conflict("nothing to undo", "nothing_to_undo")
+        self._expect_pick(picked, expect)
         if picked[1]["op"] in amp_live.OPS:
             # Carla's, not Sushi's: no connection to Sushi, the amp's own lock
             # (and for a model, the lifecycle's), see the amp's block.
-            return await self._undo_amp(request, picked[1]["op"], skip)
+            return await self._undo_amp(request, picked[1]["op"], skip, expect)
         async with self._connected_for_a_change(request) as controller:
             picked = self._pick_undo()  # the log may have changed while waiting
             if picked is None:
                 raise _conflict("nothing to undo", "nothing_to_undo")
+            self._expect_pick(picked, expect)
             index, undone = picked
             if undone["op"] in amp_live.OPS:
                 raise _conflict("the newest change became one of the amp's while this undo waited: "
@@ -3269,6 +3314,14 @@ class Agent:
         # `state` is what was set and Sushi confirmed, not read back again.
         return web.json_response({"ok": True, **entry, "undone": undone, "state": state,
                                   **_dip_answer(request)})
+
+    @staticmethod
+    def _expect_pick(picked: tuple[int, dict[str, Any]], expect: int | None) -> None:
+        """409 `changed` when the live undo's pick is not the entry the one
+        Undo (#209) asked for: a change landed since, and is not to be undone
+        in its place."""
+        if expect is not None and picked[0] != expect:
+            raise _conflict("a change landed while this undo waited: press Undo again", "changed")
 
     def _pick_undo(self) -> tuple[int, dict[str, Any]] | None:
         """`pick_undo` on the agent's log, a rig switch in the way answered as
@@ -5616,7 +5669,7 @@ class Agent:
         entry = self._record("stale", {"of": undone["op"], "reason": str(exc)}, None, stale=index)
         return {"ok": True, **entry, "skipped": undone}
 
-    async def _undo_amp(self, request, op: str, skip: bool):
+    async def _undo_amp(self, request, op: str, skip: bool, expect: int | None = None):
         """Undo the newest change, an amp one (`pick_undo` found it): a
         parameter goes back to what was last sent before it, through the
         route's own call; a model goes back by restarting Carla on the one
@@ -5624,6 +5677,7 @@ class Agent:
         what was last sent: amp_live.undo_check. The rest as `live_undo`."""
         if op == "amp_model":
             index, undone = self._pick_undo()
+            self._expect_pick((index, undone), expect)
             from .amp import AmpError, resolve_model
 
             previous = undone.get("previous")
@@ -5648,6 +5702,7 @@ class Agent:
             picked = self._pick_undo()
             if picked is None:
                 raise _conflict("nothing to undo", "nothing_to_undo")
+            self._expect_pick(picked, expect)
             index, undone = picked
             if undone["op"] != "amp":
                 raise _conflict("the newest change changed while this undo waited: undo again", "changed")
@@ -6832,7 +6887,11 @@ class Agent:
         (what git says of the file now) and, for the running rig, the
         switch's `how`, `why` and `seconds`. 404 for a point that is not
         there; 400 for a body of the wrong shape; 409 `busy`, `unsaved`,
-        `panel`, `rig_problem`; 409 `not_switched` (or 504 if a command was
+        `panel`, `rig_problem`; 409 `restarts` with `why`, nothing written,
+        when `"restart": false` was sent and the switch would restart Sushi
+        (the page's "Restart?", #209: a revert is otherwise one tap, since the
+        one Undo puts it back, but a restart cuts the sound); 409
+        `not_switched` (or 504 if a command was
         abandoned) when the file was written and the rig could not be made to
         play it, `written: true` and the reason saying so.
 
@@ -6841,7 +6900,7 @@ class Agent:
         from . import saves
 
         try:
-            point, discard = revert_request(await self._json_body(request))
+            point, discard, restart = revert_request(await self._json_body(request))
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
         name = request.match_info["name"]
@@ -6864,7 +6923,7 @@ class Agent:
                     raise web.HTTPGatewayTimeout(reason=f"{point} was not read within {SAVE_TIMEOUT:g}s")
                 try:
                     before = await asyncio.to_thread(lambda: path.read_bytes() if path.exists() else None)
-                    await self._rigfile_thread(
+                    compiled = await self._rigfile_thread(
                         request, path, lambda: self._revert_compile(data, run, name if running else None))
                     discarded: list[dict[str, Any]] = []
                     if running:
@@ -6872,6 +6931,14 @@ class Agent:
                             refusal = revert_refusal(run["state"], self.log)
                             if refusal is not None and not discard:
                                 raise RigFileRefused(*refusal)
+                            if restart is False:
+                                restarts = await asyncio.to_thread(self._would_restart, compiled, run)
+                                if restarts:
+                                    raise RigFileRefused(
+                                        f"nothing was written: reverting {name} restarts Sushi: "
+                                        + "; ".join(f"{r['code']}: {r['detail']}" for r in restarts)
+                                        + '; revert with "restart": true to go ahead', "restarts",
+                                        {"why": restarts})
                             if discard:
                                 discarded = unsaved_entries(self.log, since=run["state"].get("started_at"))
                             await self._rigfile_thread(request, path, lambda: saves.restore(path, data))
@@ -7110,54 +7177,79 @@ class Agent:
         return error
 
     async def undo_route(self, request):
-        """`POST /undo {}`: step back the newest change in the history,
-        whatever it was, by the step its kind takes (`_UNDOERS`).
+        """`POST /undo {"seq"?, "discard"?, "restart"?}` (`one_undo_request`):
+        step back the newest change in the history, whatever it was, by the
+        step its kind takes (`_UNDOERS`).
 
-        200 with `undone` (the step), `said` ("Undone: remove delay"), `how`
-        (`live`; `file`, the file put back and nothing to play; `restart`,
-        with `offer: "restart"`, where the rig plays the change until it
-        restarts, as the forward edit said; `next start`, another rig's
-        file; `switched`, the running rig switched back into its file, as a
-        revert is; `restored`, a rig back from the bin), and `next`, what
-        the press after would do.
+        200 with `undone` (the step), `said` ("Undone: remove delay", or
+        "Partly undone: ..." for a drag of which some could not be put back),
+        `how` (`live`; `file`, the file put back and nothing to play;
+        `restart`, with `offer: "restart"`, where the rig plays the change
+        until it restarts: the forward edit waited for one, or the rig has
+        restarted or switched since the write, so it plays what was written;
+        `next start`, another rig's file; `switched`, the running rig
+        switched back into its file, as a revert is; `restored`, a rig back
+        from the bin), and `next`, what the press after would do.
 
-        409 `nothing_to_undo`; 409 `cant_undo` when the step cannot be put
-        back (the file changed since, the bin entry gone, a value moved
-        since from elsewhere, a Save as): the step is dropped and `skipped`
-        says which, so the next press goes on. 409 `busy`, and what Sushi or
-        a write answers (502, 503, 504), leave the step where it is, to be
-        tried again."""
-        body = await self._json_body(request)
-        if body not in (None, {}):
-            raise web.HTTPBadRequest(reason=f"the body of an undo must be empty, not {body!r}: "
-                                     "it steps back the newest change")
+        409 `nothing_to_undo`; 409 `changed` when `seq` is not the newest
+        step's (another page, or a change since, came first: `next` says what
+        is newest now); 409 `cant_undo` when the step cannot be put back (the
+        file changed since, the bin entry gone, a value moved since from
+        elsewhere, a live change too old for the live log, a Save as): the
+        step is dropped and `skipped` says which, so the next press goes on.
+        409 `unsaved` or `panel` when a switch back would drop live work no
+        save holds, as a revert is refused (answer with `"discard": true`),
+        and `restarts` when it would restart Sushi and `"restart": false`
+        was sent (`why` says why; answer with `"restart": true`): the step
+        stays. 409 `busy`, and what Sushi or a write answers (502, 503,
+        504), leave the step where it is, to be tried again."""
+        try:
+            asked = one_undo_request(await self._json_body(request))
+        except AgentError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
         self._refuse_while_busy()
         async with self._undo_lock:
-            while True:
-                entry = self.history.newest()
-                if entry is None:
-                    raise _conflict("nothing to undo", "nothing_to_undo")
-                why = await asyncio.to_thread(self._undo_blocked, entry)
-                if why is not None:
-                    raise self._cant_undo(entry, why)
+            entry = self.history.newest()
+            if asked["seq"] is not None and (entry is None or entry["seq"] != asked["seq"]):
+                newest = f"the newest is now {entry['label']}" if entry is not None else "there is nothing to undo now"
+                error = _conflict(f"the step shown is no longer the newest ({newest}): press Undo again", "changed")
+                error.agent_extra = await self._undo_next()
+                raise error
+            if entry is None:
+                raise _conflict("nothing to undo", "nothing_to_undo")
+            why = await asyncio.to_thread(self._undo_blocked, entry)
+            said: dict[str, Any] = {}
+            if why is None:
                 try:
-                    said = await getattr(self, self._UNDOERS[entry["kind"]])(request, entry)
+                    said = await getattr(self, self._UNDOERS[entry["kind"]])(request, entry, asked)
                 except CantUndo as exc:
-                    raise self._cant_undo(entry, str(exc))
-                self.history.drop(entry)
-                if said is None:
-                    continue  # nothing of it was left to undo: on to the one before
-                answer = {"ok": True, "undone": history_module.shown(entry),
-                          "said": f"Undone: {entry['label']}", **said}
-                answer.update(await self._undo_next())
-                return web.json_response(answer)
+                    why = str(exc)
+                except UndoHeld as exc:
+                    error = _conflict(" ".join(f"{entry['label']} is not undone yet: {exc}".split()), exc.code)
+                    error.agent_extra = {"step": history_module.shown(entry), **exc.extra}
+                    raise error
+            if why is not None:
+                error = self._cant_undo(entry, why)
+                error.agent_extra.update(await self._undo_next())  # what the next press would do, for the button
+                raise error
+            self.history.drop(entry)
+            partial = said.pop("partial", False)
+            answer = {"ok": True, "undone": history_module.shown(entry),
+                      "said": f"{'Partly undone' if partial else 'Undone'}: {entry['label']}", **said}
+            answer.update(await self._undo_next())
+            return web.json_response(answer)
 
-    async def _undo_live_step(self, request, entry: dict[str, Any]) -> dict[str, Any] | None:
+    async def _undo_live_step(self, request, entry: dict[str, Any], asked: dict[str, Any]) -> dict[str, Any]:
         """A live step: each of its log entries, newest first, by the live
-        undo (`_live_undo`), which checks each is still as it was left. One
-        that cannot be is skipped as `{"skip": true}` skips it, and the rest
-        are tried; `CantUndo` when none could be. A refusal that may pass
-        (busy, Sushi not answering) is raised as it is, the rest kept."""
+        undo (`_live_undo`), which checks each is still as it was left, and
+        is told which entry it is for (`expect`), so a change landing between
+        the pick here and its own is refused (`changed`), not undone in its
+        place. One that cannot be is skipped as `{"skip": true}` skips it,
+        and the rest are tried; `CantUndo` when none could be, or when the
+        live log no longer holds them (trimmed past its limit, or undone
+        another way): never a silent step on to an older one. A refusal that
+        may pass (busy, Sushi not answering) is raised as it is, the rest
+        kept. `partial` when some of a drag was put back and some was not."""
         undone, refused = 0, []
         while entry["indices"] and self.history.newest() is entry:
             try:
@@ -7165,14 +7257,14 @@ class Agent:
             except UndoBarrier as exc:
                 raise CantUndo(str(exc)) from exc
             if picked is None or picked[0] not in entry["indices"]:
-                break  # undone some other way already
+                break  # no longer the live log's newest: too old, or undone another way
             try:
-                response = await self._live_undo(request, False)
+                response = await self._live_undo(request, False, expect=picked[0])
             except web.HTTPException as exc:
                 if not (exc.status == 400 or getattr(exc, "agent_code", None) == "stale"):
                     raise
                 refused.append(exc.reason)
-                await self._live_undo(request, True)  # given up on: the next is the one before
+                await self._live_undo(request, True, expect=picked[0])  # given up on: the next is the one before
                 continue
             if response.status >= 400:
                 import json
@@ -7181,12 +7273,12 @@ class Agent:
                 raise web.HTTPBadGateway(reason=reason)
             undone += 1
         if undone:
-            return {"how": "live"}
+            return {"how": "live", "partial": bool(refused or entry["indices"])}
         if refused:
             raise CantUndo(refused[0].split("; to give up on")[0])
-        return None
+        raise CantUndo("too old: the live log no longer holds it")
 
-    async def _undo_bin_step(self, request, entry: dict[str, Any]) -> dict[str, Any]:
+    async def _undo_bin_step(self, request, entry: dict[str, Any], asked: dict[str, Any]) -> dict[str, Any]:
         """A delete: the rig back from the bin, as `POST /rigs/{name}/restore`
         puts it back."""
         from . import rigbin
@@ -7210,30 +7302,38 @@ class Agent:
                 self.busy = None
         return {"how": "restored", "rig": name}
 
-    async def _undo_file_step(self, request, entry: dict[str, Any]) -> dict[str, Any]:
+    async def _undo_file_step(self, request, entry: dict[str, Any], asked: dict[str, Any]) -> dict[str, Any]:
         """A write of a rig file: its bytes before put back, whole, while it
         is still as the write left it (a file that was new goes into the
         bin instead, rigbin.py), then what the write did to the running rig
-        done again (`apply`, see the block's head):
+        done again (`apply`, see the block's head), as the rig is now:
 
         - `switch`: the running rig switched into the file put back, as a
-          revert is (`_revert_switch`); live work not saved since is dropped,
-          as Undo went back past it.
+          revert is (`_revert_switch`), and the pedals follow it after
+          (`_midi_sync`), as a revert's do. Held as a revert is held: live
+          work no save holds is not dropped without `discard` (`UndoHeld`,
+          `unsaved`), and with `"restart": false` a switch that would
+          restart Sushi is asked about first (`restarts`).
         - `bindings`: the pedal map follows the file live where the
           assignment's would (`_undo_bindings`: the agent's bindings, and
           Sushi's mappings where only they differ, #210), else `restart`.
         - `restart`: nothing to do while the rig runs as it did when the
-          write was made (it never played it: the file is what plays again);
-          `restart` offered when it has restarted since.
+          write was made (it never played it: the file is what plays again).
         - `none`: a Save's (the file is what played before; the save's log
           entry is withdrawn, so what it wrote counts as unsaved again), or
-          another rig's file (`next start`)."""
+          another rig's file (`next start`).
+
+        Decided at the Undo, not the write: a file that is the running rig's
+        now, in a run other than the write's (restarted, or switched to
+        since), plays what was written, so putting it back waits for a
+        restart, offered, whatever the write itself did."""
         from . import rigbin, saves
 
         path = Path(entry["path"])
         name = path.stem
         root = self._midi_root()
         self._refuse_while_busy()
+        switched_at_all = False
         async with self._lock:
             self.busy = "undo"
             try:
@@ -7241,6 +7341,8 @@ class Agent:
                 running = run["running"] is not None and run["running"].resolve() == path.resolve()
                 same_run = not run_changed(entry.get("run") or {}, run["state"])
                 apply = entry.get("apply") or "none"
+                if running and not same_run and apply in ("none", "restart"):
+                    apply = "restart"  # the run now was started from what was written
 
                 def put_back() -> None:
                     now = path.read_bytes() if path.exists() else None
@@ -7261,17 +7363,29 @@ class Agent:
                     return {"how": "next start", "rig": name}
                 if apply == "switch":
                     try:
-                        await self._rigfile_thread(
+                        compiled = await self._rigfile_thread(
                             request, path, lambda: self._revert_compile(entry["before"], run, name))
                     except RigFileRefused as exc:
                         raise CantUndo(str(exc)) from exc
                     async with self._live_lock:
-                        discarded = unsaved_entries(self.log, since=run["state"].get("started_at"))
+                        refusal = revert_refusal(run["state"], self.log)
+                        if refusal is not None and not asked["discard"]:
+                            raise UndoHeld(refusal[0].replace("a revert replaces", "undoing it replaces")
+                                           .replace("revert with discard", "undo with discard"), refusal[1])
+                        if asked["restart"] is False:
+                            restarts = await asyncio.to_thread(self._would_restart, compiled, run)
+                            if restarts:
+                                raise UndoHeld(f"switching {name} back restarts Sushi: "
+                                               + "; ".join(f"{r['code']}: {r['detail']}" for r in restarts),
+                                               "restarts", {"why": restarts})
+                        discarded = (unsaved_entries(self.log, since=run["state"].get("started_at"))
+                                     if asked["discard"] else [])
                         await self._rigfile_thread(request, path, put_back)
 
                     def mark(logged: dict[str, Any]) -> None:
                         logged["args"]["undo"] = entry["label"]
 
+                    switched_at_all = True
                     switched = await self._revert_switch(
                         request, name, {"id": "undo", "what": "as it was before"}, mark=mark, done="put back",
                         discarded=discarded, command=["undo", name])
@@ -7279,7 +7393,8 @@ class Agent:
                         # The file is back whatever the switch did: a restart plays it.
                         return {"how": "restart", "offer": "restart", "rig": name, "reason": switched.get("reason")}
                     return {"how": "switched", "rig": name,
-                            **{k: switched[k] for k in ("why", "seconds") if k in switched}}
+                            **{k: switched[k] for k in ("why", "seconds") if k in switched},
+                            **({"discard": discard_said(discarded, switched)} if discarded else {})}
                 async with self._live_lock:
                     await self._rigfile_thread(request, path, put_back)
                     if apply == "none" and entry.get("save_entry") is not None and same_run:
@@ -7291,6 +7406,27 @@ class Agent:
                 return {"how": "file", "rig": name}
             finally:
                 self.busy = None
+                if switched_at_all:
+                    await self._midi_sync()  # the switch stopped the listener; it follows the rig now
+
+    def _would_restart(self, compiled: dict[str, Any], run: dict[str, Any]) -> list[dict[str, str]]:
+        """Why a switch of the running rig into `compiled` would restart
+        Sushi rather than switch live, as `_switch_held` decides it
+        (`rigfile.diff`, then the state's blockers), or [] for a live one.
+        Off the loop. A live switch that fails part-way still restarts:
+        this is what is known before it is tried."""
+        state = run["state"]
+        reasons = [r.as_dict() for r in state_blockers(state)]
+        try:
+            running = self.switching.read_config(run["described"].get("config"))
+            decided = rigfile.diff(running, compiled, root=self._amp_root(),
+                                   amp_off=state.get("amp_requested") is False)
+        except Exception as exc:  # noqa: BLE001 -- unreadable is a restart, as the switch says it
+            return reasons + [{"code": "unreadable", "detail": f"the running rig's compiled config could not be "
+                                                               f"read: {type(exc).__name__}: {exc}"}]
+        if isinstance(decided, rigfile.NeedsRestart):
+            reasons += [r.as_dict() for r in decided.reasons]
+        return reasons
 
     def _withdraw_save(self, entry: dict[str, Any]) -> None:
         """A Save's Undo, the file put back: its log entry is no baseline any
@@ -9244,14 +9380,17 @@ def restart_refusal(
             '{"discard": true}) to drop them', "unsaved")
 
 
-def revert_request(body: Any) -> tuple[str, bool]:
-    """`(point, discard)` from a revert's body, or `AgentError` (400): `save`,
-    a snapshot's id or `commit:<sha>` as `GET /rigs/{name}/saves` lists
-    them (checked by shape here, looked up by the route), and `discard`,
-    true or absent. Anything beside them is refused, as a save's body is."""
+def revert_request(body: Any) -> tuple[str, bool, bool | None]:
+    """`(point, discard, restart)` from a revert's body, or `AgentError`
+    (400): `save`, a snapshot's id or `commit:<sha>` as `GET
+    /rigs/{name}/saves` lists them (checked by shape here, looked up by the
+    route), `discard`, true or absent, and `restart`: false to be refused
+    (`restarts`) rather than restart Sushi, true or absent to restart where
+    the switch must (#209). Anything beside them is refused, as a save's
+    body is."""
     from . import saves
 
-    if not isinstance(body, dict) or not set(body) <= {"save", "discard"}:
+    if not isinstance(body, dict) or not set(body) <= {"save", "discard", "restart"}:
         raise AgentError(f'the body of a revert is {{"save": "<id>"}}, with "discard": true to drop unsaved '
                          f"work, not {body!r}")
     point = body.get("save")
@@ -9260,7 +9399,10 @@ def revert_request(body: Any) -> tuple[str, bool]:
     discard = body.get("discard", False)
     if not isinstance(discard, bool):
         raise AgentError(f"'discard' must be true or false, not {discard!r}")
-    return point, discard
+    restart = body.get("restart")
+    if restart is not None and not isinstance(restart, bool):
+        raise AgentError(f"'restart' must be true or false, not {restart!r}")
+    return point, discard, restart
 
 
 def revert_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[str, str] | None:

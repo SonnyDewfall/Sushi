@@ -95,7 +95,7 @@ const state = {
   saveAsOpen: false, saveAsName: "",  // the Save as… form, and what is typed in it
   saveResult: null,          // what the last save or revert from this page said (R.saveOutcome, R.revertOutcome)
   saveRestartConfirm: false, // the restart a save-as offers (its file waits for one, #192), asked again before it runs
-  revert: { open: false, rig: null, list: null, choice: null, pending: false, drop: null },  // Revert…: GET /rigs/<rig>/saves, the point reverted to, the "Drop changes?" asked
+  revert: { open: false, rig: null, list: null, choice: null, pending: false, drop: null, restart: null },  // Revert…: GET /rigs/<rig>/saves, the point reverted to, the "Drop changes?" and "Restart?" asked
   confirming: false, confirmTimer: null,  // Stop's second tap
   record: null, recordBase: null,  // GET /record, with /live; and {elapsed, at} of the take running
   takesOpen: { pending: false, result: null },  // the rack's Open folder (#189): in flight, and what it said
@@ -138,7 +138,7 @@ const state = {
   // The one Undo (#209): GET /undo's answer, a press in flight, what the last
   // press said (`R.undoOutcome`, with its time), and the restart it offers
   // asked again before it runs.
-  undo: { answer: null, pending: false, said: null, restartConfirm: false },
+  undo: { answer: null, pending: false, said: null, restartConfirm: false, ask: null },
   pollSeq: 0, seq: 0, timer: null, polling: false,
   screen: null, regions: null, updaters: [], keys: new WeakMap(),
 };
@@ -1041,20 +1041,29 @@ async function move(unit, direction) {
 // The one Undo (#209): POST /undo, and what it said beside the button for
 // R.NOTICE_MS. Whatever it put back may be a rig file, the bin or the
 // pedals, so everything they show is read again.
-async function undo() {
+async function undo(opts = {}) {
   const u = state.undo;
   if (u.pending) return;
   u.pending = true;
+  u.ask = null;
   render();
+  // The step the button shows, by its number: another page's, or a change
+  // landing since, is refused as `changed` rather than undone instead.
+  const next = u.answer && u.answer.ok ? u.answer.body.next : null;
+  const call = R.undoCall(next, opts);
   let answer;
   try {
-    answer = await request("POST", R.UNDO_CALL.path, R.UNDO_CALL.json);
+    answer = await request("POST", call.path, call.json);
   } finally {
     u.pending = false;
   }
-  u.said = { ...R.undoOutcome(answer), at: noticeClock() };
+  const said = R.undoOutcome(answer);
+  // Held (#235's review): "Drop changes?" or "Restart?", then the same press
+  // again with the answer, and what was answered before kept.
+  u.ask = said.ask ? { what: said.ask, opts } : null;
+  u.said = said.ask ? null : { ...said, at: noticeClock() };
   u.restartConfirm = false;
-  if (answer.ok && answer.body) u.answer = { ok: true, status: 200, body: { next: answer.body.next ?? null } };
+  if (answer.body && "next" in answer.body) u.answer = { ok: true, status: 200, body: { next: answer.body.next ?? null } };
   armNotices();
   render();
   kick();
@@ -1083,9 +1092,16 @@ function undoRegion(el, screen) {
   const u = state.undo;
   const view = R.undoButton(u.answer, { locked: state.locked, screen, pending: u.pending });
   const said = u.said;
-  patch(el, JSON.stringify([view, said && [said.ok, said.text, said.title, !!said.offer], u.restartConfirm, !!state.pending]), () => [
-    h("button", { class: `undo${view.cant ? " cant" : ""}`, disabled: view.disabled, title: view.title, "aria-label": view.title,
+  const ask = u.ask;
+  patch(el, JSON.stringify([view, said && [said.ok, said.text, said.title, !!said.offer], u.restartConfirm, !!state.pending,
+    ask && ask.what]), () => [
+    h("button", { class: `undo${view.cant ? " cant" : ""}`, disabled: view.disabled || !!ask, title: view.title, "aria-label": view.title,
       onclick: () => undo() }, "Undo"),
+    // What a press was held for: dropping unsaved work, or a restart that
+    // cuts the sound. Yes presses again with it, keeping what was said before.
+    ask ? confirmBox(ask.what === "drop" ? "Drop changes?" : "Restart?",
+      () => undo({ ...ask.opts, ...(ask.what === "drop" ? { discard: true } : { restart: true }) }),
+      () => { u.ask = null; render(); }, { pending: u.pending, cls: "undo-ask" }) : null,
     said ? h("span", { class: `undo-said ${said.ok ? "ok" : "refused"}`, role: said.ok ? "status" : "alert", title: said.title || null },
       said.text) : null,
     said && said.offer && !u.restartConfirm ? h("button", { class: "rig-act small undo-restart", disabled: !!state.pending,
@@ -2910,7 +2926,7 @@ function drawSaveDot(el, dot) {
 function revertKey(view) {
   const r = state.revert;
   const rows = R.revertRows(r.list, Date.now(), clockDay);
-  return { rig: r.rig, rows, choice: r.choice, drop: r.drop, pending: r.pending };
+  return { rig: r.rig, rows, choice: r.choice, drop: r.drop, restart: r.restart || null, pending: r.pending };
 }
 
 // A time with its day when it is not today's: a save of yesterday at 14:02
@@ -2933,15 +2949,16 @@ async function refreshSaves() {
 
 function toggleRevert(rig) {
   const r = state.revert;
-  if (r.open) { Object.assign(r, { open: false, choice: null, drop: null }); render(); return; }
-  Object.assign(r, { open: true, rig, list: null, choice: null, drop: null });
+  if (r.open) { Object.assign(r, { open: false, choice: null, drop: null, restart: null }); render(); return; }
+  Object.assign(r, { open: true, rig, list: null, choice: null, drop: null, restart: null });
   render();
   refreshSaves();
 }
 
 // A point, tapped, is reverted to at once: no confirm, since the one Undo
 // puts the file back (#209). Only unsaved changes the revert would drop,
-// which no Undo brings back, are asked about: "Drop changes?".
+// which no Undo brings back, are asked about, "Drop changes?", and a revert
+// that would restart Sushi, which cuts the sound, "Restart?" (#235's review).
 function revertPanel(view) {
   const key = revertKey(view);
   const { rows } = key;
@@ -2956,19 +2973,22 @@ function revertPanel(view) {
       h("span", { class: "n" }, row.title, row.current ? h("span", { class: "tag" }, "now") : null),
       h("span", { class: "s" }, row.sub))))) : null,
     key.drop ? confirmBox("Drop changes?", () => revertTo(key.rig, key.drop, true),
-      () => { state.revert.drop = null; render(); }, { pending: !!key.pending, cls: "revert-drop" }) : null);
+      () => { state.revert.drop = null; render(); }, { pending: !!key.pending, cls: "revert-drop" }) : null,
+    key.restart ? confirmBox("Restart?", () => revertTo(key.rig, key.restart.row, key.restart.discard, true),
+      () => { state.revert.restart = null; render(); }, { pending: !!key.pending, cls: "revert-restart" }) : null);
 }
 
 // POST /rigs/<rig>/revert, then what it said, under the buttons. A refusal
 // for unsaved work asks, once, whether to drop it.
-async function revertTo(rig, row, discard) {
+async function revertTo(rig, row, discard, restart = false) {
   const r = state.revert;
   if (r.pending) return;
   r.pending = true;
   r.choice = row.id;
   r.drop = null;
+  r.restart = null;
   render();
-  const call = R.revertCall(rig, row.id, discard);
+  const call = R.revertCall(rig, row.id, discard, restart);
   let answer;
   try {
     answer = await request("POST", call.path, call.json);
@@ -2978,6 +2998,9 @@ async function revertTo(rig, row, discard) {
   const said = R.revertOutcome(rig, answer);
   if (!said.ok && said.code === "unsaved") {
     r.drop = row;
+    state.saveResult = null;
+  } else if (!said.ok && said.code === "restarts") {
+    r.restart = { row, discard };
     state.saveResult = null;
   } else {
     state.saveResult = said;

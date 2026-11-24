@@ -333,12 +333,20 @@ def test_a_load_is_undone_by_the_one_undo_the_file_back_and_the_rig_switched_int
     assert path.read_bytes() != before
     status, state = call(agent, "GET", "/undo")
     assert status == 200 and state["next"]["label"] == "load gv-guitar" and state["next"]["act"] == "load", state
+    syncs, real = [], agent._midi_sync
+
+    async def counting():
+        syncs.append(1)
+        await real()
+
+    agent._midi_sync = counting
     status, body = call(agent, "POST", "/undo", json={})
     assert status == 200, body
     assert body["said"] == "Undone: load gv-guitar" and body["how"] == "switched", body
     assert path.read_bytes() == before, "the file as it was before the load, byte for byte"
     assert plugins_of(fake, "vocal") == vocal, "the rig plays it again: a reading of the fake"
     assert runner.calls == [], "nothing was restarted"
+    assert syncs, "the switch stopped the pedals' listener: it follows the rig after (#235's review)"
 
 
 def test_a_preset_loaded_back_onto_its_channel_sets_what_differs(root):

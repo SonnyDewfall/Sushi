@@ -46,10 +46,11 @@ cannot reverse (the file changed since, the bin entry gone, a knob turned
 from the panel) with `cant_undo` and drops it, so the next press goes on to
 the one before, as the live undo's `skip` always did.
 
-**A rig switch ends the live entries.** What was done before it was done to
-another rig (the live log's barrier, `agent.pick_undo`), so they are dropped
-from here when a switch is recorded (`drop_live`); file and bin entries
-stay, since a file is where it is whatever runs.
+**A rig switch ends the live entries**, and so do `up`, `down` and
+`restart` (`Agent._run_lifecycle`). What was done before was done to another
+run (the live log's barrier, `agent.pick_undo`), so they are dropped from
+here (`drop_live`); file and bin entries stay, since a file is where it is
+whatever runs.
 
 **Per agent, in memory.** The history survives a page reload, and every
 page of the agent shares it, but not an agent restart, as the live log

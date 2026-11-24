@@ -74,17 +74,23 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
     a screen reader) says what the next press does ("Undo delete clean"),
     "Nothing to undo", or "Can't undo: …" with the reason, for a step the
     agent cannot put back (the file changed since, the bin entry gone, a
-    Save as); pressed then, it says "Can't undo" and the step is dropped, so
-    the next press goes on. After a press, a few words beside it say what it
+    Save as, a live change too old for the live log); pressed then, it says
+    "Can't undo: delete clean", naming the step on the page (a phone shows
+    no title), and the step is dropped, so the next press goes on. A press
+    names the step it was shown (`seq`): one another page, or a change since,
+    put on top is "Changed: press again", not undone in its place. Sushi or
+    the agent not answering is said so ("Sushi not answering", "Timed out",
+    "Agent not answering"). After a press, a few words beside it say what it
     did ("Undone: delete clean"), for 15 s; where the rig plays the change
     until a restart, "· restart" and a **Restart** button, which asks
     **Restart?** with **Yes** and **No**. The history is the agent's, so a
     reload keeps it and every page shares it; an agent restart clears it.
   - **The lock.** Locked, the button holds what the lock holds of the change
-    itself: a move, an add, a remove, the amp's model and a pedal's
-    assignment (title "Locked: pedal c"). A knob, a fader and a bypass are let
-    through, and so are the rack's file edits that are not behind the lock
-    (a channel, an input, a Save, a revert, a delete). **On the stage** it is for the live edits: a step of a file
+    itself: a move, an add, a remove, the amp's model, a pedal's assignment
+    (title "Locked: pedal c"), and the Undo of a revert or a channel load,
+    which switches the rig. A knob, a fader and a bypass are let through,
+    and so are the rack's file edits that are not behind the lock (a
+    channel, an input, a Save, a delete). **On the stage** it is for the live edits: a step of a file
     or the bin is off there, its title "Undo … on the rack".
   - **What it replaced.** The live-edit Undo above Save, its "Skip it" after
     a refusal, and the 15 s "Undo: put back" offers under the rig picker
@@ -95,8 +101,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
     cannot be taken back, in one or two words with **Yes** and **No**:
     **Stop?** (still a second tap, forgotten after eight seconds),
     **Restart?** (after an edit, a pedal, a Save as or an Undo that waits
-    for one), **Restart amp?** (a model change), and **Drop changes?** (a
-    revert the agent refused for unsaved work, which no Undo brings back).
+    for one; and before a revert, or the Undo of a revert or a load, whose
+    switch would restart Sushi: the page sends `restart: false` first and
+    asks on `restarts`), **Restart amp?** (a model change), and **Drop
+    changes?** (a revert, or the Undo of one, that would drop unsaved work,
+    which no Undo brings back).
     A restart the agent refuses for unsaved work offers **Restart anyway**.
   - **Text.** Paragraphs explaining choices are gone from the sidebars,
     panels and results: what is left is a heading, the control, and a short
