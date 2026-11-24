@@ -286,3 +286,36 @@ def test_a_loads_answer_stays_with_its_channel_and_its_second_tap_goes_there(bro
     assert [e["name"] for e in rig(files_served)["channels"][1]["chain"]] == ["vocal_drive", "vocal_echo"]
     assert page.errors == []
     page.close()
+
+
+def test_a_waiting_loads_panel_stays_open_until_its_answer_is_seen(browser, files_served):
+    """Re-review of PR #234: closing the panel of a load that waits left
+    every Load… off, and reopening it then wiped the answer, so a refusal's
+    second tap was never seen. While it waits, Close and every Load… are
+    off; the answer lands in the open panel, its offer with it."""
+    page = rack(browser, files_served)
+    p = page.page
+    unlock(p)
+    status = p.evaluate("""async () => (await fetch('/live/parameter', {method: 'POST', headers: {'content-type':
+      'application/json'}, body: JSON.stringify({processor: 'vocal_send', parameter: 'gain', value: 0.7})})).status""")
+    assert status == 200
+    held = []
+    p.route("**/rig/channels/*/load", lambda route: held.append(route))
+    group = panel(p, "vocal")
+    group.get_by_label("Channel to load onto vocal").select_option(label="spare / lead")
+    group.get_by_role("button", name="Load", exact=True).click()
+    expect(group.get_by_role("button", name="Loading…")).to_be_visible()
+    close = group.get_by_role("button", name="Close")
+    expect(close).to_be_disabled()
+    for channel in ("vocal", "board"):
+        expect(p.get_by_role("button", name=f"Load a channel onto {channel}")).to_be_disabled()
+    held.pop().continue_()
+    p.unroute("**/rig/channels/*/load")
+    expect(group.locator(".load-result")).to_contain_text("Not loaded: spare / lead onto vocal")
+    expect(group.get_by_role("button", name="Load anyway")).to_be_enabled()
+    expect(close).to_be_enabled()
+    expect(p.get_by_role("button", name="Load a channel onto board")).to_be_enabled()
+    group.get_by_role("button", name="Load anyway").click()
+    expect(group.locator(".load-result")).to_contain_text("Loaded spare / lead onto vocal")
+    assert page.errors == []
+    page.close()

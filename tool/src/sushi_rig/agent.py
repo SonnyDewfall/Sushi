@@ -6133,7 +6133,10 @@ class Agent:
             name, channels = rigedit.new_rig_request(await self._json_body(request))
         except rigedit.EditRequestError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
+        self._refuse_while_busy()
+        source_git = await self._sources_git_before([c["from"] for c in channels])
         answer = await self._rigfile_locked(request, lambda run: self._write_new_rig(request, run, name, channels))
+        self._sources_git_fill([c["from"] for c in answer["channels"]], source_git)
         answer["offer"] = "switch" if answer["run"]["described"].get("running") else "start"
         answer["takes_effect"] = "start"
         answer["note"] = (f"{answer['file']} is a new rig, not running and not committed: "
@@ -6163,7 +6166,10 @@ class Agent:
                     "width": change["width"], "from": source}
             return rigedit.with_channel(raw, rigedit.channel_entry(change, copied)), said
 
+        self._refuse_while_busy()
+        source_git = await self._sources_git_before([change["from"]])
         answer = await self._rigfile_locked(request, lambda run: self._write_edit(request, run, path, edit))
+        self._sources_git_fill([answer["change"].get("from")], source_git)
         return web.json_response(await self._rigfile_answer(answer))
 
     async def channel_input_route(self, request):
@@ -6217,8 +6223,6 @@ class Agent:
         lifecycle lock (`_rigfile_git_after`), and without what was only for
         the route (`run`, `path`)."""
         await self._rigfile_git_after(answer, answer["path"])
-        await self._sources_git_after([c.get("from") for c in answer.get("channels") or []]
-                                      + [(answer.get("change") or {}).get("from")])
         return {k: v for k, v in answer.items() if k not in ("run", "path")}
 
     def _rigfile_copy(self, change: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -6234,8 +6238,8 @@ class Agent:
         channels may start from one channel, and a channel of a rig may
         start from that rig's own channel (#208, as a preset could, #127).
         A name past the naming rule is `name`; a clash is the compiler's.
-        What git says of the source file (`said["git"]`) is filled in after
-        the lifecycle lock is let go (`_sources_git_after`), never under it."""
+        What git says of the source file (`said["git"]`) is read before the
+        lifecycle lock is taken (`_sources_git_before`), never under it."""
         from . import channelcopy
 
         source = change.get("from")
@@ -6265,28 +6269,37 @@ class Agent:
         return copied, {"rig": source["rig"], "channel": source["channel"], "file": self._save_shown(path),
                         "plugins": len(copied["chain"]), "git": None}
 
-    async def _sources_git_after(self, sources: list[dict[str, Any] | None]) -> None:
-        """Each copy's `from` given `git`, what git says of the rig file it
-        was copied from: read once the lifecycle lock is let go and within
-        `SAVE_TIMEOUT`, as `_rigfile_git_after` reads the file written
-        (review of PR #234). Past the deadline each stays `null`, not known."""
+    async def _sources_git_before(self, refs: list[dict[str, Any] | None]) -> list[Any]:
+        """What git says of each `from`'s rig file (`{"rig", "channel"}` or
+        None), read before the lifecycle lock is taken and so before
+        anything is written: a copy from the rig it lands in is said as it
+        was copied, never as the write made it (re-review of PR #234), and a
+        hung git keeps no lifecycle route busy (review, 2026-11-06). Within
+        `SAVE_TIMEOUT`; past it, or for a rig not among config/rigs/' names
+        (never made a path as given), `None`, not known. A moment before
+        the copy: a save landing between is not seen."""
         from .save import file_git_state
 
-        found = [s for s in sources if s]
-        if not found:
-            return
+        if not any(refs):
+            return [None] * len(refs)
         root = self._midi_root()
 
         def read() -> list[Any]:
-            return [(file_git_state(root, root / "config" / "rigs" / f"{s['rig']}.yaml") or {}).get("file")
-                    for s in found]
+            names = set(midi_listener.program_order(root))
+            return [(file_git_state(root, root / "config" / "rigs" / f"{r['rig']}.yaml") or {}).get("file")
+                    if r and r.get("rig") in names else None for r in refs]
 
         try:
-            states = await asyncio.wait_for(asyncio.to_thread(read), SAVE_TIMEOUT)
+            return await asyncio.wait_for(asyncio.to_thread(read), SAVE_TIMEOUT)
         except asyncio.TimeoutError:
-            states = [None] * len(found)
-        for s, state in zip(found, states):
-            s["git"] = state
+            return [None] * len(refs)
+
+    @staticmethod
+    def _sources_git_fill(sources: list[dict[str, Any] | None], states: list[Any]) -> None:
+        """Each copy's `from` given its `git`, as `_sources_git_before` read it."""
+        for source, state in zip(sources, states):
+            if source:
+                source["git"] = state
 
     def _rigfile_compile(self, raw: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
         """`rig.compile_rig_draft` against the run's machine file, or the
@@ -6997,6 +7010,7 @@ class Agent:
         channel = request.match_info["channel"]
         name = f"{source['rig']} / {source['channel']}"
         self._refuse_while_busy()
+        source_git = await self._sources_git_before([source])
         answer: dict[str, Any]
         path: Path | None = None
         async with self._lock:
@@ -7058,7 +7072,7 @@ class Agent:
                 if path is not None:
                     await self._midi_sync()  # the switch stopped the listener; it follows the rig now
         await self._rigfile_git_after(answer, path)
-        await self._sources_git_after([answer.get("from")])
+        self._sources_git_fill([answer.get("from")], source_git)
         if answer["ok"]:
             return web.json_response(answer)
         return web.json_response(answer, status=504 if answer.get("abandoned") else 409)
@@ -7139,7 +7153,7 @@ class Agent:
             "followed": followed, "dropped": dropped, "width": width,
             "amp": channelcopy.amp_note(source, channel, str(old.get("input")), rig_amp),
             "from": {"rig": source.rig, "channel": source.channel, "file": self._save_shown(source_path),
-                     "plugins": len(source.chain), "git": None},  # filled after the lock
+                     "plugins": len(source.chain), "git": None},  # read before the lock
             "name": name, "channel": channel,
         }
 

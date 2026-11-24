@@ -4129,10 +4129,11 @@ function wiringRow(view, c, choices) {
       onclick: () => { w.editing = c.name; w.change = { input: c.input, width: c.width }; w.result = null; render(); } }, "Change input"));
     const lu = state.loadUi;
     const open = lu.channel === c.name && lu.rig === view.rig;
-    // While a load waits, another strip's Load… stays shut: its answer is the
-    // waiting load's strip's, never another's.
+    // While a load waits, its panel stays open and every other stays shut, so
+    // its answer lands where it was asked and is seen there (review and
+    // re-review of PR #234): no Load… opens or closes a panel meanwhile.
     row.append(h("button", { class: "rig-act small load-toggle", "aria-expanded": open ? "true" : "false",
-      "aria-label": `Load a channel onto ${c.name}`, disabled: !!lu.pending && !open,
+      "aria-label": `Load a channel onto ${c.name}`, disabled: !!lu.pending,
       onclick: () => {
         Object.assign(state.loadUi, open ? { channel: null } : { channel: c.name, rig: view.rig, choice: null, result: null });
         render();
@@ -4185,7 +4186,8 @@ function loadPanel(view, c) {
       result.offer ? h("button", { class: "rig-act offer", disabled: !!lu.pending || !!locked,
         onclick: () => loadChannel(result.channel, result.rig, result.from, result.offer) }, result.offer.label) : null,
       h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { lu.result = null; render(); } }, "×")) : null,
-    h("button", { type: "button", class: "save-act load-close", onclick: () => { lu.channel = null; render(); } }, "Close"),
+    h("button", { type: "button", class: "save-act load-close", disabled: !!lu.pending,
+      onclick: () => { lu.channel = null; render(); } }, "Close"),
     helpAnchor("loadChannel"));
 }
 

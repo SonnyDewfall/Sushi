@@ -7016,8 +7016,10 @@ shown in another strip's panel, and its second tap sent there. The answer
 now names its channel and rig and shows only in that panel, its offer goes
 to that channel, and the other strips' Load… is off while a load waits
 (a browser test holds the request). (3) What git says of a source file was
-read under the lifecycle lock; it is read after it now, within
-`SAVE_TIMEOUT` (`_sources_git_after`), for a load and for "start from"
-alike, `null` past it. (4) A load takes `"rig"`, the rig the page drew, and
+read under the lifecycle lock; it is read just before the lock is taken
+now, within `SAVE_TIMEOUT` (`_sources_git_before`), for a load and for
+"start from" alike, `null` past it. Read before the write, it says what
+was copied even from the rig being written (the re-review: read after it,
+a copy from the same rig always said `changed`). (4) A load takes `"rig"`, the rig the page drew, and
 is `409 changed` when another is running by the time the lock is won (a
 Program Change between). Not tried on the rig. *(2026-11-24)*

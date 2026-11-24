@@ -529,7 +529,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   page drew (`rig`), which the agent refuses as `changed` if another is
   running by then. An answer is its channel's: it is shown in that strip's
   panel only and its second tap loads onto that channel, and while a load
-  waits the other strips' **Load…** is off. After a load the page reads the
+  waits its panel stays open: **Close** and every strip's **Load…** are
+  off until the answer is in, so it is seen. After a load the page reads the
   rig's file again; the chain itself follows `/live` as it always does.
   "Start from" on Add channel and the New rig screen offers the same
   channels with the same labels. This replaced #127's channel presets and

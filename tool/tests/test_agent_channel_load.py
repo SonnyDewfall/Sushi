@@ -214,10 +214,8 @@ def test_a_channel_of_the_running_rig_loads_onto_another_live_with_names_of_its_
     assert text.startswith("# Guitar and vocals as a v2 rig (#30)"), "the file's comments are kept"
     assert "_to_stereo" not in text
     assert body["names"]["compressor"] == "vocal_compressor"
-    # What git says of the source is read after the lock (review of PR #234),
-    # so of the running rig's own file it says what the load made it.
     assert body["from"] == {"rig": "guitar_vocal", "channel": "guitar", "file": "config/rigs/guitar_vocal.yaml",
-                            "plugins": 6, "git": "changed"}
+                            "plugins": 6, "git": "unchanged"}
     entry = body["entry"]
     assert entry["op"] == "rig" and entry["args"]["load"] == {"rig": "guitar_vocal", "channel": "guitar", "onto": "vocal"}
     # The load is a baseline: nothing unsaved after it, and undo stops at it.
@@ -766,6 +764,7 @@ def test_a_channel_added_from_its_own_rigs_channel_has_names_of_its_own(root):
     guitar, _, spare = raw["channels"]
     assert [p["name"] for p in spare["chain"]] == [p["name"].replace("guitar_", "spare_", 1) for p in guitar["chain"]]
     assert body["change"]["from"]["channel"] == "guitar"
+    assert body["change"]["from"]["git"] == "unchanged", "the source as copied, not as the add wrote it"
     compile_named_rig("guitar_vocal", root, root / MACHINE)
 
 
@@ -778,9 +777,10 @@ def test_a_start_from_whose_names_would_be_too_long_writes_nothing(root):
     assert not rig_file(root, "long").exists()
 
 
-def test_git_of_the_source_is_read_after_the_lifecycle_lock(root, monkeypatch):
+def test_git_of_the_source_is_read_outside_the_lifecycle_lock(root, monkeypatch):
     """Review of PR #234: what git says of the file a chain was copied from
-    is read once the lock is let go, as the written file's is (2026-11-06)."""
+    is never read under the lock (2026-11-06); and before the write, so it
+    says what was copied (its re-review)."""
     import sushi_rig.save as save
 
     agent, world, fake, _ = make_agent(root)

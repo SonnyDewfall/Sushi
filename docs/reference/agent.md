@@ -695,7 +695,7 @@ writes every rig's), with empty chains, unless a channel says `from: {rig,
 channel}`, which copies that channel's chain and `level:` from that rig's
 file as it stands now (not as git last committed it: a tone saved and not yet
 committed is the one you hear; the answer says what git says of that file,
-read once the lifecycle lock is let go). Each plugin is named for the new
+read just before the lifecycle lock is taken, so before anything is written). Each plugin is named for the new
 channel as a load names it (`<channel>_<base>`, below), so two channels may
 start from one channel, and a rig's channel from that rig's own.
 `POST /rigs/<rig>/channels/add` adds a channel to the end of a rig file, and
@@ -1036,7 +1036,8 @@ compiler's (`rig.compile_rig_draft`). The page lists the channels from
   Sushi's `cc_mappings`, loaded only with the config, so one followed or
   dropped makes the load a restart; a pedal's bypass is the agent's, and
   stays live. The answer's `from` names the source file and what git says
-  of it (read after the lifecycle lock, `null` if git does not answer
+  of it (read just before the lifecycle lock is taken, so as it was copied
+  even from the running rig's own file; `null` if git does not answer
   within the save's timeout), `amp` says whether the amp is in front of the channel (and when a
   guitar channel heard through the amp in its own rig lands where none
   is), and `width` when the source is the other width. **Discarded work is
