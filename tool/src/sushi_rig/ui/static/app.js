@@ -140,6 +140,10 @@ const state = {
   // `pending` and `result` name the channel and rig the load was for, so an
   // answer is shown in its own strip's panel only.
   loadUi: { channel: null, choice: null, pending: null, result: null, rig: null },
+  // A strip's Remove (#190): the ask open on `channel` of `rig`, the removal
+  // in flight, what it said there (a refusal, its offer), and `done`, said
+  // at the strips' foot once the channel has gone.
+  removeUi: { channel: null, rig: null, pending: null, result: null, done: null },
   open: new Set(),           // units opened, by name
   // The rack's tabs and rows (#135):
   tab: { rig: null, id: null },  // the tab the player chose (or the one remembered), and the rig it is for
@@ -4157,14 +4161,18 @@ function stripsRegion(el, model, unsaved) {
     const focus = focusedName(slot);
     const lu = state.loadUi;
     const loadOpen = lu.channel === name && lu.rig === view.rig;
+    const ru = state.removeUi;
+    const removeOpen = ru.channel === name && ru.rig === view.rig;
     const rebuilt = patch(slot, JSON.stringify([view.blocked ? "blocked" : c === undefined ? "reading" : c, editing,
-      editing ? [w.change, choices] : null, !!w.pending, view.rig || null, !!lu.pending,
+      editing ? [w.change, choices] : null, !!w.pending, view.rig || null, !!lu.pending, !!ru.pending,
       loadOpen ? [lu.choice, lu.pending, lu.result, R.sourceChoices(state.rigs, state.rigChannels, { rig: view.rig, channel: name }),
-        state.locked, !!state.pending] : null]), () => (
+        state.locked, !!state.pending] : null,
+      removeOpen ? [ru.pending, ru.result, state.locked, !!state.pending, filed.length, midiControls()] : null]), () => (
       view.blocked ? null
         : c === undefined ? h("p", { class: "sub strip-input" }, "Reading…")
           : c === null ? h("p", { class: "sub strip-input", title: "Not in the running rig's file." }, "Not in file")
-            : [wiringRow(view, c, choices), loadOpen ? loadPanel(view, c) : null]));
+            : [wiringRow(view, c, choices), loadOpen ? loadPanel(view, c) : null,
+              removeOpen ? removePanel(view, c, filed.length) : null]));
     if (rebuilt) refocus(slot, focus);
   }
 
@@ -4172,9 +4180,15 @@ function stripsRegion(el, model, unsaved) {
   const sources = w.adding && filesReady() ? R.sourceChoices(state.rigs, state.rigChannels) : null;
   const busy = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
   const focus = focusedName(parts.foot);
+  // What a removal said, under the strips of the rig it was for only, and
+  // gone once another rig is drawn, so it does not come back with its rig
+  // (a rig down for a moment, as in the restart the removal made, is not
+  // another rig).
+  if (state.removeUi.done && view.rig && state.removeUi.done.rig !== view.rig) state.removeUi.done = null;
+  const removed = state.removeUi.done && state.removeUi.done.rig === view.rig ? state.removeUi.done : null;
   const rebuilt = patch(parts.foot, JSON.stringify([ready, view.rig, view.channels.map((c) => c.name), choices,
     w.adding && [w.adding.input, w.adding.width, w.adding.from], sources, w.pending, w.result, w.restartConfirm, busy,
-    !!state.pending, view.unsaved]), () => [
+    !!state.pending, view.unsaved, removed]), () => [
     !ready ? null
       : w.adding && !sources ? h("p", { class: "sub" }, "Reading…")
         : w.adding ? addChannelForm(parts.foot, view, choices, sources)
@@ -4186,6 +4200,7 @@ function stripsRegion(el, model, unsaved) {
     w.result ? rigFileResult(w.result, () => { w.result = null; render(); }, () => { w.restartConfirm = true; render(); }) : null,
     w.restartConfirm ? confirmBox("Restart?", restartForEdit, () => { w.restartConfirm = false; render(); },
       { pending: !!state.pending || !!busy }) : null,
+    removed ? resultBox(removed, { cls: "save-result remove-done", dismiss: () => { state.removeUi.done = null; render(); } }) : null,
   ]);
   if (rebuilt) refocus(parts.foot, focus);
   if (ready) drawAddCheck(parts.foot, view);
@@ -4205,12 +4220,21 @@ function wiringRow(view, c, choices) {
     // its answer lands where it was asked and is seen there (review and
     // re-review of PR #234): no Load… opens or closes a panel meanwhile.
     row.append(h("button", { class: "rig-act small load-toggle", "aria-expanded": open ? "true" : "false",
-      "aria-label": `Load a channel onto ${c.name}`, disabled: !!lu.pending,
+      "aria-label": `Load a channel onto ${c.name}`, disabled: !!lu.pending || !!state.removeUi.pending,
       onclick: () => {
         Object.assign(state.loadUi, open ? { channel: null } : { channel: c.name, rig: view.rig, choice: null, result: null });
         render();
         if (!open) inBackground("rig channels", async () => [await refreshRigs(), await refreshAllRigChannels(true)].some(Boolean));
       } }, "Load…"));
+    // Remove (#190): asked first, in its own panel below the row.
+    const ru = state.removeUi;
+    const asking = ru.channel === c.name && ru.rig === view.rig;
+    row.append(h("button", { class: "rig-act small remove-channel", "aria-expanded": asking ? "true" : "false",
+      "aria-label": `Remove ${c.name}`, disabled: !!ru.pending || !!state.loadUi.pending,
+      onclick: () => {
+        Object.assign(state.removeUi, asking ? { channel: null } : { channel: c.name, rig: view.rig, result: null, done: null });
+        render();
+      } }, "Remove"));
     return row;
   }
   const change = {};
@@ -4248,7 +4272,7 @@ function loadPanel(view, c) {
   return h("div", { class: "load-panel", role: "group", "aria-label": `Load onto ${c.name}` },
     h("label", { class: "selector" }, h("span", { class: "label" }, "From"), select),
     h("button", { type: "button", class: "save-act primary load-go", title: locked,
-      disabled: !!lu.pending || !!state.pending || !!locked || !lu.choice,
+      disabled: !!lu.pending || !!state.removeUi.pending || !!state.pending || !!locked || !lu.choice,
       onclick: () => loadChannel(c.name, view.rig, lu.choice, {}) }, lu.pending ? "Loading…" : "Load"),
     locked ? h("p", { class: "sub lock-says", title: locked }, lockIcon(), "Locked") : null,
     // A few words (#209): the title, and for a refusal what is wrong; the
@@ -4257,7 +4281,7 @@ function loadPanel(view, c) {
       title: [result.ok ? result.text : result.reason, ...result.notes].filter(Boolean).join(" ") || null },
       h("strong", {}, result.title),
       !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason, 40, result.title)) : null,
-      result.offer ? h("button", { class: "rig-act offer", disabled: !!lu.pending || !!locked,
+      result.offer ? h("button", { class: "rig-act offer", disabled: !!lu.pending || !!state.removeUi.pending || !!locked,
         onclick: () => loadChannel(result.channel, result.rig, result.from, result.offer) }, result.offer.label) : null,
       h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { lu.result = null; render(); } }, "×")) : null,
     h("button", { type: "button", class: "save-act load-close", disabled: !!lu.pending,
@@ -4267,7 +4291,8 @@ function loadPanel(view, c) {
 
 async function loadChannel(channel, rig, from, asked) {
   const lu = state.loadUi;
-  if (lu.pending || !from || R.lockRefusal(state.locked, "load_channel")) return;
+  // One rack edit of a channel at a time: a load waits for a removal, and the other way round.
+  if (lu.pending || state.removeUi.pending || !from || R.lockRefusal(state.locked, "load_channel")) return;
   lu.pending = { channel, rig };
   render();
   const call = R.channelLoadCall(channel, from, asked, rig);
@@ -4282,6 +4307,83 @@ async function loadChannel(channel, rig, from, asked) {
   if (answer.ok || (answer.body || {}).written) {
     const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
     if (rig.config_name) refreshRigChannels(rig.config_name, true).then(render);
+    kick();
+  }
+}
+
+// The running rig's MIDI map as GET /midi has it, or null when not known:
+// what a channel's "Remove?" names of it.
+function midiControls() {
+  const body = state.midi && state.midi.ok ? state.midi.body : null;
+  return body && body.assignments ? body.assignments.controls || [] : null;
+}
+
+// A strip's Remove (#190): "Remove?" and what goes, in a word or two on the
+// page and in full in the title; behind the lock, as a load is. A refusal
+// is shown here with the second tap it offers, and a removal that would
+// restart Sushi asks "Restart?" first. The rig's last channel is not asked:
+// the agent refuses it, and the page says so.
+function removePanel(view, c, count) {
+  const ru = state.removeUi;
+  const locked = R.lockRefusal(state.locked, "remove_channel");
+  const goes = R.channelGoes(c, midiControls());
+  const result = ru.result && ru.result.channel === c.name && ru.result.rig === view.rig ? ru.result : null;
+  const busy = !!ru.pending || !!state.loadUi.pending || !!state.pending;
+  const close = () => { ru.channel = null; ru.result = null; render(); };
+  const ask = (asked) => removeChannel(c.name, view.rig, asked);
+  let body;
+  if (count <= 1) {
+    body = h("p", { class: "sub said", title: "A rig needs one channel: add another first, or delete the rig." }, "Last channel");
+  } else if (!result) {
+    body = [h("p", { class: "sub remove-goes", title: goes.title }, goes.words),
+      confirmBox("Remove?", () => ask({}), close, { pending: busy || !!locked, cls: "remove-ask" })];
+  } else if (result.ask === "restart") {
+    body = [h("p", { class: "sub said", title: result.reason || null }, R.shortSaid(result.reason || "", 40)),
+      confirmBox("Restart?", () => ask(result.offer), close, { pending: busy || !!locked, cls: "remove-ask" })];
+  } else {
+    body = h("div", { class: `save-result remove-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert",
+      title: [result.ok ? result.text : result.reason, ...result.notes].filter(Boolean).join(" ") || null },
+      h("strong", {}, result.title),
+      // What is wrong in a few words; for the MIDI map, the controls it names.
+      result.midi ? h("span", { class: "said remove-midi" }, `MIDI: ${result.midi}`)
+        : !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason, 40, result.title)) : null,
+      result.offer ? h("button", { class: "rig-act offer", disabled: busy || !!locked,
+        onclick: () => ask(result.offer) }, result.offer.label) : null,
+      h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: close }, "×"));
+  }
+  return h("div", { class: "load-panel remove-panel", role: "group", "aria-label": `Remove ${c.name}?` },
+    body,
+    locked ? h("p", { class: "sub lock-says", title: locked }, lockIcon(), "Locked") : null,
+    ru.pending ? h("p", { class: "sub" }, "Removing…") : null);
+}
+
+async function removeChannel(channel, rig, asked) {
+  const ru = state.removeUi;
+  if (ru.pending || state.loadUi.pending || R.lockRefusal(state.locked, "remove_channel")) return;
+  ru.pending = { channel, rig };
+  render();
+  const call = R.channelRemoveCall(channel, asked, rig);
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    ru.pending = null;
+  }
+  const said = { ...R.removeOutcome(channel, answer, asked), channel, rig };
+  if (answer.ok || (answer.body || {}).written) {
+    // The channel is gone from the file, whether or not the rig was made to
+    // play it ("Not switched"): its strip shows "Not in file", so what was
+    // said goes to the strips' foot, the notes on hover.
+    const reason = [said.reason, ...said.notes].filter(Boolean).join(" ") || null;
+    Object.assign(ru, { channel: null, result: null, done: { ...said, reason } });
+  } else {
+    ru.result = said;
+  }
+  render();
+  if (answer.ok || (answer.body || {}).written) {
+    const now = state.health && state.health.ok ? state.health.body.rig || {} : {};
+    if (now.config_name) refreshRigChannels(now.config_name, true).then(render);
+    refreshMidi(true).then(render);
     kick();
   }
 }

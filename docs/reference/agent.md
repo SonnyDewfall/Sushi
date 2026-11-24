@@ -63,6 +63,7 @@ curl -X POST localhost:8029/rigs/electric-delay/delete                          
 curl -X POST localhost:8029/rigs/electric-delay/restore -d '{"entry": "electric-delay-20261116T101502Z.yaml"}'   # back from the bin; no entry: the newest
 curl localhost:8029/rigs/bin             # what is in the bin, newest first, and which agent's bin it is
 curl -X POST localhost:8029/rig/channels/vocal/load -d '{"from": {"rig": "string-machine", "channel": "strings"}}'   # writes the rig file, then plays it live where it can
+curl -X POST localhost:8029/rig/channels/vocal/remove -d '{"restart": false}'   # the channel out of the running rig (#190): a restart, so refused (409 restarts) until "restart": true
 
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
@@ -1111,7 +1112,7 @@ for, and refuses `changed` too if a newer one landed between its picks),
   `POST /live/undo` itself still works, and what it undoes leaves the history.
 - **`file`**: a write of a rig file: a channel added, an input changed, a
   pedal assigned, a Save over the running rig's own file, a revert, a
-  channel loaded from another rig, a new rig. The bytes before the write are kept, and a digest of what it wrote;
+  channel loaded from another rig, a channel removed, a new rig. The bytes before the write are kept, and a digest of what it wrote;
   the undo puts the bytes back whole (`saves.restore`) only while the file is
   still as the write left it, and a new rig goes into the bin. Then it does
   again what the write did to the running rig: a revert's (and a channel
@@ -1161,8 +1162,10 @@ happens: a rig file write with `_history_file(path, before, after, label,
 run=run, apply=...)` after the write, anything else with a `kind` whose
 reversing method is in `Agent._UNDOERS`. A channel load (`POST
 /rig/channels/{channel}/load`, #208) records its write with
-`apply="switch"`, label "load accustomed / board". Not run against a live
-Sushi or on the rig.
+`apply="switch"`, label "load accustomed / board"; a channel's removal
+(#190) likewise, label "remove channel vocal", `act: "remove_channel"`
+(`apply="none"` for a channel that was not yet playing). Putting a removed
+channel back is always a restart: the live operations make no tracks. Not run against a live Sushi or on the rig.
 
 ## A channel from another rig
 
@@ -1238,6 +1241,70 @@ channel on that input in a rig with an amp, and of nothing else; an amp per
 channel is not built. **Not run against a live Sushi**: shown against
 `test_agent.RigLive` loaded from the real compile, and the real live switch
 (`tests/test_agent_channel_load.py`).
+
+## Removing a channel
+
+A channel taken out of the running rig (#190): its chain and its send with
+it, and the controls of the rig's MIDI map that name it once that is said
+yes to. Made as a load is made (above): the rig file written, then the
+running rig switched to it. What goes and what names the channel is
+`rigedit.py`'s (`without_channel`, `midi_naming`); whether what is left is a
+rig, the compiler's.
+
+- **`POST /rig/channels/<channel>/remove {"rig"?, "discard"?, "drop_midi"?,
+  "restart"?}`**: **the rig file is written** in place, comments kept
+  (`write_rig`), compiled first, and the file as it was kept as a revert
+  point unless a save keeps it already (`kept_before`). Then **the running
+  rig is switched to its file**, which is **a restart**: the agent's own
+  Sushi link takes no track out live (below). With `"restart": false` the
+  removal is **409 `restarts`** with `why` (`track_removed`, and any other
+  reason), nothing written, until `"restart": true` (the page's
+  "Restart?"); with no `restart` it restarts, as a load does where it must.
+  The listener, and its links to Sushi (#210), follow the rig after
+  (`_midi_sync`). Its `op: "rig"` entry carries `args.remove_channel` and is
+  the baseline. 200 with `channel`, `removed` (`plugins`, `send`),
+  `dropped`, `how`, `why`, `kept_before`, `library`. A switch that fails
+  leaves the file written: 409 `not_switched` (or 504), `written: true`,
+  with `midi_note`.
+- **A channel not yet playing** (added to the file since the rig started:
+  no track of the running config, while every channel track of it is still
+  a channel of the file): the file alone is written, `how: "file"`. A
+  channel renamed by hand while it plays is not that (the file no longer
+  names a running track), and goes through the switch, asked. Nothing is switched, so no unsaved work is at stake (none is
+  refused over or dropped), no `op: "rig"` is logged (the live steps stay
+  Undo's) and no take is stopped; its Undo puts the file back and plays
+  nothing (`apply: "none"`).
+- **Refused**, each before anything is written: `no_rig`, `panel`, `v1`,
+  `changed` (`rig` given and another running), `no_channel`,
+  **`last_channel`** (a rig needs one channel), `rig_problem`,
+  `plugins_missing`, `unsaved` (unless `"discard": true`), `restarts`, and
+  **`midi`**: a parameter or bypass of one of its plugins, its mute, its
+  volume, or **a blend** of it and another (a blend needs two channels),
+  each in `mappings` with why, until `"drop_midi": true` takes them out of
+  the file (`dropped`). `busy` while a lifecycle command runs; `403
+  cross_site` from another site's page.
+- **One Undo** (#209): one step, `act: "remove_channel"`, the file's bytes
+  put back and the rig switched into it, which is a restart, asked about
+  first with `"restart": false`.
+
+**Taking a track out live** is built and off. `rigfile.diff(...,
+remove_tracks=...)` plans a track the caller names as one `remove_track`
+step instead of the `track_removed` restart (never the master; a rig switch
+names none), and `live.remove_live_track` takes each processor off, back to
+front, then calls elkpy's `delete_track`; the agent's switch takes it where
+its `Live` has a `remove_track`. `Live.at`, the agent's own link, has none
+(PR #238's review). Against Sushi 1.3.0's release AppImage (dummy frontend,
+some nine hundred runs of [a probe](../../tool/spikes/live_remove_track/README.md),
+2026-11-24, whose README has the counts) the track, its processors and its send went, and the
+master went on with the other channel alone, nothing of the removed one in
+it; but not every time. About one command in twenty was applied and never
+confirmed (elkpy's notice of an async command, nearly always the first on a
+fresh connection), which fails the step and restarts the rig unasked; and a
+few times Sushi stopped applying graph changes at `delete_track` on the
+emptied track, neither applying nor confirming it, and then ignored SIGTERM.
+`delete_track` sent alone, which takes the processors off inside Sushi, was
+clean 300 times in 300: the lead for making it live. The tests drive the live path against a stand-in (`test_agent.RigLive`,
+`tests/test_agent_channel_remove.py`).
 
 ## Recording from the web UI
 

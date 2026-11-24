@@ -1,13 +1,15 @@
 # Building a rig
 
 This is how you make a new rig, add a channel to the one that is playing,
-change which input a channel listens to, and delete a rig you no longer play.
+change which input a channel listens to, remove a channel, and delete a rig
+you no longer play.
 
 A **rig** is one saved setup. A **channel** is one input with its own effects: a
 guitar, a microphone. A rig has between one and three channels, and they all mix
 into one **master** that goes to the monitors.
 
-These screens are on the rack only, and work whether or not the page is locked.
+These screens are on the rack only, and work whether or not the page is
+locked, except **Remove**, which needs the page unlocked.
 
 ## Make a new rig
 
@@ -63,6 +65,33 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
 4. Click **Apply**, or **Cancel**.
 5. Click **Restart**, then **Yes**. **Undo** puts the old input back.
 
+## Remove a channel
+
+1. Unlock the page (the **Lock** button at the top): taking a channel out
+   changes the rig, so the lock holds it, as it holds **Load…**.
+2. On the rack, in the channel's strip on the left, click **Remove**.
+3. The strip asks **Remove?**. The line above says what goes: the channel,
+   how many plugins its chain has and, if any, how many pedal assignments
+   name it (**MIDI**). Hover over the line for each one by name.
+4. Click **Yes**, or **No** to keep it.
+5. The rig has to restart to lose the channel, so the strip asks
+   **Restart?** first, and nothing has changed yet. **Yes** removes it; the
+   sound stops for a few seconds while the rig comes back. A channel you
+   added and have not yet restarted to play is simply taken out of the file,
+   with no restart.
+6. The strip goes, and **Removed** and the channel's name are shown under the
+   strips. **Undo**, at the top of the page, puts the channel back, with its
+   chain and its pedals; that needs a restart, which it asks about.
+
+If a pedal is assigned to the channel (an effect's on/off or a knob on it, its
+on/off, its volume, or a blend of it and another channel), the strip says
+**Not removed** and names the pedal controls: click **Drop** and the number
+**and remove** to take them out of the rig with the channel. With unsaved
+changes it offers **Remove anyway**, which drops them. A rig's only channel
+cannot be removed: the strip says **Last channel**. If the channel has gone
+from the file but the rig could not be made to play it, the box under the
+strips says **Not switched**: hover over it for why, then restart the rig.
+
 ## Delete a rig
 
 1. On the rack, under **RIGS** on the right, click **Delete** beside the rig.
@@ -99,6 +128,7 @@ folder's `.gitignore` where it is.
 
 - **Adding a channel or changing an input needs the rig to restart**, which is
   a few seconds of silence. Nothing changes in the sound until then.
+  So does **removing** a channel, and putting it back with **Undo**.
 - **A new channel with an empty chain has no effects.** Add them on the rack
   once the rig is running ([Shaping a sound](shaping-a-sound.md#add-a-plugin)),
   or use **Start from** to copy another channel's chain.
@@ -136,8 +166,8 @@ folder's `.gitignore` where it is.
   `config/rigs/` folder.
 - Adding a channel from the page and restarting to play it has been done on the
   rig: a vocal channel was added to a guitar rig that way. Making a whole new
-  rig on the **New rig** screen, **Change input** and **Delete** are not yet
-  recorded as tried on the rig.
+  rig on the **New rig** screen, **Change input**, **Remove** and **Delete** are
+  not yet recorded as tried on the rig.
 
 ## If something goes wrong
 

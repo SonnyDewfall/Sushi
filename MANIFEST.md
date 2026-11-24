@@ -7121,6 +7121,43 @@ even an `up` refused for a rig already up: now only when it succeeded or the
 run changed (`_run_identity` of `describe_rig`'s answer before and after).
 Not run on the rig. *(2026-11-24)*
 
+**Remove a channel from a rig (#190).** The rack could add a channel and
+remove a plugin, not take a whole channel out. Each strip's input line now
+has **Remove** beside Load…: its panel asks **Remove?** (Yes, No) over one
+line of what goes ("vocal · 1 plugin · 2 MIDI", each by name on hover: the
+chain, the send, and the controls of the rig's MIDI map that name the
+channel, from `GET /midi`), says **Last channel** and asks nothing on a rig
+with one, and is behind the lock as a load is. `POST
+/rig/channels/<c>/remove {"rig"?, "discard"?, "drop_midi"?, "restart"?}` is
+made as a load is: the rig file written in place, comments kept, compiled
+first, the file as it was kept as a revert point, then the running rig
+switched into it (`_revert_switch`), the pedals' listener and its links to
+Sushi following after (`_midi_sync`). Refused before anything is written:
+`last_channel`, `no_channel`, `changed`, `unsaved` (**Remove anyway**),
+`midi` (a parameter or bypass of its plugins, its mute, its volume, a blend
+of it and another, since a blend needs two channels: **Drop N and remove**,
+the controls named on the page), and with `"restart": false` a removal that
+would restart Sushi, `restarts`, which the page asks as **Restart?**. One
+Undo step (`act: "remove_channel"`, held by the lock): the bytes back and
+the rig switched into them, which is a restart, asked, since the live
+operations make no tracks. **Live where the running rig allows**, which
+needed a new live operation: `rigfile.diff(..., remove_tracks=...)` plans a
+track the caller names as one `remove_track` step (its processors, its
+send among them, go with it) instead of the `track_removed` restart, and
+`live.remove_live_track` takes each processor off back to front, then calls
+elkpy's `delete_track`. Only the removal passes `remove_tracks`: a rig
+switch never removes a track live. So the file's last channel, and one
+added since the rig started (nothing to take out), go live; one in front of
+another moves that one's engine input (`track`), and dropping a knob's
+mapping changes Sushi's `cc_mappings` (`midi`): both restart. `load_refusal`
+takes its words, and the revert point its keeping (`_keep_for_revert`), for
+both. Docs: the agent, web UI and building-a-rig pages. **Unverified**: Sushi
+1.3.0 deleting a track while it plays, and letting go of its engine
+connections, read from elkpy's source and never run; a failure there fails
+the step and the switch restarts into the edited file, as any live switch
+that fails part-way does. Shown against `test_agent.RigLive` and the UI's
+fake. Not tried on the rig. *(2026-11-24)*
+
 **The delay a sound reference holds is the earliest path, not the strongest
 (#143).** Two references held their delay to a path that was not the dry
 signal, with a tolerance of 0, and would have failed on delay alone had the
@@ -7202,6 +7239,97 @@ source of negative lags (it gave delayed copies, at 4163), and says an octave
 down fully wet peaks at +24083 plus the latency and reads as one (tested on a
 synthetic shift). After: `nulltest --all` passes all 44 here, and
 `--calibrate --all` in a copy wrote every delay as committed. *(2026-11-24)*
+
+**Remove a channel: PR #238's review, and the live removal tried on a real
+Sushi (#190).** Run against Sushi 1.3.0's release AppImage here (dummy
+frontend, gRPC; the probe now in
+[`tool/spikes/live_remove_track/`](tool/spikes/live_remove_track/README.md), some nine hundred runs), `live.remove_live_track` took the track, its
+processors and its send out while it played, and the master went on with the
+other channel alone, nothing of the removed one in it. But not every time:
+with the processors taken off send first, as the agent does, 3 runs in 300
+had Sushi stop at `delete_track` on the emptied track, neither applying nor
+confirming it, and then ignore SIGTERM (killed); taken off in the other
+order, 1 in 132 stuck at the send; and about one command in twenty on a
+fresh connection was applied and never confirmed (elkpy subscribes to
+Sushi's command notices on a thread of its own, and a command sent before
+that is up is never confirmed: 10 first commands of 150 without a wait,
+none of 150 with half a second), which would fail the step and restart the
+rig unasked. Sushi's own `delete_track` takes a track's processors off
+itself (its `AudioGraphController::delete_track`, read from the source): sent
+alone, on a track still holding them, it did so 300 times in 300, none stuck
+or unconfirmed. That is the lead for making it live, not yet enough to (one
+stuck run in a hundred would pass 300 about one time in twenty). So
+**`Live.at` gives no `remove_track`**: removing a playing
+channel is a restart, asked first ("Restart?"), and the live path stays for
+the stand-ins of the tests and a Sushi shown to do it every time. The
+real-Sushi run was first a slow test (`tests/test_live_remove_track.py`);
+it is a probe now, since a stuck Sushi ignores SIGTERM and would hold up
+CI. Two wav_writers drift apart on the dummy frontend (11168 frames in one
+run), so it reads the master by its spectrum (440 Hz left, 660 Hz removed),
+not against a second recording. Also from the review: a channel added to the
+file and not yet playing is written out of the file alone (`how: "file"`, no
+unsaved refusal, no switch, so no `op: "rig"`, the live steps kept and no
+take stopped; its Undo `apply: "none"`); a removal written and not switched
+is said under the strips, "Not switched", the reason and the pedals' note on
+hover; that notice shows under its own rig only; a load and a removal wait
+for each other on the page; `rigfile.diff`'s `remove_tracks` is a collection
+of names, a bare `str` refused; and tests for a `remove_track` step that
+fails (the switch restarts into the file, the Undo step kept) and for unsaved
+work on the channel removed, with `discard`. The re-review: that file-only
+removal is said "Removed from file", never "Restarted"; it is taken only
+while every running channel is still in the file, so a channel renamed by
+hand while it plays goes through the switch and is asked; and "Removed X" is
+cleared once another rig is drawn, so it does not come back with its rig.
+Not tried on the rig. *(2026-11-24)*
+
+**The running mute test's flake was its recordings, not Sushi (#243).**
+`test_send_return.py`'s running-Sushi mute test failed once in CI's slow job
+(PR #238): `['copy', 'muted']`, the master's last phase missing. The question
+behind it was whether Sushi 1.3.0 sometimes ignores a send's un-bypass, which
+would leave a player's mute stuck on stage. **It did not, here.** A probe of
+the test as it stood (Sushi 1.3.0's release AppImage, dummy frontend, gRPC,
+this container, not the rig) ran 402 times, 302 of them beside another
+running Sushi for load: every bypass read back true at once and 0.2 s later, every
+un-bypass read back false at once, 0.2 s later and before the recording
+stopped, every command was confirmed (none of #241's unconfirmed first
+commands, about 1600 of them), and the master's own recording played again
+after the mute in all 402, for 6.6 s of audio at the least. The test failed 6
+times in the 402 (and once more in 3 runs before), and in each the master
+played after the mute but its last phase did not line up with the stem's
+recording: the two wav_writers had drifted apart (by 272 to 576 frames, as
+near as the sine's 1200-frame repeat lets it be said; 42 of the 402 ended out
+of line, most too late to cost a phase). Why, read in Sushi's source and not
+isolated: the dummy frontend runs as fast as it can (about 17 times real
+time here), and a wav_writer pushes each chunk into a ring buffer a worker
+empties, losing what does not fit, so each writer loses its own chunks. So
+the agent's mute is unchanged: it sets the send's bypass and needs Sushi's
+confirmation, as before. **The test** now records one wav_writer: the send,
+as the rig makes it, carries the stimulus on one side of the channel only,
+and a second send, a tap after it, carries the stem to the master's other
+side, so the master is read on its own timeline, block by block, the send's
+side against the stem's. It runs once with the sine on the left and once on
+the right, so each of the send's channels is heard muted and coming back. The three-phase assertion is as it was; the un-muted
+phase is 1.5 s (was 0.5 s); `read_live_bypass` is asserted after each change
+and again before the recording stops; a failure says each phase's length in
+blocks. A fast test holds the classifier to a made-up recording, each side (a
+stream gap, a ramp, a late copy, the sides swapped). Measured after: 55 runs
+of each side passed of 55, 15 of them beside the old probe for load (and
+before the second side, 130 of the left alone, 60 under load); 20 more, run
+to read the phases, had 11 to 14 s of copy, 10 to 12 s muted and 28 to 35 s
+of copy again, in audio. Tried against faults, on each side: the un-bypass
+not sent fails at its read-back, and not applied but read back as asked
+fails the three phases; the bypass never set fails as a bypassed send heard.
+PR #244's review: the master's other side, the classifier's reference, was
+never itself checked, so a bypassed send leaking into it during the mute
+would have passed. It is now held to the stem at its level in the copy
+blocks (`stem_side_extras`, within 1e-4 relative; measured, every block
+where the stem played throughout had the same level to the last bit), in
+every copy, mute and ramp block, and a block where the stem does not play
+in each 64-frame chunk is quiet, not judged. A real recording with the
+stem's copy 60 dB down added on the other side during the mute fails it, on
+each side; the fast test holds the same. 22 runs of each side passed of 22.
+**Not covered:** the rig's JACK frontend, which runs in real time and is
+where a stuck mute would matter. *(2026-11-24)*
 
 **The page's fonts, its home-screen install, and pushed changes (#139, the
 first three of its five).** (1) Newsreader, Instrument Sans and Geist Mono are

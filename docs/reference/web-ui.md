@@ -574,6 +574,35 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   its Save channel as…. The decisions are rig.js's (`sourceChoices`,
   `sourceValue`, `sourceFrom`, `channelLoadCall`, `loadOutcome`), tested on
   their own and through the page in `tool/tests/test_ui_channel_load.py`.
+- **Removing a channel (#190).** Each strip's input line has **Remove**
+  beside Load…, which opens a panel in the strip (a group, "Remove vocal?")
+  that asks **Remove?** with **Yes** and **No**, over one line of what goes:
+  "vocal · 1 plugin · 2 MIDI", its title the whole of it (the chain's
+  plugins, the send, and each control of the rig's MIDI map that names the
+  channel, read from `GET /midi`: a parameter or bypass of its plugins, its
+  mute, its volume, a blend with another). On the rig's last channel it says
+  **Last channel** and asks nothing (a rig needs one). It is behind the lock,
+  as a load is (`lockRefusal(…, "remove_channel")`): locked, Yes is off and
+  the panel says "Locked". Yes sends `restart: false` and the rig the page
+  drew; a removal of a channel that plays is a restart, so it comes back
+  asking **Restart?**, and Yes sends it again with `restart: true` (one
+  added to the file and not yet playing is taken out of the file with no
+  restart, said "Removed from file"). A refusal is shown in the panel in a few words with the second tap
+  it offers, keeping any yes already given: **Remove anyway** (`discard`),
+  **Drop N and remove** (`drop_midi`), the controls named on the page ("MIDI:
+  d, knob1") and each with why in the title. Once removed the strip goes,
+  and "Removed vocal" is said under the strips (the restart and why, and
+  that Revert… goes back, on hover) until its × is pressed, under that
+  rig's strips only. A removal written and not played (`not_switched`, or
+  a timeout, `written: true`) is said there too, **Not switched**, the
+  reason and the pedals' note on hover, since the strip has nothing of the
+  channel left to show it in. A load and a removal wait for each other: while
+  one is in flight, the other's buttons are off. The one
+  Undo puts the channel back, held by the lock as a load's is
+  (`UNDO_LOCKED_ACTS`); that is a restart, which it asks about. The
+  decisions are rig.js's (`channelRemoveCall`, `midiNaming`, `channelGoes`,
+  `removeOutcome`), tested on their own and through the page in
+  `tool/tests/test_ui_channel_remove.py`.
 - **Pedals: assigning a device's controls on the rack (#192).** Where the
   machine file describes a device (`GET /midi`'s `controllers`), each unit
   row has a pedal badge between its knobs and its on/off, and each playing
@@ -1160,6 +1189,15 @@ rig and a temporary checkout (`test_ui_undo.py`), and the agent's history
 through its routes (`test_agent_undo.py`); a revert's Undo switches through
 the fake's stand-in for the live switch. Not opened on a phone or the touch
 screen, and no step undone on a live Sushi.
+
+Not run on the rig (2026-11-24): removing a channel (#190), the strip's
+Remove. Tested in headless Chromium against the agent's real route writing
+the real rig file in a temporary checkout, over the fake rig, whose switch
+into the edited file is the fake's own (`ui_fake.UiSave.switched`); the real
+switch, and its `remove_track` step, are driven in
+`test_agent_channel_remove.py` against a fake Sushi. No channel has been
+removed from a live Sushi, nor the panel opened on a phone or the touch
+screen.
 
 Not run on the rig (2026-11-23): a channel from another rig (#208), the
 strip's Load… panel. Tested in headless Chromium against the agent's real
