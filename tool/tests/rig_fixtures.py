@@ -31,7 +31,11 @@ held at c494625 (2026-11-07):
   and test_convert.py's slow test hold the frozen rigs to exactly. Not of
   c494625: each is the reference its rig's channel had in config/sound/ when
   the committed rig compiled to the same channel as the frozen one, byte for
-  byte, as test_rig_fixtures.py's CHECKSUMS says where each came from.
+  byte, as test_rig_fixtures.py's CHECKSUMS says where each came from;
+  except `electric-delay.yaml` and `electric_board.yaml`, whose
+  `delay_samples` (and electric_board's note on it) changed with the code
+  that measures it (#143, 2026-11-24: the earliest path, not the strongest),
+  19440 to 0 and 4163 to 1, every other byte as it came.
 
 `frozen_checkout` lays them out as a checkout. Two things a frozen rig still
 takes from the real one, and why: `plugin-ports.txt`, which is the compiler's
