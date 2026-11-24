@@ -487,3 +487,45 @@ def test_pages_reading_the_rig_together_share_one_read_and_a_change_starts_anoth
             assert live.reads == 4
 
     asyncio.run(go())
+
+
+def test_midi_pushes_what_it_changes_lights_alone_or_the_rig_too():
+    """A footswitch (a named control Sushi maps nothing of) is "midi" alone,
+    which a page reads /health for; a CC Sushi's own cc_mappings move a
+    parameter by is "live" as well, since nothing else would push that
+    change; a Program Change, and what becomes of a message (`_midi_decided`)
+    and an action that could not be done (`_midi_error`), are "midi"."""
+    from sushi_rig import midi_listener
+    from sushi_rig.midi_listener import Feed, Message, Plan
+
+    feed = Feed("fbv", "FBV", midi_listener.Bindings(), True,
+                (("d", "cc", 23), ("pedal", "cc", 7)), 0, sushi_port=0, sushi_ccs=((7, 0),))
+    assert feed.moves_sushi(Message("cc", 0, 7, 90)) and not feed.moves_sushi(Message("cc", 1, 7, 90))
+    assert not feed.moves_sushi(Message("cc", 0, 23, 127)) and not feed.moves_sushi(Message("program", 0, 7))
+
+    async def go():
+        async with served() as server:
+            agent = server.agent
+            agent._midi_plan = Plan(None, feeds=(feed,))
+            stream = await opened(server)
+            heard = []
+
+            async def after(make):
+                make()
+                agent.events.publish("marker")  # by order: the event ends with what `make` pushed
+                said = set()
+                while "marker" not in said:
+                    said |= set((await next_event(stream))["data"]["what"])
+                heard.append(sorted(said - {"marker"}))
+
+            generation = agent._midi_generation
+            await after(lambda: agent._midi_heard(generation, Message("cc", 0, 23, 127)))
+            await after(lambda: agent._midi_heard(generation, Message("cc", 0, 7, 90)))
+            await after(lambda: agent._midi_heard(generation, Message("cc", 5, 99, 1)))  # no control of the board
+            await after(lambda: agent._midi_heard(generation, Message("program", 0, 3)))
+            await after(lambda: agent._midi_decided("refused, test"))
+            await after(lambda: agent._midi_error(Message("program", 0, 3), "dropped, test"))
+            assert heard == [["midi"], ["live", "midi"], [], ["midi"], ["midi"], ["midi"]]
+            stream.close()
+
+    asyncio.run(go())

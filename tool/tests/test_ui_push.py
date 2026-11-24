@@ -282,3 +282,32 @@ def test_a_burst_of_pedal_presses_and_changes_costs_a_bounded_number_of_rig_read
             expect(slider(page, "overdrive Tone")).to_have_attribute("aria-valuenow", "69")
         for page in pages:
             page.close()
+
+
+def test_a_mapped_pedal_swept_reads_the_rig_and_a_footswitch_only_health(browser):  # noqa: F811
+    """The expression pedal, once the rig maps it (a volume, here, played
+    after the restart the assignment asks for), moves a parameter through
+    Sushi's own mapping, with no write of the agent's: its push names "live"
+    and the watching page reads the rig. Footswitch D, on nothing, is a light
+    only: the page reads /health and not the rig. The watching page's poll is
+    stopped, so each read is the push's."""
+    with Served(save=True, pedals=True) as s:
+        assert agent_client.ask(s.url, "POST", "/rig/midi/assign", {"control": "pedal", "volume": "vocal"})[0] == 200
+        assert agent_client.ask(s.url, "POST", "/rig/restart", {})[0] == 200
+        until(lambda: any(f.sushi_ccs for f in s.agent._midi_plan.feeds))
+        watching = Watching(browser, s, "/#stage")
+        watching.page.wait_for_selector(".stage-screen .card")
+        watching.freeze()
+        frozen(watching, seconds=1.5)
+
+        reads = rig_reads(s)
+        s.pedals.press("d")
+        watching.until(lambda: "health" in watching.asked)
+        watching.wait(500)
+        assert "live" not in watching.asked and rig_reads(s) == reads, watching.asked
+
+        watching.asked.clear()
+        s.pedals.sweep(90)
+        watching.until(lambda: "live" in watching.asked)
+        assert rig_reads(s) > reads
+        watching.close()

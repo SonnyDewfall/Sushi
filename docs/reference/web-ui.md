@@ -733,9 +733,12 @@ laptop within a fraction of a second rather than up to a second later
 (measured in Chromium against the fake rig: about 0.1 s for a bypass, 0.2 s
 for a knob turned 0.6 s after it). The event names what changed and carries
 no state: the poll is the one place the page puts its answers together. What
-a push costs is bounded: an event that names only the pedals' lights (`midi`)
-reads `/health` alone, kept only if it shows the same run and nothing
-running (else it is a whole poll); and a push reads the whole rig at most
+a push costs is bounded: an event that names only `midi` (a control's
+count, its light; a Program Change; what became of the last message) reads
+`/health` alone, kept only if no poll began meanwhile and it shows the same
+run and nothing running (else it is a whole poll); a pedal that moves a
+parameter through Sushi's own mapping (a sweep, a volume, a blend, a heel's
+snap) is pushed as `live` too, and read as any change is; and a push reads the whole rig at most
 twice a second a page (`PUSH_LIVE_MS`, one read at the end covering
 everything pushed meanwhile). A swept pedal or a knob dragged on another
 device is then the second's poll and two reads a second on each page, and

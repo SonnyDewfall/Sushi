@@ -294,8 +294,11 @@ of a write answered (any `POST`, whatever its answer, but the visualiser's
 tap lease), `log` (an entry in the operation log: a pedal's change too),
 `busy` (a lifecycle command, a switch, a save ending; not starting, since
 while one runs a page draws no chain, and most take a fraction of a second), `midi` (a
-message of a control the machine file names: the pedals' lights, for which the
-page reads `/health` alone) and `supervisor` (a child of the rig that
+message of a control the machine file names, a Program Change, or what
+`/health` says became of the last message or action: the page reads
+`/health` alone for it), `live` (with `midi`, for a message that moves a
+parameter with no write of the agent's: a CC the running rig's cc_mappings
+map, a sweep, a volume or a blend, or a heel's snap) and `supervisor` (a child of the rig that
 exited with no `down`), or `many` past sixteen at once. An event says what
 changed and carries no state: the page polls `/health`, `/live` and the rest
 at once, as it does every second, because its poll is the one place its

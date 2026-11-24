@@ -167,7 +167,7 @@ const state = {
   // This page's own writes in flight and when the last ended; a push waiting,
   // its timer, and when a push last read the rig: see `pushed`.
   writing: 0, lastWriteEnd: -Infinity, pushWaiting: false, pushTimer: null, pushedAt: -Infinity,
-  lightsReading: false,      // a push of the pedals' lights alone, its /health read in flight: see `readLights`
+  lightsReading: false, lightsAgain: false,  // a "midi" push's /health read in flight, and one more asked: see `readLights`
   screen: null, regions: null, updaters: [], keys: new WeakMap(),
 };
 
@@ -570,9 +570,13 @@ function listen() {
   });
 }
 
-// A push. One that names only the pedals' lights ("midi") reads /health
-// alone (`readLights`): nothing else changed. Any other reads the whole rig,
-// but not at once in two cases:
+// A push. One that names only "midi" reads /health alone (`readLights`): the
+// agent says "midi" for what /health says of MIDI (a control's count, its
+// light; the last message and what became of it), and adds "live" when the
+// message moved a parameter (a CC Sushi maps: a sweep, a volume, a blend; a
+// heel's snap), so a footswitch's light is /health alone and a pedal swept
+// is a read of the rig. Any other reads the whole rig, but not at once in
+// two cases:
 // - while this page's own write is in flight, or within PUSH_HELD_MS of its
 //   end: a poll landing between a write and what the page does with its
 //   answer (closing a panel, putting the focus back, a second write that
@@ -601,15 +605,20 @@ function settlePush() {
   kick();
 }
 
-// The pedals' lights alone (#192, #139): /health's counts, without /live.
-// What it read is kept only if it shows the same run and nothing running
-// that the page drew; otherwise it is a whole poll after all.
+// The pedals' lights alone (#192, #139): /health's MIDI, without /live.
+// What it read is kept only if no poll began meanwhile (a poll's /health is
+// as new or newer, and is the page's to keep), and only if it shows the same
+// run and nothing running that the page drew; otherwise it is a whole poll
+// after all. A "midi" push while one is reading asks for one more after it.
 async function readLights() {
-  if (state.polling || state.lightsReading || !state.health || !state.health.ok) return;
+  if (state.lightsReading) { state.lightsAgain = true; return; }
+  if (state.polling || !state.health || !state.health.ok) return;
   state.lightsReading = true;
+  state.lightsAgain = false;
+  const seq = state.pollSeq;
   try {
     const health = await request("GET", "/health");
-    if (state.polling || !state.health || !state.health.ok) return;
+    if (state.polling || state.pollSeq !== seq || !state.health || !state.health.ok) return;
     const same = (h) => {
       const rig = h.body.rig || {};
       return JSON.stringify([rig.running ? rig.config_name : null, rig.started_at ?? null, (h.body.agent || {}).busy ?? null]);
@@ -620,6 +629,7 @@ async function readLights() {
     render();
   } finally {
     state.lightsReading = false;
+    if (state.lightsAgain) { state.lightsAgain = false; queueMicrotask(readLights); }
   }
 }
 

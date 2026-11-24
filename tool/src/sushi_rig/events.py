@@ -25,8 +25,12 @@ The agent publishes (`Hub.publish`) when:
 - `busy` ends (a lifecycle command, a switch, a save done, from a page or
   a pedal); not as it starts, which `Agent.busy` says why;
 - the MIDI listener hears a message of a control the machine file names
-  (the pedals' lights, `/health`'s counts): the page reads `/health` alone
-  for an event that names nothing else;
+  (the pedals' lights, `/health`'s counts), or a Program Change, or what
+  /health says of the last message changes (decided, refused, dropped):
+  "midi", for which the page reads `/health` alone when the event names
+  nothing else; and "live" as well when the message moves a parameter
+  without any write of the agent's (a CC Sushi's own cc_mappings map: a
+  sweep, a volume, a blend; or a heel's snap), so the page reads `/live`;
 - the supervisor sees a child of the rig exit that no `down` asked for.
 
 What it cannot see is not pushed: a change made to Sushi from outside the

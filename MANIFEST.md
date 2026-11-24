@@ -7259,3 +7259,17 @@ start. (5) `index.html` preloads the fonts; the wait before the first draw is
 0.5 s, and the stream opens after it. (6) The stream tests assert order and
 counts, not short wall-clock limits. Not run on the rig. *(2026-11-24)*
 
+**Pushed changes, PR #242's re-review (#139).** (1) A `midi`-only push
+skipped `/live`, but MIDI moves parameters: Sushi's own cc_mappings (a
+sweep, a volume, a blend) and the heel's snap of a send's gain, none of
+which writes anything the agent would push. A message of a CC the running
+config maps (`Feed.sushi_ccs`, from its cc_mappings, for the feed linked to
+Sushi) or a snap binding now pushes `live` with `midi`; a footswitch on
+nothing stays `/health` alone (both shown in Chromium against the fake, the
+pedal mapped by assigning it and restarting). (2) A Program Change, a
+message's decision (`_midi_decided`) and an action's failure
+(`_midi_error`) change `/health`'s `midi.last` and `last_error`: each pushes
+`midi`. (3) A lights-only read is dropped if a poll began meanwhile, and a
+`midi` push while one reads asks for one more after it. Not run on the rig.
+*(2026-11-24)*
+

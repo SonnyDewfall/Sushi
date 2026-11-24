@@ -4455,8 +4455,16 @@ class Agent:
         if generation != self._midi_generation or plan is None:
             return
         bindings = plan.feeds[feed].bindings
-        if self._midi_saw(plan.feeds[feed], message):
-            self.events.publish("midi")  # the pedals' lights: /health's counts (#139)
+        # What is pushed (#139): "midi" when /health's MIDI changes (a named
+        # control's count, its light; a Program Change, which is decided
+        # after), for which a page reads /health alone; and "live" too when
+        # the message moves a parameter (a CC Sushi maps: a sweep, a volume,
+        # a blend; or a heel's snap below), whose change is in /live, and
+        # which nothing else would push: Sushi moves it with no write here.
+        if self._midi_saw(plan.feeds[feed], message) or message.kind == "program":
+            self.events.publish("midi")
+        if plan.feeds[feed].moves_sushi(message):
+            self.events.publish("live")
         try:
             if message.kind == "program":
                 if bindings.programs is None:
@@ -4472,6 +4480,7 @@ class Agent:
                     message, bindings, self._midi_switches.get(feed, {}), now=time.monotonic())
                 pedal = midi_listener.snap_binding(message, bindings)
                 if pedal is not None:
+                    self.events.publish("live")  # a heel's snap writes the send's gain, logging nothing
                     key = (feed, pedal.control)
                     self._midi_pedal[key] = (message.value, self._midi_pedal.get(key, (0, 0))[1] + 1)
                     if message.value > pedal.heel and (generation, *key) in self._midi_silenced:
@@ -4484,6 +4493,7 @@ class Agent:
                 "message": f"{message.describe()}: {type(exc).__name__}: {exc}",
             }
             self._midi_say(self._midi["last_error"]["message"])
+            self.events.publish("midi")
             return
         self._midi_last(message, action)
         if action is None:
@@ -4535,6 +4545,8 @@ class Agent:
         the message waiting on it, not a newer one."""
         last = self._midi["last"]
         if last is not None and (not deciding or last["action"].endswith("deciding which rig")):
+            if last["action"] != said:
+                self.events.publish("midi")  # /health's `midi.last` (#139)
             last["action"] = said
 
     def _midi_snap_start(self, generation: int, feed: int, action: Any) -> None:
@@ -4648,6 +4660,7 @@ class Agent:
         text = f"{action.describe()}: {message}"
         self._midi["last_error"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "message": text}
         self._midi_say(text)
+        self.events.publish("midi")  # /health's `midi.last_error` (#139)
 
     async def _midi_act(self, generation: int, action: Any, feed: int = 0, switching: bool = False,
                         said: dict[str, Any] | None = None) -> None:
