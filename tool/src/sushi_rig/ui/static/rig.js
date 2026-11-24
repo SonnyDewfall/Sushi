@@ -2804,11 +2804,11 @@ export function loadOutcome(channel, from, answer, asked = {}) {
   if (!answer.ok) {
     const out = { ok: false, title: `Not loaded: ${name} onto ${channel}`, reason: answer.reason, notes: [], offer: null };
     if (body.midi_note) out.notes.push(`${body.midi_note}.`);
-    if (answer.code === "unsaved") out.offer = { ...asked, label: "Load anyway, dropping the unsaved changes", discard: true };
+    if (answer.code === "unsaved") out.offer = { ...asked, label: "Load anyway", discard: true };
     if (answer.code === "midi") {
       const mappings = body.mappings || [];
       out.notes = mappings.map((m) => `${m.control}: ${m.binding} ${m.target}. ${m.why}.`);
-      out.offer = { ...asked, label: `Load, dropping ${mappings.length} MIDI mapping${mappings.length === 1 ? "" : "s"}`, dropMidi: true };
+      out.offer = { ...asked, label: `Drop ${mappings.length} and load`, dropMidi: true };
     }
     return out;
   }

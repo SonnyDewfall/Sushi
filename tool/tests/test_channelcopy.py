@@ -146,6 +146,23 @@ def test_a_mapping_follows_the_same_plugin_under_its_new_name():
     assert section["controls"][0]["parameter"] == "lead/drive/Drive", "the section given is left as it is"
 
 
+def test_a_parameter_whose_name_has_a_slash_follows_with_its_name_whole():
+    """A parameter target is split at its first two slashes (#210's review):
+    SWH lcrDelay's "Dry/Wet level" follows its plugin as one name."""
+    delay = "http://plugin.org.uk/swh-plugins/lcrDelay"
+    old = [{"name": "delay", "uri": delay}]
+    new = [{"name": "lead_delay", "uri": delay}]
+    section = midi({"control": "exp", "parameter": "lead/delay/Dry/Wet level"})
+    out, followed, orphaned = channelcopy.midi_after_load(section, "lead", old, new)
+    assert orphaned == []
+    assert out["controls"][0]["parameter"] == "lead/lead_delay/Dry/Wet level"
+    assert followed == [{"control": "exp", "from": "lead/delay/Dry/Wet level", "to": "lead/lead_delay/Dry/Wet level"}]
+    assert parse_rig({"kind": "rig", "schema_version": 1, "name": "r",
+                      "channels": [{"name": "lead", "input": "guitar-in", "width": "mono", "chain": new}],
+                      "master": {"output": "monitor-out", "chain": []},
+                      "midi": out}).midi is not None, "the followed target is one a rig file takes"
+
+
 def test_a_mapping_onto_a_plugin_the_copy_lacks_or_replaces_is_orphaned():
     old = [{"name": "lead_drive", "uri": GXTS9}, {"name": "lead_comp", "uri": COMP}]
     new = [{"name": "lead_drive", "uri": COMP}, {"name": "lead_eq", "uri": "http://distrho.sf.net/plugins/3BandEQ"}]

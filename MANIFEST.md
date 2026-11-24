@@ -7000,4 +7000,8 @@ copies of one channel in one rig are refused, which a preset allowed. The
 guide `channel-presets.md` is now [Use a channel from another
 rig](docs/guide/channel-from-another-rig.md); the reference, effects,
 string-machine and building-a-rig pages follow. The #127 entries above
-describe what was removed. Not tried on the rig. *(2026-11-23)*
+describe what was removed. The panel's words are few: its picker is
+**From** (Choose…), the button **Load**, a refusal's second tap **Load
+anyway** or **Drop N and load**, and no line of explanation under it but the
+lock's. A MIDI parameter target with a slash in the parameter's name (#210)
+follows its plugin whole (tested). Not tried on the rig. *(2026-11-24)*

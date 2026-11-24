@@ -22,7 +22,7 @@ These controls are on the rack only.
 2. Unlock the page: loading changes the rig, so the lock refuses it.
 3. In the channel's strip on the left, click **Load…**, beside **Change
    input**. A panel opens in the strip.
-4. Under **Load onto …**, pick the `rig / channel` to copy.
+4. Under **From**, pick the `rig / channel` to copy.
 5. Click **Load**.
 
 The channel's effects and volume are replaced by the ones you picked. Its
@@ -40,7 +40,7 @@ git.
 
 Loading replaces what is playing with the rig's file, so changes you have not
 saved would be lost. The page refuses the load and says so. Either click
-**Save** first, or click **Load anyway, dropping the unsaved changes**.
+**Save** first, or click **Load anyway**, which drops the unsaved changes.
 Dropped means gone, on every channel: each knob and switch you changed goes
 back to what the rig's file says. If you had added, removed or moved a
 plugin, the rig restarts from its file to put that back, and the box says so.
@@ -79,7 +79,7 @@ channel of every rig, grouped by rig:
   controller works a plugin on the channel you load onto, and the new chain
   has the same plugin, the mapping is moved to its new name. If it does not,
   the load is refused and the box lists each mapping, what it did and why it
-  would work nothing. **Load, dropping … MIDI mapping** takes them out of the
+  would work nothing. **Drop … and load** takes them out of the
   rig's file and loads. Moving or dropping a mapping for a knob or a pedal
   sweep makes the load a restart.
 - **Undo does not take a load back.** Undo stops at the load, as it does at a

@@ -4162,18 +4162,18 @@ function loadPanel(view, c) {
   const locked = R.lockRefusal(state.locked, "load_channel");
   const select = h("select", { "aria-label": `Channel to load onto ${c.name}`, disabled: !any,
     title: lu.choice ? `${lu.choice.rig} / ${lu.choice.channel}` : null },
-    h("option", { value: "" }, reading ? "Reading the rigs…" : any ? "Choose rig / channel…" : "No other channels"),
+    h("option", { value: "" }, reading ? "Reading…" : any ? "Choose…" : "None"),
     groups.map((g) => h("optgroup", { label: g.label },
       g.options.map((o) => h("option", { value: o.value, title: o.title }, o.label)))));
   select.value = R.sourceValue(lu.choice);
   select.addEventListener("change", () => { lu.choice = R.sourceFrom(select.value); lu.result = null; render(); });
   const result = lu.result;
   return h("div", { class: "load-panel", role: "group", "aria-label": `Load onto ${c.name}` },
-    h("label", { class: "selector" }, h("span", { class: "label" }, `Load onto ${c.name}`), select),
+    h("label", { class: "selector" }, h("span", { class: "label" }, "From"), select),
     h("button", { type: "button", class: "save-act primary load-go", title: locked,
       disabled: lu.pending || !!state.pending || !!locked || !lu.choice,
       onclick: () => loadChannel(c.name, lu.choice, {}) }, lu.pending ? "Loading…" : "Load"),
-    h("p", { class: "sub" }, locked || `Replaces ${c.name}'s chain and level.`),
+    locked ? h("p", { class: "sub" }, locked) : null,
     result ? h("div", { class: `save-result load-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
       h("strong", {}, result.title),
       h("span", { class: "said" }, result.ok ? result.text : result.reason),

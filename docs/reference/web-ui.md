@@ -514,7 +514,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   and the key, unchanged, redrew nothing.
 - **A channel from another rig (#208).** Each strip's input line has
   **Load…** beside Change input, which opens a panel in the strip (a group,
-  "Load onto board"): a picker of every channel of every rig of config/rigs
+  "Load onto board"): a picker, **From**, of every channel of every rig of config/rigs
   (`GET /rigs`, then `GET /rigs/<rig>/channels` for each, read again as the
   panel opens), grouped by rig and labelled `rig / channel`, the strip's own
   channel left out; and **Load**. It is behind the lock, as an add or a
@@ -523,8 +523,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   reasons, and that Revert… goes back; and as notes, the amp ("vocal has no
   amp: …"), another width, a MIDI mapping that followed its plugin, or one
   dropped. A refusal a second tap answers offers it, keeping any yes
-  already given: **Load anyway, dropping the unsaved changes** (`discard`),
-  **Load, dropping N MIDI mappings** (`drop_midi`, each mapping listed with
+  already given: **Load anyway** (`discard`, dropping the unsaved changes),
+  **Drop N and load** (`drop_midi`, dropping N MIDI mappings, each mapping listed with
   what it did and why it would do nothing). After a load the page reads the
   rig's file again; the chain itself follows `/live` as it always does.
   "Start from" on Add channel and the New rig screen offers the same

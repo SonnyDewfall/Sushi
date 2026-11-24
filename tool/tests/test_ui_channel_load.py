@@ -145,11 +145,11 @@ def test_what_a_load_says_and_the_second_tap_each_refusal_offers(blank):
         "MIDI pad2 follows its plugin: board/drive is now board/board_drive."]
     assert out["restarted"] == "Played by a restart (the cc_mappings differ). Wrote f; not committed."
     assert out["unsaved"]["title"] == "Not loaded: spare / lead onto vocal"
-    assert out["unsaved"]["offer"] == {"label": "Load anyway, dropping the unsaved changes", "discard": True}
+    assert out["unsaved"]["offer"] == {"label": "Load anyway", "discard": True}
     assert out["dropped"] == ["2 unsaved changes dropped: the live switch put back each value they set."]
     assert out["unswitched"] == ["the pedals follow the rig as it runs."]
     assert out["midi"]["notes"] == ["pad1: bypass board/overdrive. the loaded chain has no overdrive."]
-    assert out["midi"]["offer"] == {"label": "Load, dropping 1 MIDI mapping", "discard": True, "dropMidi": True}, \
+    assert out["midi"]["offer"] == {"label": "Drop 1 and load", "discard": True, "dropMidi": True}, \
         "the first yes (discard) is kept, and the label is this refusal's"
     assert out["locked"].startswith("Locked: loading a channel changes the rig's structure")
     assert out["unlocked"] is None
@@ -165,7 +165,7 @@ def test_the_picker_lists_every_rigs_channels_as_rig_slash_channel(browser, file
     p = page.page
     group = panel(p, "board")
     picker = group.get_by_label("Channel to load onto board")
-    expect(picker.locator("option")).to_have_text(["Choose rig / channel…", "electric_board / vocal", "spare / lead"])
+    expect(picker.locator("option")).to_have_text(["Choose…", "electric_board / vocal", "spare / lead"])
     expect(picker.locator("optgroup")).to_have_count(2)
     assert picker.locator("optgroup").evaluate_all("(gs) => gs.map((g) => g.label)") == ["electric_board", "spare"]
     expect(group.get_by_role("button", name="Load", exact=True)).to_be_disabled()
@@ -183,7 +183,8 @@ def test_a_channel_of_another_rig_is_loaded_and_the_page_shows_its_plugins(brows
     expect(group).to_contain_text("Locked: loading a channel changes the rig's structure")
     unlock(p)
     expect(go).to_be_enabled()
-    expect(group).to_contain_text("Replaces vocal's chain and level.")
+    expect(group).not_to_contain_text("Locked:")
+    expect(group.locator("label.selector .label")).to_have_text("From")
     go.click()
     result = group.locator(".load-result")
     expect(result).to_contain_text("Loaded spare / lead onto vocal")
@@ -215,7 +216,7 @@ def test_a_load_with_unsaved_work_offers_to_drop_it(browser, files_served):
     result = group.locator(".load-result")
     expect(result).to_contain_text("Not loaded: spare / lead onto vocal")
     expect(result).to_contain_text("not saved")
-    group.get_by_role("button", name="Load anyway, dropping the unsaved changes").click()
+    group.get_by_role("button", name="Load anyway").click()
     expect(result).to_contain_text("Loaded spare / lead onto vocal")
     page.close()
 
