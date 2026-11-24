@@ -112,6 +112,7 @@ def test_what_a_removal_says_and_the_second_tap_each_refusal_offers(blank):
           kept_before: {id: 'x'}})),
         restarted: R.removeOutcome('board', ok({file: 'f', how: 'restart',
           why: [{code: 'track', detail: "track 'vocal': inputs differ"}], dropped: []})).text,
+        filed: R.removeOutcome('keys', ok({file: 'f', how: 'file', dropped: [], kept_before: {id: 'x'}})),
         unsaved: R.removeOutcome('vocal', no('unsaved', 'r is running with 1 change')),
         midi: R.removeOutcome('vocal', no('midi', 'names vocal', {mappings}), {discard: true}),
         restarts: R.removeOutcome('vocal', no('restarts', 'nothing was written: removing vocal restarts Sushi: x',
@@ -126,6 +127,9 @@ def test_what_a_removal_says_and_the_second_tap_each_refusal_offers(blank):
     assert out["live"]["text"] == "Live. Wrote config/rigs/r.yaml; not committed. Revert… goes back."
     assert out["live"]["notes"] == ["Dropped MIDI d (mute vocal)."]
     assert out["restarted"] == "Restarted (track 'vocal': inputs differ). Wrote f; not committed."
+    assert out["filed"]["title"] == "Removed keys"
+    assert out["filed"]["text"] == "Removed from file. Wrote f; not committed. Revert… goes back.", \
+        "a channel not yet playing: nothing restarted"
     assert out["unsaved"]["title"] == "Not removed"
     assert out["unsaved"]["offer"] == {"label": "Remove anyway", "discard": True}
     assert out["midi"]["offer"] == {"label": "Drop 2 and remove", "discard": True, "dropMidi": True}
@@ -317,6 +321,13 @@ def test_what_a_removal_said_is_shown_under_its_own_rig_only(browser, files_serv
     assert status == 200
     expect(p.locator(".strip[data-channel='vocal']")).to_have_count(1)  # clean's own vocal
     expect(p.locator(".remove-done")).to_have_count(0)
+    # Back to electric_board: the notice was for the run before, and stays gone.
+    status = p.evaluate("""async () => (await fetch('/rig/switch', {method: 'POST', headers: {'content-type':
+      'application/json'}, body: JSON.stringify({config_name: 'electric_board'})})).status""")
+    assert status == 200
+    expect(p.locator(".strip[data-channel='vocal']")).to_have_count(0)
+    expect(p.locator(".strip[data-channel='board']")).to_have_count(1)
+    expect(p.locator(".remove-done")).to_have_count(0)
     page.close()
 
 
@@ -347,4 +358,29 @@ def test_a_load_and_a_removal_wait_for_each_other(browser, files_served):
     p.unroute("**/rig/channels/*/load")
     expect(group.locator(".load-result")).to_be_visible()
     expect(p.get_by_role("button", name="Remove board", exact=True)).to_be_enabled()
+    page.close()
+
+
+def test_a_channel_not_yet_playing_is_said_as_removed_from_the_file(browser, files_served):
+    """Re-review of PR #238: a channel added to the file and not yet played
+    is taken out of the file alone (`how: "file"`), which is said as that,
+    never as a restart."""
+    page = rack(browser, files_served)
+    p = page.page
+    status = p.evaluate("""async () => (await fetch('/rigs/electric_board/channels/add', {method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify({name: 'keys', input: 'keys-in', width: 'mono'})})).status""")
+    assert status == 200
+    assert channels(files_served) == ["board", "vocal", "keys"]
+    p.reload()  # the rig's file read again, as after the page's own Add channel
+    p.wait_for_selector(".unit")
+    unlock(p)
+    group = ask(p, "keys")
+    group.get_by_role("button", name="Yes").click()
+    done = p.locator(".remove-done")
+    expect(done).to_contain_text("Removed keys")
+    expect(done).to_have_attribute("title", re.compile("^Removed from file\\. Wrote config/rigs/electric_board\\.yaml"))
+    assert channels(files_served) == ["board", "vocal"]
+    assert files_served.lifecycle.calls == [], "nothing switched or restarted"
+    assert page.errors == []
     page.close()

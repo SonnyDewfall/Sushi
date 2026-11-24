@@ -587,7 +587,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   drew; a removal of a channel that plays is a restart, so it comes back
   asking **Restart?**, and Yes sends it again with `restart: true` (one
   added to the file and not yet playing is taken out of the file with no
-  restart). A refusal is shown in the panel in a few words with the second tap
+  restart, said "Removed from file"). A refusal is shown in the panel in a few words with the second tap
   it offers, keeping any yes already given: **Remove anyway** (`discard`),
   **Drop N and remove** (`drop_midi`), the controls named on the page ("MIDI:
   d, knob1") and each with why in the title. Once removed the strip goes,

@@ -7275,5 +7275,9 @@ hover; that notice shows under its own rig only; a load and a removal wait
 for each other on the page; `rigfile.diff`'s `remove_tracks` is a collection
 of names, a bare `str` refused; and tests for a `remove_track` step that
 fails (the switch restarts into the file, the Undo step kept) and for unsaved
-work on the channel removed, with `discard`. Not tried on the rig.
-*(2026-11-24)*
+work on the channel removed, with `discard`. The re-review: that file-only
+removal is said "Removed from file", never "Restarted"; it is taken only
+while every running channel is still in the file, so a channel renamed by
+hand while it plays goes through the switch and is asked; and "Removed X" is
+cleared once another rig is drawn, so it does not come back with its rig.
+Not tried on the rig. *(2026-11-24)*

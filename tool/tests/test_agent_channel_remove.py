@@ -469,3 +469,23 @@ def test_the_agents_own_sushi_link_removes_no_track_live_so_every_removal_is_a_r
     status, body = remove(agent, "vocal", restart=True)
     assert status == 200 and body["how"] == "restart" and runner.calls[0][0] == "down", body
     assert ["remove_track"] not in [c[:1] for c in fake.calls]
+
+
+def test_a_channel_renamed_by_hand_while_it_plays_goes_through_the_switch_and_is_asked(root):
+    """Re-review of PR #238: the running rig plays `vocal`, and the file was
+    edited by hand to call it `vox`. `vox` is no track of the running rig,
+    but it is not a channel added and waiting either: a track the file no
+    longer names means the file is not the running rig plus additions, so
+    the removal is switched, and asked about, not written silently."""
+    agent, world, fake, runner = make_agent(root)
+    path = rig_file(root, "guitar_vocal")
+    raw = yaml.safe_load(path.read_text())
+    raw["channels"][1]["name"] = "vox"
+    rigfile.write_rig(path, raw)
+    before = path.read_bytes()
+    status, body = remove(agent, "vox", restart=False)
+    assert status == 409 and body["code"] == "restarts", body
+    assert "track_removed" in [r["code"] for r in body["why"]], body
+    assert path.read_bytes() == before and fake.tracks == ["guitar", "vocal", "master"]
+    status, body = remove(agent, "vox", restart=True)
+    assert status == 200 and body["how"] == "restart" and runner.calls[0][0] == "down", body

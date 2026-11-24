@@ -2774,7 +2774,8 @@ export function removeOutcome(channel, answer, asked = {}) {
   const notes = [];
   for (const d of body.dropped || []) notes.push(`Dropped MIDI ${d.control} (${d.binding} ${Array.isArray(d.target) ? d.target.join(", ") : d.target}).`);
   if (body.discard && body.discard.note) notes.push(`${body.discard.note}.`);
-  const how = body.how === "live" ? "Live."
+  // `file`: a channel not yet playing, taken out of the file alone.
+  const how = body.how === "live" ? "Live." : body.how === "file" ? "Removed from file."
     : `Restarted${(body.why || []).length ? ` (${body.why.map((r) => r.detail).join("; ")})` : ""}.`;
   const kept = body.kept_before && body.kept_before.id ? " Revert… goes back." : "";
   return { ok: true, title: `Removed ${channel}`, notes, offer: null, ask: null,

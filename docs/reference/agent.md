@@ -1179,9 +1179,11 @@ rig, the compiler's.
   `dropped`, `how`, `why`, `kept_before`, `library`. A switch that fails
   leaves the file written: 409 `not_switched` (or 504), `written: true`,
   with `midi_note`.
-- **A channel not yet playing** (added to the file since the rig started,
-  so no track of the running config): the file alone is written, `how:
-  "file"`. Nothing is switched, so no unsaved work is at stake (none is
+- **A channel not yet playing** (added to the file since the rig started:
+  no track of the running config, while every channel track of it is still
+  a channel of the file): the file alone is written, `how: "file"`. A
+  channel renamed by hand while it plays is not that (the file no longer
+  names a running track), and goes through the switch, asked. Nothing is switched, so no unsaved work is at stake (none is
   refused over or dropped), no `op: "rig"` is logged (the live steps stay
   Undo's) and no take is stopped; its Undo puts the file back and plays
   nothing (`apply: "none"`).

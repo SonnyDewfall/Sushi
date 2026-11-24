@@ -4046,7 +4046,11 @@ function stripsRegion(el, model, unsaved) {
   const sources = w.adding && filesReady() ? R.sourceChoices(state.rigs, state.rigChannels) : null;
   const busy = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
   const focus = focusedName(parts.foot);
-  // What a removal said, under the strips of the rig it was for only.
+  // What a removal said, under the strips of the rig it was for only, and
+  // gone once another rig is drawn, so it does not come back with its rig
+  // (a rig down for a moment, as in the restart the removal made, is not
+  // another rig).
+  if (state.removeUi.done && view.rig && state.removeUi.done.rig !== view.rig) state.removeUi.done = null;
   const removed = state.removeUi.done && state.removeUi.done.rig === view.rig ? state.removeUi.done : null;
   const rebuilt = patch(parts.foot, JSON.stringify([ready, view.rig, view.channels.map((c) => c.name), choices,
     w.adding && [w.adding.input, w.adding.width, w.adding.from], sources, w.pending, w.result, w.restartConfirm, busy,

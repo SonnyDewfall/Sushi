@@ -8029,9 +8029,17 @@ class Agent:
         compiled = self._rigfile_compile(edited, run)
         self._rigfile_plugins(compiled, path.stem, run, "changed", "remove it again")
         chain = entry.get("chain") if isinstance(entry.get("chain"), list) else []
+        # Written out of the file alone only when nothing that plays can be
+        # this channel: it is no track of the running rig, and every channel
+        # track of the running rig is still a channel of the file. A channel
+        # renamed by hand while it plays (`vocal` running, `vox` in the file)
+        # is a track the file no longer names, so it goes through the switch,
+        # which asks (re-review of PR #238).
         try:
             running = self.switching.read_config(run["described"].get("config"))
-            playing = channel in {t.get("name") for t in running.get("tracks") or [] if isinstance(t, dict)}
+            tracks = {t.get("name") for t in running.get("tracks") or [] if isinstance(t, dict)} - {rigfile.MASTER}
+            filed = {c.get("name") for c in raw.get("channels") or [] if isinstance(c, dict)}
+            playing = channel in tracks or not tracks <= filed
         except Exception:  # noqa: BLE001 -- not known: switched, which plays whatever it is
             playing = True
         return {"raw": edited, "compiled": compiled, "channel": channel, "dropped": named, "playing": playing,
