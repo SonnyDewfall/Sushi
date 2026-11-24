@@ -1476,8 +1476,27 @@ def up(
         clear_state()
         raise RigError(outcome or "the rig failed to start")
 
-    print(up_summary(config_name, headless, read_state() or {}), end="")
+    state = read_state() or {}
+    print(up_summary(config_name, headless, state), end="")
+    _link_pedals_once(state)
     return 0
+
+
+def _link_pedals_once(state: dict[str, Any]) -> None:
+    """With no agent, link the rig's own pedal to Sushi's MIDI input once
+    (#210, `midi_listener.link_once`), so that what Sushi maps (sweeps,
+    volumes, blends) is heard. This is `up` with no agent to ask, or
+    `--direct`: through the agent, its listener links the pedals itself and
+    keeps them linked across a hot-plug. Said, never a failure."""
+    if not state.get("rig") or not state.get("config"):
+        return
+    from . import midi_listener
+    from .paths import checkout_root
+
+    described = {"running": True, "config_name": state.get("config_name"), "config": state["config"],
+                 "rig": state["rig"], **({"machine": state["machine"]} if state.get("machine") else {})}
+    for line in midi_listener.link_once(described, checkout_root()):
+        print(f"  pedals     {line}")
 
 
 def _kill_group_of(pid: int) -> None:

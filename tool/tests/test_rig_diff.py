@@ -322,6 +322,7 @@ NEVER_CODES = {
     "wiring_unknown": "the compiler always records which roles its tracks are wired to",
     "drifted": "it compares a live reading with the running config, and there is no reading",
     "stereo": "one plugin has the same ports in both rigs: one plugin-ports.txt, read once",
+    "midi_unconfirmed": "only the agent marks a running config, after a live CC change it could not confirm",
 }
 # The sections of a compiled config `diff` knows; any other that differs is `config_section`.
 _SECTIONS = {"tracks", "initial_state", "host_config", "midi", "_amp", WIRING, "_meta", rigfile.AGENT_BINDINGS}

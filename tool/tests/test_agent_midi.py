@@ -87,7 +87,7 @@ class FakeWorld:
         return Plan(rig=described.get("config_name"), controller="mpd218", port=PORT_NAME,
                     bindings=parse_bindings(self.raw))
 
-    def open_port(self, name):
+    def open_port(self, name, link=None):
         self.opened.append(name)
         if self.refuse:
             raise self.refuse
@@ -149,6 +149,10 @@ def midi_agent(world=None, described=RIG_UP, runner=None):
     fake = FakeLive()
     fake.info["main"]["mute"] = {"automatable": True, "value": 0.0,
                                  "min_domain_value": 0.0, "max_domain_value": 1.0}
+    # The channel's send, last in its chain as the compiler puts it: a mute
+    # bypasses it (#210).
+    fake.chain.append("main_send")
+    fake.bypassed["main_send"] = False
     agent = Agent(describe=rig, run=runner, live=fake, midi=world.world(), switching=world.switching())
     return agent, fake, world, runner, rig
 
@@ -232,7 +236,10 @@ def test_a_pad_toggles_a_bypass_through_the_live_path_and_is_logged_as_midi():
     served(agent, test)
 
 
-def test_a_pad_on_a_mute_toggles_the_tracks_mute_parameter():
+def test_a_pad_on_a_mute_bypasses_the_channels_send_not_the_tracks_mute():
+    """#210: the track's own mute acts after its send, so toggling it was
+    heard to do nothing in the monitors. The send bypassed is the mute; the
+    track's `mute` and the send's `gain` (a volume pedal's) are not touched."""
     agent, fake, world, *_ = midi_agent()
 
     async def test(client):
@@ -240,9 +247,15 @@ def test_a_pad_on_a_mute_toggles_the_tracks_mute_parameter():
         port.send(0x90, 38, 100)
         await until(lambda: fake.writes())
         await settle(agent)
-        assert fake.writes() == [("set_parameter", "main", "mute", 1.0)]
+        assert fake.writes() == [("set_bypass", "main_send", True)]
         (entry,) = await log(client)
-        assert entry["op"] == "parameter" and entry["previous"] == 0.0 and entry["source"] == "midi"
+        assert entry["op"] == "bypass" and entry["args"] == {"processor": "main_send", "bypassed": True}
+        assert entry["previous"] is False and entry["source"] == "midi"
+        port.send(0x90, 38, 100)
+        await until(lambda: len(fake.writes()) == 2)
+        await settle(agent)
+        assert fake.writes()[-1] == ("set_bypass", "main_send", False), "the next press unmutes it"
+        assert fake.info["main"]["mute"]["value"] == 0.0
 
     served(agent, test)
 
@@ -908,7 +921,7 @@ class PedalboardWorld(FakeWorld):
         return midi_listener.Plan(described.get("config_name"),
                                   feeds=feeds + (Feed("fbv", FBV_PORT, fbv, self.fbv_required),))
 
-    def open_port(self, name):
+    def open_port(self, name, link=None):
         if name == self.refuse_port:
             self.opened.append(name)
             raise PortError(f"cannot subscribe to {name!r}: Operation not permitted")
@@ -1133,12 +1146,11 @@ def test_a_momentary_footswitch_on_a_mute_toggles_it_on_each_press():
         press(fbv, 22)
         await until(lambda: fake.writes())
         await settle(agent)
-        assert fake.writes() == [("set_parameter", "main", "mute", 1.0)], "the release did not unmute it"
-        fake.info["main"]["mute"]["value"] = 1.0
+        assert fake.writes() == [("set_bypass", "main_send", True)], "the release did not unmute it"
         press(fbv, 22)
         await until(lambda: len(fake.writes()) == 2)
         await settle(agent)
-        assert fake.writes()[-1] == ("set_parameter", "main", "mute", 0.0)
+        assert fake.writes()[-1] == ("set_bypass", "main_send", False)
 
     served(agent, test)
 
@@ -1437,5 +1449,91 @@ def test_an_unreadable_rig_file_is_said_in_health():
         await agent.midi_adopt()
         await until(lambda: agent._midi["state"] == "absent")
         assert (await health(client))["rig_problem"].startswith("could not read config/rigs/x.yaml")
+
+    served(agent, test)
+
+
+# --------------------------------------------------------------------------- #
+# #210: a mute the monitors hear, beside a volume pedal on the same channel
+# --------------------------------------------------------------------------- #
+
+LATCHING_MUTE = {"control": "c", "cc": 22, "channel": 0, "mute": "main", "switch": "latching"}
+
+
+def test_a_latching_mute_bypasses_the_send_and_leaves_the_volume_pedals_gain_alone():
+    """The toe switch's way: 127 mutes, 0 unmutes, through the send's bypass,
+    which the agent serves (Sushi maps no CC to a bypass). The volume pedal
+    on the same channel drives the send's gain, which the mute never sets,
+    and the pedal's silence at the heel never un-bypasses the send: the two
+    do not fight."""
+    world = PedalboardWorld(raw=[], fbv_raw=[SNAP, LATCHING_MUTE], fbv_required=True)
+    agent, fake, _, runner, rig = midi_agent(world)
+    fake.info["main_send"] = {"gain": {"automatable": True, "value": 0.8,
+                                       "min_domain_value": 0.0, "max_domain_value": 1.0}}
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "listening")
+        fbv = world.named[FBV_PORT]
+        fbv.send(0xB0, 22, 127)      # the toe: muted
+        await until(lambda: fake.writes())
+        await settle(agent)
+        assert fake.writes() == [("set_bypass", "main_send", True)]
+        fbv.send(0xB0, 7, 2)         # the pedal to its heel while muted: its gain, not the bypass
+        await until(lambda: gains(fake))
+        await settle(agent)
+        assert fake.bypassed["main_send"] is True, "the heel's silence did not unmute it"
+        assert gains(fake) == [0.0]
+        fbv.send(0xB0, 22, 0)        # the toe again: unmuted, the pedal's gain left where it is
+        await until(lambda: len(fake.writes()) == 3)
+        await settle(agent)
+        assert fake.writes()[-1] == ("set_bypass", "main_send", False)
+        assert gains(fake) == [0.0] and fake.info["main"]["mute"]["value"] == 0.0
+
+    served(agent, test)
+
+
+class LinkingWorld(PedalboardWorld):
+    """The FBV's feed planned onto Sushi's input 0, as `plan_for` plans it
+    (#210), and each open recording the link it was asked for."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.links: list = []
+
+    def plan(self, described, root):
+        plan = super().plan(described, root)
+        if isinstance(plan, Off):
+            return plan
+        import dataclasses
+        return dataclasses.replace(plan, feeds=tuple(dataclasses.replace(f, sushi_port=0) for f in plan.feeds))
+
+    def open_port(self, name, link=None):
+        self.links.append((name, link))
+        port = super().open_port(name)
+        port.linked, port.link_reason = True, f"linked by the agent: {name} to Sushi's MIDI input {link}"
+        return port
+
+
+def test_a_switch_brings_a_new_listener_that_links_the_pedal_to_the_new_sushi():
+    """B steps to the next rig (here by restart: a new Sushi): the listener
+    the switch starts after it opens the FBV again, asking for the link, and
+    /health says it is linked."""
+    world = LinkingWorld(raw=[])
+    agent, fake, _, runner, rig = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: FBV_PORT in world.named and agent._midi["state"] == "listening")
+        assert world.links == [(FBV_PORT, 0)]
+        await until(lambda: agent._midi["feeds"][0].get("linked_to_sushi") is True)
+        press(world.named[FBV_PORT], 21)  # b: the next rig
+        await until(lambda: len(runner.calls) == 2)
+        await settle(agent)
+        await until(lambda: agent._midi["state"] == "listening" and agent._midi["rig"] == "lead")
+        assert world.links == [(FBV_PORT, 0), (FBV_PORT, 0)], "linked again after the switch"
+        await until(lambda: agent._midi["feeds"][0].get("linked_to_sushi") is True)
+        feed = (await health(client))["feeds"][0]
+        assert feed["linked_to_sushi"] is True and "Sushi's MIDI input 0" in feed["link"], feed
 
     served(agent, test)

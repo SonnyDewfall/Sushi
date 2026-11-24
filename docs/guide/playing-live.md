@@ -135,12 +135,14 @@ and a toe switch under the pedal:
   while a switch is still running is ignored rather than saved up, so press
   again once the rig is playing.
 - **C and D** each turn an effect or a channel on and off, as assigned on each
-  rig. One press turns it on, the next turns it off.
+  rig. One press turns it on, the next turns it off. A channel turned off is
+  silent in the monitors; its own recording (its stem) still has it.
 - **The pedal** sweeps a knob, or rides a channel's volume, as assigned on
   each rig. On a volume, the heel is silent and the toe is the channel's own level,
-  never louder; half way is about 20 dB quieter. The silence at the heel needs
-  the agent running: without it the heel is quiet, not silent. It cannot ride
-  the master volume.
+  never louder; half way is about 20 dB quieter. The heel is anywhere the pedal
+  reads 20 or less, so a foot that has just come to rest there is silent too.
+  The silence at the heel needs the agent running: without it the heel is
+  quiet, not silent. It cannot ride the master volume.
 - **The toe switch** (press hard at the toe; it is stiff) flips the pedal
   between its Vol and Wah lights, and the two are separate pedals to the rig:
   `pedal` in Vol and `wah` in Wah, each assigned on its own. So the pedal can
@@ -173,13 +175,14 @@ everything as it was. A control does one thing on a rig, so moving it takes it
 off the other.
 
 What you assign is written into the running rig's file, keeping the file's
-comments, and not committed. A footswitch on an effect, or a momentary
-footswitch on a channel, works at once. The pedal on a volume or a knob, and a
-latching footswitch on a channel, need the rig to restart (about five seconds
-of silence) before they work: the page says so and offers **Restart**. If you
+comments, and not committed. A footswitch on an effect or a channel works at
+once. The pedal on a volume or a knob is tried at once too; where it cannot be,
+the rig needs to restart (about five seconds of silence) before it works: the
+page says so and offers **Restart**, and **PEDALS** keeps offering it for as
+long as the file's pedal settings are ahead of what the rig is playing. If you
 have turned knobs since the last save, that restart would lose them, so the
-page asks you to save first. Undo does not take an assignment back: assign
-again, or pick **none**.
+page offers **Save, then assign**: it saves, assigns, and offers the restart.
+Undo does not take an assignment back: assign again, or pick **none**.
 
 The rig's file says which board its pedals are for. The first assignment on a
 rig fills that in for you when the machine's file describes one board; if it
@@ -192,7 +195,13 @@ it does on this rig: for example **C** board/drive on/off, **D** vocal on/off,
 **pedal** lead volume, with A and B as previous and next rig. Above the list is
 the board's state:
 
-- **listening**: the board is plugged in and the agent is reading it;
+- **listening**: the board is plugged in and the agent is reading it, and, on
+  a rig where the pedal has a volume or a sweep, has linked it to Sushi,
+  which is what those need;
+- **listening, not linked**: the pedal has a volume or sweep on this rig, and
+  the agent hears the board but Sushi does not, so footswitches work and the
+  pedal's volume or sweep does not. Normal for a moment while a rig comes up;
+  if it stays, hold the pointer on the line to see why;
 - **not connected**: it is not plugged in, and this rig does not need it;
 - **waiting**: this rig has pedals assigned and the board is not plugged in.
   Plug it in and it is picked up at once.
@@ -216,13 +225,19 @@ wrong, unless the rig's own pedal settings are for it: then the page says the
 rig is waiting for its pedal. Plug it in (or back in, if it was knocked out
 mid-set) and it works at once, without restarting the rig.
 
+The pedals need the agent running: it is what links the board to Sushi, and
+it serves the footswitches and the silence at the heel. A rig started with no
+agent links the board once as it starts, and not again if the board is
+unplugged and plugged back in.
+
 The FBV's settings in the machine file are what the board was heard to send
 on the laptop (2026-11-22), after setting it up in Line 6's FBV Control:
-[MIDI](../reference/midi.md#when-the-fbv-arrives) says how. None of the saved
-rigs has a pedal set up yet.
-Nothing has been played through a real pedal; only the pad controller's own
-messages have been checked. Assigning on the rack, and the lights, have been
-tried only against a stand-in for the board and for Sushi.
+[MIDI](../reference/midi.md#when-the-fbv-arrives) says how. On the laptop
+(2026-11-23) the board was heard through the agent, and the pedal rode a
+volume once it was linked to Sushi by hand. The agent's own link, a channel
+turned off by a footswitch being heard, and a pedal's setting taking effect
+without a restart are still to be heard on the board:
+[MIDI](../reference/midi.md#not-yet-verified-on-the-rig) lists them.
 
 ## The visualiser
 

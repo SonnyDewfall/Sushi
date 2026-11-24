@@ -810,18 +810,54 @@ FBV_CC = {"a": 20, "b": 21, "c": 22, "d": 23, "pedal": 7}
 
 class PedalPort:
     """One opened port, as `midi_listener.AlsaPort` is read: `read` waits for
-    what a test sent, and `attached` says whether the board is plugged in."""
+    what a test sent, and `attached` says whether the board is plugged in.
+    Its link to Sushi (#210) is `UiPedals.links`, kept as AlsaPort keeps it:
+    opened asking for an input, the board is linked to it; opened asking for
+    none or another, the agent's own links are taken down, and a link made
+    by hand (`links[n] = "hand"`) stays and is said as linked."""
 
-    def __init__(self, pedals: "UiPedals"):
+    def __init__(self, pedals: "UiPedals", link: int | None = None):
         import queue
 
         self.pedals = pedals
         self.inbox = queue.Queue()
         self.closed = threading.Event()
+        self.link = link  # Sushi's MIDI input the agent asked this port to link to (#210)
+        pedals.links = {n: who for n, who in pedals.links.items() if who != "agent" or n == link}
 
     @property
     def attached(self):
         return self.pedals.plugged
+
+    def _look(self) -> bool:
+        p = self.pedals
+        if not (p.plugged and p.sushi):
+            p.links = {}  # a link goes with the board, or with Sushi
+            return False
+        if self.link is not None:
+            p.links.setdefault(self.link, "agent")  # made at the next announcement, as AlsaPort makes it
+        return bool(p.links)
+
+    @property
+    def linked(self):
+        return self._look()
+
+    @property
+    def link_reason(self):
+        p = self.pedals
+        self._look()
+        if not p.plugged:
+            return "not linked: the pedal is not plugged in"
+        if not p.sushi:
+            return "not linked: no ALSA MIDI input called 'Sushi' is listed"
+        if self.link is not None:
+            how = "linked by the agent" if p.links[self.link] == "agent" else \
+                "linked already, not by this agent, and left as it is"
+            return f"{how}: the fake board to Sushi's MIDI input {self.link}"
+        if p.links:
+            return (f"linked, not by this agent, and left as it is: the fake board to Sushi's MIDI input "
+                    f"{min(p.links)}")
+        return midi_listener.NOT_ASKED
 
     absence = "the fake board is unplugged"
 
@@ -841,16 +877,19 @@ class UiPedals:
     """The agent's MIDI world for the fake: its real `plan_for`, and a
     `PedalPort` for each port it opens. `send` puts bytes on the newest open
     port; `press` and `sweep` are what the FBV would send for a footswitch or
-    the pedal (machines/example.yaml's CCs, channel 0)."""
+    the pedal (machines/example.yaml's CCs, channel 0). `links` is the
+    board's links to Sushi's inputs, by input, "agent" or "hand"."""
 
     def __init__(self):
         self.ports: list[PedalPort] = []
         self.plugged = True
+        self.sushi = True  # Sushi's MIDI input is listed, for a link (#210)
+        self.links: dict[int, str] = {}
 
-    def open_port(self, name):
+    def open_port(self, name, link=None):
         if name != FBV_PORT:
             raise midi_listener.PortAbsent(f"the fake has no port {name!r}")
-        port = PedalPort(self)
+        port = PedalPort(self, link)
         self.ports.append(port)
         return port
 

@@ -815,9 +815,9 @@ curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}' 
   `400` for a body of the wrong shape: not exactly one binding or `none`, a
   target that is not text (a blend, two), a key nobody reads.
 - **Live where only the agent's bindings change.** Sushi loads its
-  `cc_mappings` only with the config. An assignment whose compile leaves the
-  running config's `midi` section as it is (a footswitch on a bypass, a
-  momentary or single one on a mute: [the agent's own](midi.md#what-the-agent-does-with-a-pedal)),
+  `cc_mappings` with the config. An assignment whose compile leaves the
+  running config's `midi` section as it is (a footswitch on a bypass or a
+  mute: [the agent's own](midi.md#what-the-agent-does-with-a-pedal)),
   and every one of whose bindings names a processor the running rig has
   (its config's tracks and plugins, less those removed and plus those added
   through the agent since the last save or switch: `assignment_not_live`),
@@ -826,9 +826,23 @@ curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}' 
   scratch file and a rename), and the running listeners take the new plan in
   place (`_midi_swap`): nothing stops, so a press queued or a heel's
   silencing in flight goes on, and a switch's state is kept where its
-  binding did not change. The answer is `how: "live"`. Any other (the pedal
-  on a volume, a parameter or a blend; a latching footswitch on a mute; a
-  target in the file but not on the running rig, `not_running`) changes what
+  binding did not change. The answer is `how: "live"`.
+- **Sushi's mappings tried live (#210).** One whose only difference is
+  Sushi's `midi` section (the pedal on a volume, a parameter or a blend) is
+  written, then applied with elkpy's `connect_cc_to_parameter` and
+  `disconnect_cc` on one connection under the live lock (`Live.connect_cc`,
+  `disconnect_cc`, `cc_connections`; `Agent._midi_cc_live`), and Sushi's own
+  list read back: every mapping added there, every one removed gone. Then
+  the running config records the new `midi` section beside the bindings, and
+  the answer is `how: "live"`. Not tried where `live_cc_plan` says it cannot
+  be (a mapping on a MIDI input Sushi did not open at its start, or on a
+  processor the running rig does not have), nor where the agent's Sushi
+  connection lacks the calls. Refused, unconfirmed or not in the list read
+  back: undone as far as Sushi lets it, and the restart below, with `why`
+  `midi_live` saying what happened. **Unverified on a real Sushi**: if 1.3.0
+  does not honour the calls, every such assignment is the restart, as before.
+- Any other (a target in the file but not on the running rig,
+  `not_running`; anything `rigfile.diff` must restart for) changes what
   Sushi maps or names what it does not run: `how: "restart"`,
   `offer: "restart"` and `why`, `rigfile.diff`'s reasons as a channel edit
   gives them (`midi`, and `host` when the rig had no MIDI input before), and
@@ -849,13 +863,32 @@ curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}' 
   That restart reloads the file, so an assignment that needs it is refused
   while the rig holds unsaved changes (`409 unsaved`) or runs with its panel
   (`409 panel`), as a channel edit is ([above](#new-rigs-and-channel-edits));
-  one that plays at once loses nothing and is not.
+  one that plays at once loses nothing and is not, nor is one tried live
+  (above): if it falls back, the restart it offers is itself refused until
+  the work is saved or dropped. The page answers `unsaved` with **Save, then
+  assign** (#210): the save, then the same assignment, whose answer offers
+  the restart.
+- **Behind the file.** `GET /midi`'s `behind` is `map_behind` of the running
+  config and a compile of the rig file as it is now (`midi`, `agent`, and
+  `restart` when Sushi's half differs), which the rack's PEDALS section
+  offers a restart for (#210).
 - **Only the running rig**, from `config/rigs/` (`409 no_rig` otherwise).
   Under the lifecycle lock (`busy: "rig file edit"`) and the live lock, as
   the channel edits are; behind [the one guard](#another-sites-page-and-dns-rebinding).
   Never committed: the answer gives what git says of the file. Not in
   `/live/log` and not undone by Undo, as a channel added is not: assign
   again. `assignments` in the answer is the file's `midi:` after it.
+
+**Linked.** A listener links its pedal to Sushi's MIDI input, by the ALSA
+names (client `Sushi`), when Sushi maps something of it (the rig's map's
+controller, with cc_mappings), at its start, when the pedal is plugged in and
+when a Sushi starts; a link already there is left as it is, and one this
+agent made that the plan no longer asks for is taken down, never one it did
+not make. `/health`'s `agent.midi.feeds` say `linked_to_sushi` (from ALSA's
+list), `link_wanted` and `link` (why), and each change is a line on stderr:
+[MIDI](midi.md#linking-the-pedals-to-sushi-210). Without the agent no link is
+kept; `up` with no agent (and `--direct`) links the rig's own pedal once, by
+the same rule.
 
 **Heard.** `/health`'s `agent.midi.seen` is the last message from each
 control of each device the listener reads, bound to anything or not:
