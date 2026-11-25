@@ -475,6 +475,83 @@ def undo_check(entry: dict[str, Any], amp: AmpState, root: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Whether the amp is wired (#246)
+# --------------------------------------------------------------------------- #
+
+# How long one look at the amp's links is taken to hold. GET /amp and
+# /health are polled every second by every page, and a look is a `pw-dump`
+# and a `pw-link -l`; a link qpwgraph drops is said within this. A choice,
+# not a measurement.
+WIRING_EVERY = 10.0
+
+# The patchbay `amp.prepare` writes for a run with an amp, in the runtime
+# directory, and the one qpwgraph loads for it.
+AMP_PATCHBAY = "rig-amp.qpwgraph"
+
+
+def unmade_amp_links(patchbay_xml: str, names: dict[str, list[str]], listing: str) -> list[str]:
+    """What of the amp's wiring the live graph lacks, or `[]` when the guitar
+    goes into NAM and NAM goes on into Sushi. Pure.
+
+    `patchbay_xml` is the run's amp patchbay (`amp.amp_patchbay`'s), `names`
+    the alias -> live-name map (`patchbay.live_port_names`) and `listing`
+    `pw-link -l`'s output, as `rig.link_problems` reads them at start. Only
+    the links into `NAM:Input` and out of `NAM:Output` are looked at: Carla
+    can be running, the model loaded and the rig healthy by every other
+    measure while one of them is missing and the guitar goes in dry (#246).
+    A patchbay that asks for neither is said as that (`amp.unwired_amp`)."""
+    from .amp import AMP_INPUT, AMP_OUTPUT, unwired_amp
+    from .patchbay import parse_patchbay
+    from .qpwgraph import unmade_links
+
+    problems = [f"{AMP_PATCHBAY} has no link {side}" for side in unwired_amp(patchbay_xml)]
+    wanted = [link for link in parse_patchbay(patchbay_xml)
+              if link.in_port == AMP_INPUT or link.out_port == AMP_OUTPUT]
+    missing: list[tuple[str, str]] = []
+    for pair in unmade_links(wanted, names, listing):
+        if pair not in missing:  # one port saved under each profile of a device: one link
+            missing.append(pair)
+    if missing:
+        problems.append("not linked: " + ", ".join(f"{a} -> {b}" for a, b in missing))
+    return problems
+
+
+def wiring_said(problems: list[str] | None, *, checked: bool = True, why: str | None = None) -> dict[str, Any]:
+    """`{"wired", "problems"}` for GET /amp and /health: `wired` False with
+    what is missing, True, or None when it could not be looked at (`why`).
+    Pure."""
+    if not checked:
+        return {"wired": None, "problems": [why] if why else []}
+    return {"wired": not problems, "problems": list(problems or [])}
+
+
+def read_links(patchbay: Path) -> dict[str, Any] | None:
+    """The amp's wiring as the live graph has it now: `wiring_said`'s answer,
+    or None when the run has no amp patchbay to read (a run with no amp, or
+    a checkout where there was none to wire it into, which `up` warned of).
+    One look, no waiting: qpwgraph has made what it will by the time a rig
+    is up (`up` waits for it). Blocking."""
+    import subprocess
+
+    from .patchbay import PatchbayError, live_port_names, read_pw_dump
+    from .qpwgraph import PATCHBAY_TIMEOUT
+
+    try:
+        xml = patchbay.read_text()
+    except OSError:
+        return None
+    try:
+        names = live_port_names(read_pw_dump())
+        result = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, check=False,
+                                timeout=PATCHBAY_TIMEOUT)
+        if result.returncode != 0:
+            raise OSError(f"pw-link -l exited {result.returncode}: {result.stderr.strip() or 'no output'}")
+        return wiring_said(unmade_amp_links(xml, names, result.stdout))
+    except (OSError, ValueError, subprocess.TimeoutExpired, PatchbayError) as exc:
+        return wiring_said(None, checked=False, why=f"the amp's links could not be looked at: {exc}")
+
+
+# --------------------------------------------------------------------------- #
 # Carla, the one effect
 # --------------------------------------------------------------------------- #
 
@@ -484,11 +561,16 @@ class Carla:
     its OSC port, see the module docstring), `send` (one UDP message,
     `parameter_message`'s) and `forget` (drop the UDP client, for the next
     Carla run or after a failure). They block; the agent runs them off its
-    loop."""
+    loop.
+
+    And `links`, whether the amp is wired (#246): `read_links` of the run's
+    amp patchbay, for the real Carla. None, the default, is "cannot tell",
+    which is what a stand-in that says nothing answers."""
 
     answering: Callable[[], bool]
     send: Callable[[str, list], None]
     forget: Callable[[], None] = lambda: None
+    links: Callable[[], "dict[str, Any] | None"] = lambda: None
 
     @classmethod
     def at(cls, host: str = "127.0.0.1", port: int = CARLA_OSC_PORT) -> "Carla":
@@ -514,4 +596,9 @@ class Carla:
                 except (AttributeError, OSError):
                     pass
 
-        return cls(answering=lambda: port_is_open(host, port), send=send, forget=forget)
+        def links() -> dict[str, Any] | None:
+            from .paths import runtime_dir
+
+            return read_links(runtime_dir() / AMP_PATCHBAY)
+
+        return cls(answering=lambda: port_is_open(host, port), send=send, forget=forget, links=links)

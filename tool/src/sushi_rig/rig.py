@@ -1694,8 +1694,11 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     }
 
 
-def restart() -> int:
+def restart(amp: bool = False) -> int:
     """Stop the rig and bring the same one straight back.
+
+    `amp` (`restart --amp`, #246) brings the amp back on a rig started with
+    --no-amp, which a plain restart keeps off.
 
     Recovery is the whole answer to a failure here — the rig is allowed to die
     as long as it returns with what it had — so it should be one command, not
@@ -1711,6 +1714,8 @@ def restart() -> int:
         raise RigError(NOTHING_TO_RESTART)
 
     config_name, options = restart_arguments(state)
+    if amp:
+        options["amp"] = True
     refusal = restart_plugins_refusal(config_name, options, running=restart_is_playing(state))
     if refusal:
         raise RigError(refusal)

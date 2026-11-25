@@ -23,6 +23,7 @@ curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": tr
 curl -X POST localhost:8029/rig/down
 curl -X POST localhost:8029/rig/restart                             # refused (409 unsaved) if it would drop changes no save has written
 curl -X POST localhost:8029/rig/restart -d '{"discard": true}'      # ... so this drops them, as `sushi-rig restart --discard` does
+curl -X POST localhost:8029/rig/restart -d '{"amp": true}'          # with the amp on, for a rig started with --no-amp (#246), as `sushi-rig restart --amp`
 curl -X POST localhost:8029/rig/switch -d '{"config_name": "electric-delay"}'   # live where it can be (#93)
 curl localhost:8029/midi             # the machine's MIDI devices, what each control may take, the rig's assignments (#191)
 curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "bypass": "board/drive"}'   # a pedal control in the running rig's file (#192)
@@ -194,7 +195,13 @@ config (`config_name` is required, so a stray empty POST starts nothing). Every 
 before anything runs — a config name is a name, not a path — and nothing from a
 request is passed through as text. A successful `up`'s answer carries its
 `warnings` (an unmade patchbay link, an amp that died at start), which the CLI
-prints as it always printed them. The agent binds to localhost; `--host 0.0.0.0`
+prints as it always printed them, and so does a restart's, and every switch's
+(#246): the page's, a revert's, a channel load or removal's and an Undo's
+(`[]` for one made live, which ran no `up`). `/health`'s `agent.warnings` keeps
+the warnings of the start that brought the running rig up, for as long as that
+run is up (a live switch keeps the run), since a switch by a pedal has no page
+to answer: before #246 a switch by restart kept only `up`'s stdout, and an amp
+that did not start, exited, or was not wired came up silent. The agent binds to localhost; `--host 0.0.0.0`
 opens it to the LAN, and until the local/remote permission split in #29 exists
 that is your call, not a default.
 
@@ -655,6 +662,25 @@ output level followed its fader with no crackle, and a model change was about
 step 6). In the tests Carla is a stand-in (an in-memory one, and a real UDP and
 TCP listener).
 
+**Whether the amp is wired** (#246). Carla can run, with its model loaded,
+while the link from the guitar into `NAM:Input` or from `NAM:Output` into
+Sushi is not made: the guitar goes in dry and the rig looks healthy. `GET
+/amp`'s `wiring` and `/health`'s `agent.amp_wiring` say it: `{"wired": false,
+"problems": [...]}` naming what is missing, `true` when every link NAM's
+patchbay (`rig-amp.qpwgraph`) asks for is in the graph, `null` with why when
+the graph could not be read, and `null` for the whole when no live Carla
+runs. One look (`pw-dump` and `pw-link -l`, as `up`'s own check of the links)
+per Carla run and ten seconds, shared by both and by a switch's decision.
+Not run against a real Carla and PipeWire: the parsing is `rig.link_problems`'s,
+which is.
+
+**Amp on** (#246). A run started with `--no-amp` keeps it through every
+restart, and through every switch into the same rig (a revert, a channel
+loaded or removed, an Undo). `GET /amp`'s `409 no_amp` then says `amp_on: true`
+and the `rig`, when the running config has an amp, and `POST /rig/restart
+{"amp": true}` restarts with the amp, refused for unsaved work as any restart
+is. A switch to another rig drops the request: see below.
+
 ## Switching rigs live
 
 `POST /rig/switch {"config_name"}` (and a
@@ -676,7 +702,10 @@ reordered or of another shape, a channel on another input, a different host
 config or MIDI map (`cc_mappings`, which Sushi loads only with the config), a
 program or property to set, a rig run with its panel (whose SAVE listener
 belongs to the rig being left) or with `--amp-model` or a model chosen through
-`POST /amp/model`, a rig changed by hand
+`POST /amp/model`, a next rig with an amp while the running rig's Carla is not
+running (`amp_down`) or runs with its links not made (`amp_unwired`, from the
+wiring above; #246: with no amp step, a live switch used to keep a dead or
+unwired Carla and the guitar played dry), a rig changed by hand
 since it came up in a way the plan cannot follow, a step that fails, and a
 read-back that is not the next rig. A switch that fails part-way restarts into
 the next rig, and brings the previous rig back if that restart fails; if the
@@ -686,7 +715,12 @@ and bring it down and up by hand. Of the eleven rigs as they were on 2026-11-07
 (kept under `tool/tests/fixtures/rigs/`), 72 of the 110 ordered pairs are
 live (26 while the amp's parameters were a restart); the rest have an amp on
 one side only, or other tracks. The rigs in `config/rigs/` have changed since
-and will again, so no count of them is kept here or pinned by a test. One `op: "rig"` entry goes in
+and will again, so no count of them is kept here or pinned by a test. A rig run with `--no-amp` keeps it
+only into the same rig (`keeps_no_amp`); a switch to another rig drops it
+(#246), so a next rig with an amp is a restart that brings Carla (`amp_down`),
+its `up` without `--no-amp`, and a next rig with none switches live and asks
+for the amp from then on. Before, the request was carried into every switch,
+and the owner switched to a rig with an amp and heard none. One `op: "rig"` entry goes in
 `/live/log` either way, and undo stops at it. A rig that would not compile is
 refused (`409 rig_problem`) with the running one left playing, and so is one
 that loads a plugin `plugins/` lacks (`409 plugins_missing`, #188), with the

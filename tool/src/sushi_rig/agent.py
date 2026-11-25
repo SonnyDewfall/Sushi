@@ -922,7 +922,11 @@ def lifecycle_arguments(
     if command == "down":
         return ["down", "--force"] if flag("force", False) else ["down"]
     flag("discard", False)  # checked for its type; read by the route
-    return ["restart"]
+    # `{"amp": true}` (#246): the restart brings the amp back on a run
+    # started with --no-amp, which every restart and switch of the same rig
+    # otherwise keeps (`rig.restart_arguments`). False is the default, a
+    # restart as the run was asked for.
+    return ["restart", "--amp"] if flag("amp", False) else ["restart"]
 
 
 # --------------------------------------------------------------------------- #
@@ -2186,6 +2190,11 @@ class Agent:
                 # A master over 0 dB a dip brought down to it (#137).
                 "master_capped": self._master_capped,
                 "midi": self._midi_status(),
+                # What `up` warned of as the running rig came up (#246), and
+                # whether its amp is wired (`_amp_wiring`): an amp that is
+                # missing or unwired looks healthy by every other measure.
+                "warnings": self._run_warnings(rig),
+                "amp_wiring": await self._amp_wiring(rig),
                 # The rig this agent holds, and its children that exited with
                 # no `down` asking them to: what a phone reads after a crash.
                 "supervisor": self.supervisor.describe(rig),
@@ -2320,10 +2329,7 @@ class Agent:
             # What `up` said on stderr as it came up -- a patchbay link not
             # made, an amp that died -- which the CLI printed and a phone
             # would otherwise never see.
-            answer["warnings"] = [
-                line[len("warning: "):] for line in outcome.stderr.splitlines()
-                if line.startswith("warning: ")
-            ]
+            answer["warnings"] = up_warnings(outcome.stderr)
             return web.json_response(answer)
         # Failures, one body shape (`reason` says why, as every error here
         # does). The command refused or failed -- "a rig is already running",
@@ -2419,6 +2425,13 @@ class Agent:
             self._master_back()
             self._master_capped = None
             self._block_s = None
+            # What `up` warned of as this run came up, kept for /health
+            # (`agent.warnings`, #246) while it is the run up: a switch by
+            # Program Change, and every other path into a start, has no page
+            # to answer, and an amp that did not start or is not wired was
+            # said once, on a stream nobody reads.
+            if args[:1] in (["up"], ["restart"]):
+                self._start_warnings = (_warned_run(self.describe()), up_warnings(outcome.stderr))
         if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
             # A later success supersedes the old failure: left in place,
             # a healthy agent reports a refused request forever and
@@ -5391,7 +5404,8 @@ class Agent:
         try:
             running = await asyncio.to_thread(world.read_config, described.get("config"))
             # As the live attempt will see the amp: none at all for a run
-            # with no amp, so its `_amp` alone never forces a restart.
+            # with no amp, so neither rig's `_amp` is a step or a reason. A
+            # next rig that should bring the amp back is `amp_blockers`'s.
             decided = rigfile.diff(running, upcoming, root=self._amp_root(),
                                    amp_off=state.get("amp_requested") is False,
                                    remove_tracks=self._removable(remove_tracks))
@@ -5399,7 +5413,12 @@ class Agent:
             running = None
             decided = rigfile.NeedsRestart((rigfile.RestartReason(
                 "unreadable", f"the running rig's compiled config could not be read: {type(exc).__name__}: {exc}"),))
-        blockers = state_blockers(state)
+        # A run with no amp stays without one into the same rig, and only
+        # there (`keeps_no_amp`, #246): into another rig with an amp, the amp
+        # comes back by a restart, as it does for a Carla that should be
+        # running and is not, or is not wired.
+        blockers = state_blockers(state) + await self._amp_switch_blockers(
+            state, described, running, upcoming, amp_off=keeps_no_amp(state, name))
         if blockers:
             decided = rigfile.NeedsRestart(tuple(blockers) + (
                 decided.reasons if isinstance(decided, rigfile.NeedsRestart) else ()))
@@ -5421,7 +5440,9 @@ class Agent:
                     "plan": tried["counts"]}, previous)
                 if mark:
                     mark(entry)
-                return {**answer, "how": "live", "entry": entry,
+                # No `up` ran, so nothing new was warned of: the run's own
+                # start's warnings are in /health (`agent.warnings`).
+                return {**answer, "how": "live", "entry": entry, "warnings": [],
                         "seconds": round(self.clock() - started, 3), "state": self.describe()}
             reasons = [failure]
         else:
@@ -5439,6 +5460,11 @@ class Agent:
             mark(entry)
         answer.update({
             "ok": outcome.ok, "how": "restart", "why": why, "command": args, "output": outcome.stdout,
+            # What `up` said on stderr as the next rig came up (#246): an amp
+            # that did not start or exited, one not wired, a link not made.
+            # Kept only from stdout, these were lost, and a Carla that failed
+            # came up silent after every switch by restart.
+            "warnings": up_warnings(outcome.stderr) if outcome.ok else [],
             "entry": entry, "seconds": round(self.clock() - started, 3), "state": self.describe(),
         })
         if not outcome.ok:
@@ -5463,6 +5489,20 @@ class Agent:
                 answer.update(reason=half, half_switched=True)
         return answer
 
+    async def _amp_switch_blockers(
+        self, state: dict[str, Any], described: dict[str, Any], running: dict[str, Any] | None,
+        upcoming: dict[str, Any], *, amp_off: bool,
+    ) -> list[rigfile.RestartReason]:
+        """`amp_blockers` for a switch of the running rig into `upcoming`
+        (#246), with the wiring looked at (`_amp_wiring`, only while Carla is
+        alive). Not from a rig whose config has no amp, run with the amp
+        asked for: `rigfile.diff` restarts for the amp then, as `amp`."""
+        if running is None:
+            return []
+        if not (running.get("_amp") or {}).get("model") and state.get("amp_requested") is not False:
+            return []
+        return amp_blockers(state, described, upcoming, await self._amp_wiring(described), amp_off=amp_off)
+
     async def _switch_live(
         self, origin, name: str, running: dict[str, Any], upcoming: dict[str, Any], state: dict[str, Any],
         discarded: list[dict[str, Any]] | None = None, remove_tracks: tuple[str, ...] = (),
@@ -5480,11 +5520,13 @@ class Agent:
 
         # The amp as the agent last sent it, which is what the plan compares
         # the next rig's `_amp` with (`rigfile.diff`'s `live["amp"]`). A rig
-        # run with no amp (`--no-amp`) has none: no Carla runs and a
-        # restart into the next rig would start none, so neither rig's `_amp`
-        # is a step or a reason (`amp_off`). One whose Carla should be there and is not
-        # keeps its steps, so the first fails and the switch restarts into the
-        # next rig, Carla with it.
+        # run with no amp (`--no-amp`) has none: no Carla runs, so neither
+        # rig's `_amp` is a step or a reason (`amp_off`). A switch that
+        # should bring the amp back, into another rig with one (#246), never
+        # gets here: the decision restarts for it (`amp_blockers`), as it
+        # does for a Carla that should be there and is not. One that dies
+        # between the two keeps its steps, so the first fails and the switch
+        # restarts into the next rig, Carla with it.
         amp = self._amp_for(state, running)
         amp_off = state.get("amp_requested") is False
         try:
@@ -5646,6 +5688,12 @@ class Agent:
         # GET /amp's model view for one (run, model): polled every second by
         # every page, it is read once per run and model, not per poll.
         self._amp_model_view: tuple[tuple, Any] | None = None
+        # The last look at the amp's links (#246, `_amp_wiring`): (the run
+        # and Carla's pid, clock, `amp_live.wiring_said`'s answer).
+        self._amp_wiring_seen: tuple[tuple, float, dict[str, Any]] | None = None
+        # What the last start's `up` warned of, and the run it is of
+        # (`_warned_run`): /health's `agent.warnings` while that run is up.
+        self._start_warnings: tuple[tuple, list[str]] | None = None
 
     def _amp_routes(self, app) -> None:
         app.router.add_get("/amp", self.amp_route)
@@ -5755,7 +5803,10 @@ class Agent:
         try:
             amp, state, described = await self._amp_now(writing=False)
         except amp_live.AmpRefused as exc:
-            raise self._amp_http(exc)
+            error = self._amp_http(exc)
+            if exc.code == "no_amp":
+                error.agent_extra = await self._amp_on_offer()
+            raise error
         key = (amp.run, amp.model)
         if self._amp_model_view is None or self._amp_model_view[0] != key:
             model = await asyncio.to_thread(amp_live.model_view, amp.model, self._amp_root(), self._amp_shelf)
@@ -5763,7 +5814,57 @@ class Agent:
         view = amp_live.amp_view(amp, state, self._amp_model_view[1])
         view["carla"] = (described.get("children") or {}).get("amp")
         view["held"] = self._amp_held()
+        view["wiring"] = await self._amp_wiring(described)
         return web.json_response(view)
+
+    async def _amp_on_offer(self) -> dict[str, Any]:
+        """For GET /amp's 409 `no_amp` (#246): `amp_on` true when the run was
+        started with --no-amp and the running rig's config has an amp, which
+        `POST /rig/restart {"amp": true}` brings; `rig` names it. A run
+        started with --no-amp kept it through every restart and switch,
+        and nothing on the page could turn it back on."""
+        state = await asyncio.to_thread(self.switching.read_state) or {}
+        if state.get("amp_requested") is not False:
+            return {"amp_on": False}
+        config = await asyncio.to_thread(self._read_running_config, state)
+        has = bool(((config or {}).get("_amp") or {}).get("model"))
+        return {"amp_on": has, "rig": switching_from(state, self.describe()) if has else None}
+
+    async def _amp_wiring(self, described: dict[str, Any]) -> dict[str, Any] | None:
+        """Whether the running rig's amp is wired (#246): `{"wired",
+        "problems"}` from Carla's `links` (`amp_live.read_links`), or None
+        when there is no live Carla to ask about, or no way to tell. One look
+        per Carla run (its pid) and `amp_live.WIRING_EVERY`, off the loop,
+        shared by GET /amp, /health and a switch's decision.
+
+        After an amp starts, by `up`, a restart or a model change, Carla can
+        run with the link from the guitar into NAM, or from NAM into Sushi,
+        not made: the guitar goes in dry while everything looks healthy, and
+        `up` warned of it once."""
+        child = (described.get("children") or {}).get("amp") if described.get("running") else None
+        if not child or child.get("alive") is not True:
+            return None
+        key = (described.get("pgid"), described.get("started_at"), described.get("config"), child.get("pid"))
+        seen = self._amp_wiring_seen
+        if seen is not None and seen[0] == key and self.clock() - seen[1] < amp_live.WIRING_EVERY:
+            return seen[2]
+        try:
+            said = await asyncio.to_thread(self.carla.links)
+        except Exception as exc:  # noqa: BLE001 -- a look that fails is "cannot tell", said
+            said = amp_live.wiring_said(None, checked=False,
+                                        why=f"the amp's links could not be looked at: {type(exc).__name__}: {exc}")
+        if said is None:
+            return None
+        self._amp_wiring_seen = (key, self.clock(), said)
+        return said
+
+    def _run_warnings(self, described: dict[str, Any]) -> list[str]:
+        """What `up` warned of as the rig that is up now came up, or [] when
+        the warnings kept are another run's (#246)."""
+        if self._start_warnings is None or not described.get("running"):
+            return []
+        run, warnings = self._start_warnings
+        return list(warnings) if run == _warned_run(described) else []
 
     def _amp_held(self) -> bool:
         """Whether this agent holds the running rig, which a model change needs."""
@@ -6383,7 +6484,11 @@ class Agent:
         machine_file = Path(machine) if isinstance(machine, str) and machine else machine_path(root)
         if not machine_file.is_absolute():
             machine_file = root / machine_file
-        return {"described": described, "state": state, "running": running, "machine": machine_file}
+        # Whether the amp is wired (#246), for a switch into the edited file
+        # to ask "Restart?" over (`_would_restart`), as the switch decides.
+        wiring = await self._amp_wiring(described)
+        return {"described": described, "state": state, "running": running, "machine": machine_file,
+                "wiring": wiring}
 
     def _rigfile_path(self, name: str) -> Path:
         """config/rigs/<name>.yaml for a rig `/rigs` lists, or 404: a name in
@@ -7333,7 +7438,8 @@ class Agent:
             self._remember(command or ["revert", name], reason, kind="lifecycle")
             return {"ok": False, "code": "not_switched", "reason": reason, "written": True}
         out = {k: switched.get(k) for k in ("how", "why", "seconds", "plan", "applied", "counts", "entry",
-                                            "state", "take", "abandoned", "half_switched") if k in switched}
+                                            "state", "take", "abandoned", "half_switched", "warnings")
+               if k in switched}
         if not switched.get("ok"):
             reason = " ".join((f"{name}'s file was {done} ({said['what']}), but the rig did not come up "
                                f"playing it: {switched.get('reason')}").split())
@@ -7712,6 +7818,14 @@ class Agent:
         reasons = [r.as_dict() for r in state_blockers(state)]
         try:
             running = self.switching.read_config(run["described"].get("config"))
+            # The running rig's own file, so a run with no amp keeps none
+            # (`keeps_no_amp`); a Carla that should run and is not, or is not
+            # wired, is a restart (#246), asked first as any is. The wiring
+            # as `_rigfile_run` looked at it: this runs off the loop.
+            if ((running or {}).get("_amp") or {}).get("model") or state.get("amp_requested") is False:
+                reasons += [r.as_dict() for r in amp_blockers(
+                    state, run["described"], compiled, run.get("wiring"),
+                    amp_off=state.get("amp_requested") is False)]
             decided = rigfile.diff(running, compiled, root=self._amp_root(),
                                    amp_off=state.get("amp_requested") is False,
                                    remove_tracks=self._removable(remove_tracks))
@@ -8771,6 +8885,13 @@ def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     the next one's own `_amp` says its model. `AgentError` for a rig name that
     is not one. Pure.
 
+    Nor `--no-amp`, for a switch to another rig (`keeps_no_amp`, #246): a
+    run started with the amp off kept it off through every switch after,
+    and an owner who switched to a rig with an amp heard none, with nothing
+    on the page to turn it back on. A switch into the same rig (a revert, a
+    channel loaded or removed, an Undo, the `up` that brings a rig back
+    after a failed switch) keeps it, as `restart` does.
+
     The machine file the run was started against goes with it (`--machine`),
     as `Switching.compile` already compiled the next rig against it: until
     2026-11-06 every switch by restart dropped it, and `up` wired the next
@@ -8780,10 +8901,29 @@ def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     machine = options.get("machine") or state.get("machine")
     up = lifecycle_arguments("up", {
         "config_name": rig, "rig": True,
-        "headless": options["headless"], "tuner": options["tuner"], "amp": options["amp"],
+        "headless": options["headless"], "tuner": options["tuner"],
+        "amp": options["amp"] or not keeps_no_amp(state, rig),
         "visualiser_tap": options["visualiser_tap"],
     }, machine=_absolute_machine(machine))
     return [["down"], up]
+
+
+def keeps_no_amp(state: dict[str, Any], rig: str) -> bool:
+    """Whether switching the run `state` describes into rig `rig` keeps it
+    without an amp: only a run started with --no-amp (`amp_requested`
+    False), and only into the rig it is running (`switching_from`), so that
+    a revert, a channel loaded or removed, or an Undo does not bring Carla
+    back on a rig the player took it off. A switch to another rig drops the
+    request (#246). Pure."""
+    return state.get("amp_requested") is False and rig == switching_from(state, {})
+
+
+def up_warnings(stderr: str) -> list[str]:
+    """The warnings `up` said on stderr as a rig came up (`warning: ...`
+    lines; `Supervisor._start` writes one per problem): a patchbay link not
+    made, an amp that did not start or exited, an amp not wired. What a
+    lifecycle answer and a switch's carry (#246). Pure."""
+    return [line[len("warning: "):] for line in (stderr or "").splitlines() if line.startswith("warning: ")]
 
 
 def _absolute_machine(machine: Any) -> str | None:
@@ -8818,6 +8958,10 @@ SWITCH_RESTART_REASONS = {
     "failed": "a step of the live switch failed, so it restarts into the next rig rather than "
               "leave one half-switched",
     "unverified": "the rig read back after the live switch is not the next rig",
+    "amp_down": "the next rig has an amp and the running rig's Carla is not running, so a live switch "
+                "would leave it with none; a restart brings Carla back",
+    "amp_unwired": "the next rig has an amp and the running rig's Carla runs with its links not made, so "
+                   "the guitar goes in dry; a restart starts the patchbay and Carla again",
 }
 
 
@@ -8842,6 +8986,45 @@ def state_blockers(state: dict[str, Any]) -> list[rigfile.RestartReason]:
         found.append(rigfile.RestartReason(
             "amp_override", f"the amp runs {state['amp_model_requested']!r}, given with --amp-model"))
     return found
+
+
+def amp_blockers(
+    state: dict[str, Any], described: dict[str, Any], upcoming: dict[str, Any] | None,
+    wiring: dict[str, Any] | None, *, amp_off: bool,
+) -> list[rigfile.RestartReason]:
+    """Why the amp rules a live switch into `upcoming` out (#246): an amp
+    that should run for the next rig and is not alive, or not wired. Pure.
+
+    A live switch keeps the Carla that runs. Most rigs share a model and
+    knobs, so the plan has no amp step at all and nothing touched Carla: a
+    dead one, or one whose links are gone, survived the switch while the
+    guitar played dry. So the switch restarts when:
+
+    - the next rig has an `_amp` and the switch does not keep the run
+      without one (`amp_off`, `keeps_no_amp`), and
+    - Carla is not running (`described`'s amp child absent or not alive:
+      `amp_down`), or runs with its links not made (`wiring`, `wired`
+      False: `amp_unwired`). A wiring that could not be looked at is no
+      reason: the rig plays on as it was.
+
+    Only when the running rig's own config has an `_amp` too: from a rig
+    with none, `rigfile.diff` already restarts for the amp (`_amp_plan`), and
+    says so as `amp`."""
+    if amp_off or not ((upcoming or {}).get("_amp") or {}).get("model"):
+        return []
+    child = (described.get("children") or {}).get("amp")
+    if child is None or child.get("alive") is not True:
+        if state.get("amp_requested") is False:
+            said = "the running rig was started with --no-amp, and the next rig has an amp"
+        elif child is None:
+            said = "the running rig's Carla did not start (see the warnings of the up that started it)"
+        else:
+            said = f"the running rig's Carla (pid {child.get('pid')}) is not running"
+        return [rigfile.RestartReason("amp_down", said)]
+    if wiring is not None and wiring.get("wired") is False:
+        said = "; ".join(wiring.get("problems") or []) or "its links are not made"
+        return [rigfile.RestartReason("amp_unwired", f"Carla runs, but the amp is not wired: {said}")]
+    return []
 
 
 def switching_from(state: dict[str, Any], described: dict[str, Any]) -> str | None:
@@ -8871,11 +9054,18 @@ def switched_state(state: dict[str, Any], name: str, config: Any) -> dict[str, A
     """The state file after a live switch to rig `name`, whose compiled config
     is at `config`: the same supervisor, group, children and options, now
     naming the next rig, so `restart`, `status` and the listener follow it.
-    `switched_at` says when; `started_at` stays the supervisor's. Pure."""
-    return {
+    `switched_at` says when; `started_at` stays the supervisor's. Pure.
+
+    A run started with --no-amp that switched to another rig no longer asks
+    for no amp (`keeps_no_amp`, #246): the next restart or switch brings the
+    amp, where that rig has one. Into the same rig it keeps it."""
+    after = {
         **state, "config_name": name, "config": str(config), "rig": f"config/rigs/{name}.yaml",
         "switched_at": datetime.now(timezone.utc).isoformat(),
     }
+    if state.get("amp_requested") is False and not keeps_no_amp(state, name):
+        after["amp_requested"] = True
+    return after
 
 
 def place_switch_add(
@@ -9313,6 +9503,10 @@ def saved_as_state(state: dict[str, Any], name: str, config: Any) -> dict[str, A
     options, now naming the new file), saying when it was saved as rather
     than switched. Pure."""
     after = {**switched_state(state, name, config), "saved_as_at": datetime.now(timezone.utc).isoformat()}
+    if "amp_requested" in state:
+        # The same rig under a new name, not a switch: a run with no amp
+        # keeps none (`switched_state` drops it for a switch, #246).
+        after["amp_requested"] = state["amp_requested"]
     if "switched_at" in state:
         after["switched_at"] = state["switched_at"]
     else:
@@ -9534,6 +9728,12 @@ def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[s
                 "and that restart would drop them: Save first (it writes what is playing into the file), "
                 "then make the edit", "unsaved")
     return None
+
+
+def _warned_run(described: dict[str, Any]) -> tuple:
+    """The run a start's warnings are of: its group and start, which a live
+    switch keeps (the same Carla plays on) and a restart changes. Pure."""
+    return (bool(described.get("running")), described.get("pgid"), described.get("started_at"))
 
 
 def _run_identity(described: dict[str, Any]) -> tuple:

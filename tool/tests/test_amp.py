@@ -696,3 +696,75 @@ def test_replaying_a_saved_amp_sends_what_is_valid_and_then_names_what_was_not(m
         rig._replay_amp({"Quality": float("nan"), "Input Lvl": 5.0})
     assert "Input Lvl" not in str(caught.value)
     assert [p[1] for p in sent] == [5.0], "the valid one went out"
+
+
+# --------------------------------------------------------------------------- #
+# Whether the amp is wired, read off the live graph (#246)
+# --------------------------------------------------------------------------- #
+
+# `pw-link -l` with every link of `amp_patchbay(BASE_PATCHBAY)` made, under
+# the live names `live_port_names` maps each alias to (here, the same).
+WIRED_LISTING = """iface:capture_AUX0
+  |-> NAM:Input
+  |-> fmit:input
+NAM:Output
+  |-> sushi:audio_input_0
+  |-> sushi:audio_input_1
+"""
+
+
+def test_an_amp_whose_links_are_all_made_is_wired():
+    from sushi_rig.amp import amp_patchbay
+    from sushi_rig.amp_live import unmade_amp_links
+
+    assert unmade_amp_links(amp_patchbay(BASE_PATCHBAY), {}, WIRED_LISTING) == []
+
+
+def test_a_carla_running_with_a_link_into_or_out_of_nam_missing_is_not_wired():
+    """Carla runs and the model is loaded, and the guitar goes in dry: what
+    GET /amp and /health now say (#246). Only NAM's links are looked at: the
+    second channel's, not made here either, is the start's check to say."""
+    from sushi_rig.amp import amp_patchbay
+    from sushi_rig.amp_live import unmade_amp_links
+
+    xml = amp_patchbay(BASE_PATCHBAY)
+    out_missing = WIRED_LISTING.replace("  |-> sushi:audio_input_1\n", "")
+    assert unmade_amp_links(xml, {}, out_missing) == ["not linked: NAM:Output -> sushi:audio_input_1"]
+    none = "iface:capture_AUX0\n  |-> fmit:input\n"
+    assert unmade_amp_links(xml, {}, none) == [
+        "not linked: NAM:Output -> sushi:audio_input_0, NAM:Output -> sushi:audio_input_1, "
+        "iface:capture_AUX0 -> NAM:Input"]
+
+
+def test_a_patchbay_that_asks_for_no_link_to_the_amp_is_said_as_that():
+    from sushi_rig.amp_live import unmade_amp_links
+
+    assert unmade_amp_links(BASE_PATCHBAY, {}, WIRED_LISTING) == [
+        "rig-amp.qpwgraph has no link into NAM:Input", "rig-amp.qpwgraph has no link out of NAM:Output"]
+
+
+def test_one_port_saved_under_two_profiles_is_one_link():
+    """`amp_patchbay` feeds NAM from each node the guitar's port is saved
+    under (two ALSA profiles of one socket): one link to the graph."""
+    from sushi_rig.amp import amp_patchbay
+    from sushi_rig.amp_live import unmade_amp_links
+
+    two = BASE_PATCHBAY.replace(
+        " </items>",
+        '  <item node-type="pipewire" port-type="pipewire-audio">\n'
+        '   <output node="iface Pro" port="iface:capture_AUX0"/>\n'
+        '   <input node="sushi" port="sushi:audio_input_0"/>\n'
+        "  </item>\n </items>")
+    xml = amp_patchbay(two, "iface:capture_AUX0")
+    assert unmade_amp_links(xml, {}, "") == [
+        "not linked: NAM:Output -> sushi:audio_input_0, NAM:Output -> sushi:audio_input_1, "
+        "iface:capture_AUX0 -> NAM:Input"]
+
+
+def test_the_wiring_is_not_called_unwired_when_it_could_not_be_looked_at(tmp_path):
+    from sushi_rig.amp_live import read_links, wiring_said
+
+    assert read_links(tmp_path / "rig-amp.qpwgraph") is None, "no amp patchbay: nothing to say"
+    assert wiring_said(None, checked=False, why="pw-dump is not installed") == {
+        "wired": None, "problems": ["pw-dump is not installed"]}
+    assert wiring_said([]) == {"wired": True, "problems": []}

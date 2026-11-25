@@ -99,6 +99,7 @@ const state = {
   amp: null,                 // GET /amp, with /live: what the agent last sent Carla
   ampModels: null, ampModelsAt: 0,  // GET /amp/models: kept once it answers, read again after a model change
   ampChoice: null,           // the model picked in the amp card, awaiting its confirm
+  ampOnAsk: false,           // the amp card's Amp on pressed, awaiting its "Restart?" (#246)
   ampPicker: null,           // the amp card's picker, patched on its own key: see ampRegion
   ampPending: null,          // the model change in flight
   ampUpdaters: [],           // the amp region's own, emptied whenever it is rebuilt
@@ -1372,13 +1373,24 @@ async function lifecycle(op, name, opts = {}) {
     // A restart that would drop unsaved changes is refused by the agent;
     // dropping them is a second, deliberate tap, never the default.
     const discard = op === "restart" && answer.code === "unsaved"
-      ? { label: "Restart anyway", run: () => lifecycle("restart", name, { discard: true }) } : null;
+      ? { label: "Restart anyway", run: () => lifecycle("restart", name, { ...opts, discard: true }) } : null;
     fail(said.title, { reason: said.reason, code: answer.code }, discard);
   }
   render();
   kick();
   refreshRigs(true).then(render);
   return said.ok;
+}
+
+// Amp on (#246): the running rig restarted with its amp, for a rig started
+// with none. Asked first ("Restart?"), refused while locked, and through the
+// restart route (`R.lifecycleCall`'s `amp`), so unsaved work is refused as
+// any restart's is, with "Restart anyway" kept to the amp.
+async function ampOn(rig) {
+  state.ampOnAsk = false;
+  const refusal = R.lockRefusal(state.locked, "amp_on");
+  if (refusal) { fail("Amp not turned on", { reason: refusal }); render(); return; }
+  await lifecycle("restart", rig, { amp: true });
 }
 
 // A model change restarts the amp, so it takes a confirm that says the
@@ -1665,12 +1677,22 @@ function ampFader(f) {
 function ampRegion(el) {
   const view = R.ampCard(state.amp, state.ampModels, { locked: state.locked, pending: state.ampPending });
   const { picker, listProblem, ...card } = view;
-  patch(el, JSON.stringify(card), () => {
+  // Amp on's ask is the card's own when there is no amp up (#246); with one
+  // up it is not in the key, so nothing rebuilds the faders for it.
+  patch(el, JSON.stringify([card, view.state === "up" ? null : [state.ampOnAsk, !!state.pending]]), () => {
     state.ampUpdaters = [];
     state.ampPicker = null;
     if (view.state === "hidden") return [];
     if (view.state !== "up") {
-      return [h("h2", {}, "AMP"), h("p", { class: view.state === "failed" ? "missing" : "amp-none", title: view.why }, R.shortSaid(view.why))];
+      // A rig started with no amp whose file has one (#246): Amp on, a
+      // restart with the amp, after "Restart?".
+      const on = view.ampOn;
+      return [h("h2", {}, "AMP"), h("p", { class: view.state === "failed" ? "missing" : "amp-none", title: view.why }, R.shortSaid(view.why)),
+        on && !state.ampOnAsk ? h("button", { class: "rig-act small amp-on", disabled: !!on.why || !!state.pending,
+          title: on.why || `Restart ${on.rig} with its amp: the sound cuts out while it restarts.`,
+          onclick: () => { state.ampOnAsk = true; render(); } }, "Amp on") : null,
+        on && state.ampOnAsk ? confirmBox("Restart?", () => ampOn(on.rig), () => { state.ampOnAsk = false; render(); },
+          { pending: !!state.pending || !!on.why, cls: "amp-on-ask" }) : null];
     }
     state.ampPicker = h("div", { class: "amp-picker" });
     return [
@@ -1685,6 +1707,7 @@ function ampRegion(el) {
       view.model && view.model.description ? h("details", { class: "amp-about" }, h("summary", {}, "Model notes"),
         h("pre", {}, view.model.description)) : null,
       view.down ? h("p", { class: "missing", title: "Carla is not running: restart the rig to bring the amp back." }, "Carla down") : null,
+      view.unwired ? h("p", { class: "missing amp-unwired", title: view.unwired.title }, view.unwired.text) : null,
       h("div", { class: "faders" }, view.faders.map(ampFader),
         view.shown.map((p) => h("div", { class: "shown", title: p.note }, h("span", { class: "label" }, p.name), h("span", { class: "value" }, p.text)))),
       state.ampPicker,

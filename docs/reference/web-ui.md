@@ -103,7 +103,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
     **Restart?** (after an edit, a pedal, a Save as or an Undo that waits
     for one; and before a revert, or the Undo of a revert or a load, whose
     switch would restart Sushi: the page sends `restart: false` first and
-    asks on `restarts`), **Restart amp?** (a model change), and **Drop
+    asks on `restarts`; and before **Amp on**), **Restart amp?** (a model change), and **Drop
     changes?** (a revert, or the Undo of one, that would drop unsaved work,
     which no Undo brings back).
     A restart the agent refuses for unsaved work offers **Restart anyway**.
@@ -201,7 +201,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   problem boxes (a refusal, a child that exited) are above the tabs; and a
   tab carries a red dot, with the reason as its title, while a change to one
   of its plugins stands refused or anything the amp's card says is wrong
-  (Carla not running, the amp unreadable, a problem with its model, the
+  (Carla not running, the amp not wired, the amp unreadable, a problem with its model, the
   model's rate warning, the models not listed: `ampFaults`); while the amp's
   tab is not decided yet, every channel's tab carries its faults. Undo, Save, the unsaved count and Revert take no notice of the tab: a
   change on a closed tab counts and is undone as any other. The keyboard: the
@@ -439,7 +439,13 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   never as read back. On the stage screen, only the model's name and the
   output level, and only while the lock is off, as Start and Stop are. With
   the panel running, the faders and picker are off and say the panel owns the
-  amp.
+  amp. **Amp not wired** (#246) on the card, the links missing in its title,
+  when Carla runs and `GET /amp`'s `wiring` says the guitar's link into NAM,
+  or NAM's into Sushi, is not made (`wiringTag`). A rig started with
+  `--no-amp` whose file has an amp shows **Amp on** on the card (behind the
+  lock), which asks **Restart?** and restarts with the amp (`POST
+  /rig/restart {"amp": true}`); a restart refused for unsaved work offers
+  **Restart anyway**, still with the amp.
 - **Save (S4).** In the files column: Save writes the
   running rig's own file of `config/rigs/` in place, keeping its comments, and
   is offered whenever a rig that can be saved from here is up, since the
@@ -726,6 +732,15 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   on its own. The supervisor's own problems (a group that would not stop, its
   holder lost) are shown the same way. A crash outlives its rig in the record,
   and once that rig is down the box says so instead of telling you to restart.
+- **What `up` warned of** (#246) as the running rig came up, by a start, a
+  restart or any switch by restart (the picker's, a revert's, a channel load's,
+  an Undo's, a pedal's), is in the same boxes from `/health`'s
+  `agent.warnings`, in a word or two (`warningsTag`): **No amp** for an amp
+  that did not start, exited or is missing, **Amp not wired**, or **N
+  warnings**, every line in the title. An amp whose links are not made
+  (`agent.amp_wiring`) is **Amp not wired** there too. A start, restart or
+  switch by restart that warned adds the same words to its notice
+  ("Switched to lead · No amp").
 - **The amp is named by its file** on both screens and in the picker
   (`Neve 2`), and the name the `.nam` gives itself is shown under it as what
   the file calls itself, with the rest of its metadata under "What the model

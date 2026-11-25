@@ -7401,3 +7401,33 @@ message's decision (`_midi_decided`) and an action's failure
 `midi` push while one reads asks for one more after it. Not run on the rig.
 *(2026-11-24)*
 
+
+**The amp goes missing after a no-amp rig, causes 2 to 4 (#246).** Traced in
+the code at 6fbcd51, not reproduced on the rig; cause 1 (giving an amp-less
+rig an amp) waits for the owner. (2) A switch by restart kept only `up`'s
+stdout, so "amp did not start", "amp exited during startup … NO AMP", "THE AMP
+IS NOT WIRED" and unmade NAM links were lost from every switch: the page's, a
+revert's, a channel load or removal's, an Undo's and the FBV A/B pedal's.
+Every switch's answer now carries `warnings` (`up_warnings`), and `/health`'s
+`agent.warnings` keeps the running run's, since a pedal has no page to answer.
+The page says them in a word or two ("No amp", "Amp not wired", "N warnings",
+`warningsTag`) with every line on hover, in the problem boxes and on a
+switch's or restart's notice. And Carla can run with the link into
+`NAM:Input` or out of `NAM:Output` not made: `GET /amp`'s `wiring` and
+`/health`'s `agent.amp_wiring` now read it off the graph (`amp_live.read_links`,
+one look per Carla run and 10 s), and the card says **Amp not wired**. (3)
+`amp_requested: false` stuck: a run started with `--no-amp` carried it into
+every restart and switch. Now only a switch into the same rig keeps it
+(`keeps_no_amp`: a revert, a channel loaded or removed, an Undo, a fallback);
+a switch to another rig drops it, by restart where that rig has an amp. Four
+tests encoded the old rule: two in `test_agent.py` (a no-amp run switching
+live to a rig with another model, and dropping amp steps, both "since a
+restart would start none", which is no longer so), one in `test_agent_midi.py`
+and one in `test_agent_rigfiles.py` (where `--no-amp` was incidental): each
+now shows both rules. The amp card offers **Amp on** for a run with no amp
+whose config has one (`GET /amp`'s `amp_on`), which asks "Restart?" and
+restarts through `POST /rig/restart {"amp": true}` (`sushi-rig restart
+--amp`). (4) A dead or unwired Carla survived a live switch with no amp step:
+`amp_blockers` makes it a restart (`amp_down`, `amp_unwired`), asked first
+where the page asks (`_would_restart`). Not run against a real Carla or
+PipeWire, nor on the rig. *(2026-11-24)*

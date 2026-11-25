@@ -2094,6 +2094,104 @@ def test_with_the_panel_running_the_amp_card_writes_nothing_and_says_why(browser
     page.close()
 
 
+# -- #246: the amp's warnings, its wiring, and Amp on ----------------------------
+
+AMP_EXITED = ("amp exited during startup (status 1) — see /run/logs/amp.log; the rig is playable but "
+              "there is NO AMP in the signal path, so the guitar is running dry")
+
+
+def test_up_s_warnings_are_said_in_a_word_or_two_with_every_line_in_the_title(blank):
+    """The owner's rule: one or two words on the page, the rest on hover. The
+    amp's first, since its absence is a sound."""
+    got = rigjs(blank, """return [
+        R.warningsTag([]), R.warningsTag(null),
+        R.warningsTag(['x', arg.exited]),
+        R.warningsTag(['THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link into NAM:Input, because ...']),
+        R.warningsTag(['2 link(s) in rig.qpwgraph were not made: a -> NAM:Input, NAM:Output -> sushi:audio_input_0']),
+        R.warningsTag(['a link not made']), R.warningsTag(['a', 'b']),
+        R.wiringTag({wired: false, problems: ['not linked: NAM:Output -> sushi:audio_input_0']}),
+        R.wiringTag({wired: null, problems: ['pw-dump is not installed']}), R.wiringTag(null)];""",
+                {"exited": AMP_EXITED})
+    assert got[:2] == [None, None]
+    assert got[2] == {"text": "No amp", "title": f"x\n{AMP_EXITED}"}
+    assert got[3]["text"] == got[4]["text"] == "Amp not wired"
+    assert [got[5]["text"], got[6]["text"]] == ["1 warning", "2 warnings"]
+    assert got[7] == {"text": "Amp not wired",
+                      "title": "The amp is not wired: not linked: NAM:Output -> sushi:audio_input_0"}
+    assert got[8] is None and got[9] is None, "not looked at is not unwired"
+
+
+def test_a_switch_by_restart_that_warned_says_so_on_its_notice(blank):
+    said = rigjs(blank, """return [
+        R.lifecycleOutcome('switch', 'lead', {ok: true, body: {how: 'restart', why: [{code: 'amp', detail: 'd'}],
+                                                              warnings: [arg]}}),
+        R.lifecycleOutcome('switch', 'lead', {ok: true, body: {how: 'restart', why: [], warnings: []}}),
+        R.lifecycleOutcome('restart', 'lead', {ok: true, body: {warnings: [arg]}})];""", AMP_EXITED)
+    assert said[0]["title"] == "Switched to lead · No amp" and said[0]["text"].endswith(AMP_EXITED)
+    assert said[1]["title"] == "Switched to lead"
+    assert said[2]["title"] == "Restarted lead · No amp"
+
+
+def test_an_amp_card_with_no_amp_offers_amp_on_only_for_a_rig_whose_file_has_one(blank):
+    cards = rigjs(blank, """const no = (body) => ({ok: false, code: 'no_amp', reason: 'it was started with --no-amp', body});
+        return [R.ampCard(no({amp_on: true, rig: 'board'}), null), R.ampCard(no({amp_on: false}), null),
+                R.ampCard(no({amp_on: true, rig: 'board'}), null, {locked: true})];""")
+    assert cards[0]["ampOn"] == {"rig": "board", "why": None}
+    assert cards[1]["ampOn"] is None
+    assert cards[2]["ampOn"]["why"].startswith("Locked: turning the amp on restarts the rig")
+    call = rigjs(blank, "return R.lifecycleCall('restart', 'board', {amp: true});")
+    assert call == {"path": "/rig/restart", "json": {"amp": True}}
+
+
+def test_an_unwired_amp_is_said_on_its_card_and_with_the_problems(browser, amp_served):
+    """Carla runs and NAM's links are not made: by every other measure the
+    rig is healthy and the guitar goes in dry (#246). Two words on the card
+    and in the problems, what is missing on hover."""
+    from sushi_rig.amp_live import wiring_said
+
+    amp_served.amp.carla.wiring = wiring_said(["not linked: iface:capture_AUX0 -> NAM:Input"])
+    page = amp_rack(browser, amp_served)
+    p = page.page
+    tag = p.locator(".amp-card .amp-unwired")
+    expect(tag).to_have_text("Amp not wired")
+    expect(tag).to_have_attribute("title", "The amp is not wired: not linked: iface:capture_AUX0 -> NAM:Input")
+    expect(p.locator(".problem.agent", has_text="Amp not wired")).to_have_count(1)
+    page.close()
+
+
+def test_amp_on_restarts_a_rig_started_with_no_amp_after_restart_and_says_what_up_warned(browser, amp_served):
+    """A rig started with --no-amp whose file has one: its card offers Amp
+    on, behind the lock, which asks "Restart?" and restarts with the amp
+    (`POST /rig/restart {"amp": true}`). What that `up` warned of is on the
+    notice and with the problems, in two words, the whole line on hover."""
+    amp_served.amp.requested = False
+    amp_served.lifecycle.warnings = [AMP_EXITED]
+    page = rack_page(browser, amp_served)
+    p = page.page
+    card = p.locator(".amp-card")
+    expect(card.locator(".amp-none")).to_contain_text("the running rig has no amp")
+    button = card.get_by_role("button", name="Amp on")
+    expect(button).to_be_disabled()
+    expect(button).to_have_attribute("title", re.compile("^Locked: turning the amp on restarts the rig"))
+    lock = p.locator("button.lock")
+    lock.click()
+    lock.click()
+    expect(button).to_be_enabled()
+    button.click()
+    confirm = card.get_by_role("group", name="Restart?")
+    expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
+    assert ["restart", "--amp"] not in amp_served.lifecycle.calls, "nothing until the confirm"
+    confirm.get_by_role("button", name="Yes").click()
+    until(lambda: ["restart", "--amp"] in amp_served.lifecycle.calls)
+    notice = p.locator(".notice")
+    expect(notice).to_contain_text("Restarted electric_board · No amp")
+    expect(notice).to_have_attribute("title", re.compile(re.escape("NO AMP in the signal path")))
+    warned = p.locator(".problem.agent", has_text="No amp")
+    expect(warned).to_have_count(1)
+    expect(warned).to_have_attribute("title", AMP_EXITED)
+    page.close()
+
+
 def test_on_stage_the_amp_is_its_model_and_output_level_and_only_unlocked(browser, amp_served):
     page = Watched(browser, amp_served, "/", width=390, height=844)
     p = page.page

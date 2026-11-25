@@ -760,11 +760,15 @@ def test_restart_refusal_is_pure_over_the_state_the_answer_and_the_log():
 def test_a_switch_by_restart_carries_the_runs_machine_file(root):
     """(2) The new rig was checked against the run's machine file, and a
     switch compiled it against that file too, but its restart's `up` dropped
-    it and wired against this host's. It is carried now, for every switch."""
+    it and wired against this host's. It is carried now, for every switch.
+    (This run has no amp: `--no-amp` goes with a switch into the same rig,
+    and not into another, #246.)"""
     state = World(root).state
     steps = switch_steps(state, "two-guitars")
-    assert steps == [["down"], ["up", "two-guitars", "--rig", "--headless", "--no-tuner", "--no-amp",
+    assert steps == [["down"], ["up", "two-guitars", "--rig", "--headless", "--no-tuner",
                                 "--machine", state["machine"]]]
+    assert switch_steps(state, "guitar_vocal")[1] == ["up", "guitar_vocal", "--rig", "--headless", "--no-tuner",
+                                                      "--no-amp", "--machine", state["machine"]]
     v1 = {"config_name": "x", "mode": "headless", "children": {"sushi": 1}}
     assert "--machine" not in switch_steps(v1, "two-guitars")[1]
 

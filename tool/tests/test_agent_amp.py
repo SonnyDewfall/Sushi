@@ -220,6 +220,87 @@ def test_a_carla_that_died_is_shown_and_not_written_to(root):
     assert world.carla.sent == []
 
 
+# --------------------------------------------------------------------------- #
+# The amp back on, and whether it is wired (#246)
+# --------------------------------------------------------------------------- #
+
+def test_a_rig_started_with_no_amp_whose_config_has_one_offers_the_amp_on(root):
+    """A run started with --no-amp kept it through every restart and switch
+    of that rig, and the page could not turn it back on. GET /amp's 409
+    `no_amp` says `amp_on` when the running config has an amp: `POST
+    /rig/restart {"amp": true}` brings it, for the rig `rig` names."""
+    world = World(root)
+    world.state["children"].pop("amp")
+    world.state.update(amp_requested=False, rig="config/rigs/board.yaml")
+    agent, _ = amp_agent(root, world)
+    status, body = call(agent, "GET", "/amp")
+    assert (status, body["code"]) == (409, "no_amp") and "--no-amp" in body["reason"]
+    assert body["amp_on"] is True and body["rig"] == "board"
+
+
+@pytest.mark.parametrize("change", [
+    lambda w: w.state.update(amp_requested=True),        # Carla did not start: the amp was asked for
+    lambda w: w.config.pop("_amp"),                      # the rig has no amp to bring
+])
+def test_amp_on_is_offered_only_for_a_rig_run_with_none_that_has_one(root, change):
+    world = World(root)
+    world.state["children"].pop("amp")
+    world.state["amp_requested"] = False
+    change(world)
+    agent, _ = amp_agent(root, world)
+    status, body = call(agent, "GET", "/amp")
+    assert (status, body["code"]) == (409, "no_amp") and body["amp_on"] is False
+
+
+def test_the_restart_route_turns_the_amp_on_when_asked():
+    from sushi_rig.agent import lifecycle_arguments
+
+    assert lifecycle_arguments("restart", {"amp": True}) == ["restart", "--amp"]
+    assert lifecycle_arguments("restart", {"amp": False}) == ["restart"]
+    with pytest.raises(Exception, match="'amp' must be true or false"):
+        lifecycle_arguments("restart", {"amp": "on"})
+    asked = []
+
+    async def runner(args):
+        asked.append(list(args))
+        return Outcome(True, 0, "", "")
+
+    agent = Agent(describe=lambda: {"running": True, "children": {}}, run=runner,
+                  switching=Switching(read_state=lambda: {}), carla=FakeCarla().carla())
+    status, body = call(agent, "POST", "/rig/restart", json={"amp": True, "discard": True})
+    assert status == 200, body
+    assert asked == [["restart", "--amp"]]
+
+
+def test_an_amp_whose_links_are_not_made_is_said_by_get_amp_and_health(root):
+    """Carla runs, and the link from the guitar into NAM, or from NAM into
+    Sushi, is not made: the guitar goes in dry and the amp looked healthy.
+    GET /amp and /health say `wiring` (`wired` False, and what is missing),
+    one look per Carla run and `WIRING_EVERY`."""
+    clock = Clock()
+    world = World(root)
+    world.carla.wiring = amp_live.wiring_said(["not linked: iface:capture_AUX0 -> NAM:Input"])
+    agent, _ = amp_agent(root, world, clock=clock)
+    body = call(agent, "GET", "/amp")[1]
+    assert body["wiring"] == {"wired": False, "problems": ["not linked: iface:capture_AUX0 -> NAM:Input"]}
+    health = call(agent, "GET", "/health")[1]
+    assert health["agent"]["amp_wiring"] == body["wiring"]
+    assert world.carla.looked == 1, "looked at once, for both"
+    clock.now += amp_live.WIRING_EVERY
+    world.carla.wiring = amp_live.wiring_said([])
+    assert call(agent, "GET", "/amp")[1]["wiring"] == {"wired": True, "problems": []}
+    assert world.carla.looked == 2
+
+
+def test_a_dead_carla_or_no_amp_is_not_looked_at_for_links(root):
+    world = World(root, alive=False)
+    world.carla.wiring = amp_live.wiring_said(["x"])
+    agent, _ = amp_agent(root, world)
+    assert call(agent, "GET", "/amp")[1]["wiring"] is None
+    assert call(agent, "GET", "/health")[1]["agent"]["amp_wiring"] is None
+    assert world.carla.looked == 0
+
+
 def test_a_model_that_cannot_be_read_is_said_in_the_answer(root):
     world = World(root)
     world.state["amp_model"] = "amp/models/Gone.nam"

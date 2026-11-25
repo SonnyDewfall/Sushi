@@ -1414,6 +1414,10 @@ def _main(argv: list[str] | None = None) -> int:
         help="restart even though the agent saw changes since the last save, dropping them "
         "(without it, the agent refuses a restart that would lose them)",
     )
+    p.add_argument(
+        "--amp", action="store_true", dest="amp_on",
+        help="bring the amp back on a rig started with --no-amp, which a restart otherwise keeps off",
+    )
     p.add_argument("--direct", action="store_true", help=_DIRECT_HELP)
 
     p = sub.add_parser(
@@ -1775,7 +1779,7 @@ def _main(argv: list[str] | None = None) -> int:
             if args.command == "down":
                 return down(args.force)
             if args.command == "restart":
-                return restart()
+                return restart(amp=True) if args.amp_on else restart()
             return status()
         except (RigError, AmpError) as exc:
             sys.exit(str(exc))

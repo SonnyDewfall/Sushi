@@ -481,8 +481,11 @@ def test_get_rig_has_no_programs_when_the_rig_does_not_switch_by_them():
 
 def test_switch_steps_are_down_then_up_with_what_restart_would_bring_back():
     assert switch_steps(STATE, "lead") == [["down"], ["up", "lead", "--rig", "--headless", "--no-tuner"]]
-    assert switch_steps({"config_name": "x", "mode": "panel", "tuner_requested": True,
-                         "amp_requested": False}, "clean") == [["down"], ["up", "clean", "--rig", "--no-amp"]]
+    no_amp = {"config_name": "x", "mode": "panel", "tuner_requested": True, "amp_requested": False}
+    assert switch_steps(no_amp, "x") == [["down"], ["up", "x", "--rig", "--no-amp"]]
+    # Into another rig the run's --no-amp is not carried (#246): it was, and
+    # the owner switched to a rig with an amp and heard none.
+    assert switch_steps(no_amp, "clean") == [["down"], ["up", "clean", "--rig"]]
     with pytest.raises(AgentError):
         switch_steps(STATE, "../etc")
 

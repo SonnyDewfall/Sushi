@@ -818,6 +818,7 @@ export function ampFaults(amp) {
   if (amp.state !== "up") return [];
   const out = [];
   if (amp.down) out.push("Carla is not running: restart the rig to bring the amp back.");
+  if (amp.unwired) out.push(amp.unwired.title);
   if (amp.model && amp.model.problem) out.push(amp.model.problem);
   if (amp.model && amp.model.warning) out.push(amp.model.warning);
   if (amp.listProblem) out.push(`The amp's models could not be listed: ${amp.listProblem}`);
@@ -1335,6 +1336,13 @@ export function agentProblems(health) {
     const e = agent.last_error;
     out.push({ title: `Last error${e.command ? " (" + [].concat(e.command).join(" ") + ")" : ""}`, reason: e.message, at: e.at || null });
   }
+  // What `up` warned of as the running rig came up, and an amp whose links
+  // are not made (#246): by every other measure such a rig looks healthy.
+  // Each in a word or two, the whole of it on hover.
+  const warned = warningsTag(agent.warnings);
+  const unwired = wiringTag(agent.amp_wiring);
+  if (unwired) out.push({ title: unwired.text, reason: unwired.title, at: null });
+  if (warned && !(unwired && warned.text === unwired.text)) out.push({ title: warned.text, reason: warned.title, at: null });
   if (agent.midi && agent.midi.state === "failed") out.push({ title: "Pedals", reason: agent.midi.problem || "the MIDI listener failed", at: null });
   if (agent.stuck_live_calls) out.push({ title: "Sushi", reason: `${agent.stuck_live_calls} call(s) to Sushi never returned`, at: null });
   out.push(...crashes.filter((c) => c.kind));
@@ -1423,7 +1431,7 @@ const VERBS = { start: "Starting", stop: "Stopping", switch: "Switching to", res
 // The request for a lifecycle gesture. A start is a rig of channels
 // (config/rigs/, `rig: true`) and headless: the page replaces the OSC panel,
 // and a rig run with its panel cannot be switched live (#93).
-export function lifecycleCall(op, name, { discard = false } = {}) {
+export function lifecycleCall(op, name, { discard = false, amp = false } = {}) {
   if (op === "start") return { path: "/rig/up", json: { config_name: name, rig: true, headless: true } };
   if (op === "stop") return { path: "/rig/down", json: {} };
   if (op === "switch") return { path: "/rig/switch", json: { config_name: name } };
@@ -1431,8 +1439,35 @@ export function lifecycleCall(op, name, { discard = false } = {}) {
   // the agent's restart brings the rig back from its file, as it was run.
   // It refuses one that would drop unsaved changes (409 `unsaved`) unless
   // told `discard`, which the page sends only from a second, explicit tap.
-  if (op === "restart") return { path: "/rig/restart", json: discard ? { discard: true } : {} };
+  // `amp` (#246): the amp card's Amp on, the restart with the amp on, for a
+  // rig started with none whose file has one.
+  if (op === "restart") return { path: "/rig/restart", json: { ...(discard ? { discard: true } : {}), ...(amp ? { amp: true } : {}) } };
   throw new Error(`unknown lifecycle gesture ${op}`);
+}
+
+// What `up` warned of, in a word or two (#246): `{text, title}`, the whole
+// lines the title, or null for none. The amp's first, since its absence is
+// a sound: "No amp" for one that did not start, exited or is missing,
+// "Amp not wired" for one whose links are not made, "N warnings" for the
+// rest. A switch by restart, a revert, a channel load, an Undo or a pedal
+// all come up through `up`, and these were lost on the way.
+export function warningsTag(lines) {
+  const list = (Array.isArray(lines) ? lines : []).filter((l) => typeof l === "string" && l);
+  if (!list.length) return null;
+  const said = list.join("\n");
+  const noAmp = list.some((l) => /NO AMP|^amp did not start|^amp exited|amp model not found|^amp parameters not restored/i.test(l));
+  const unwired = list.some((l) => /AMP IS NOT WIRED|NAM:(Input|Output)/.test(l));
+  const text = noAmp ? "No amp" : unwired ? "Amp not wired" : list.length === 1 ? "1 warning" : `${list.length} warnings`;
+  return { text, title: said };
+}
+
+// The amp's links as GET /amp and /health say them (`wiring`, #246):
+// `{text, title}` when they are not made, else null. Not when they could not
+// be looked at (`wired` null): the rig is not called unwired on a guess.
+export function wiringTag(wiring) {
+  if (!wiring || wiring.wired !== false) return null;
+  const problems = (wiring.problems || []).filter(Boolean);
+  return { text: "Amp not wired", title: problems.length ? `The amp is not wired: ${problems.join("; ")}` : "The amp is not wired" };
 }
 
 // The rig picker: the rigs of config/rigs/ (GET /rigs's answer), which one is
@@ -1512,22 +1547,25 @@ export function lifecycleOutcome(op, name, answer) {
   const body = answer.body || {};
   const why = (body.why || []).map((r) => `${r.code}: ${r.detail}`).join("; ");
   const secs = isNumber(body.seconds) ? ` in ${body.seconds < 10 ? body.seconds.toFixed(1) : Math.round(body.seconds)} s` : "";
+  // `up`'s warnings, in a word or two on the notice itself, every line in
+  // its title (#246).
+  const tag = warningsTag(body.warnings);
+  const tagged = (title, text) => (tag ? { title: `${title} · ${tag.text}`, text: `${text} Warnings: ${body.warnings.join("; ")}` } : { title, text });
   if (op === "switch") {
     if (answer.ok) {
       return body.how === "live"
         ? { ok: true, title: `Switched to ${name}`, text: `Switched to ${name} live${secs}: Sushi was not restarted.` }
-        : { ok: true, title: `Switched to ${name}`, text: `Switched to ${name} by restart${secs}, because ${why || "the agent gave no reason"}.` };
+        : { ok: true, ...tagged(`Switched to ${name}`, `Switched to ${name} by restart${secs}, because ${why || "the agent gave no reason"}.`) };
     }
     return { ok: false, title: `Not switched to ${name}${body.how === "restart" ? " (by restart)" : ""}`,
       reason: answer.reason + (body.how === "restart" && why ? `. It restarted because ${why}` : "") };
   }
-  const warnings = (body.warnings || []).length ? ` Warnings: ${body.warnings.join("; ")}` : "";
   if (op === "start") {
-    return answer.ok ? { ok: true, title: `Started ${name}`, text: `Started ${name}, headless.${warnings}` }
+    return answer.ok ? { ok: true, ...tagged(`Started ${name}`, `Started ${name}, headless.`) }
       : { ok: false, title: `Not started: ${name}`, reason: answer.reason };
   }
   if (op === "restart") {
-    return answer.ok ? { ok: true, title: `Restarted ${name}`, text: `Restarted ${name} from its file.${warnings}` }
+    return answer.ok ? { ok: true, ...tagged(`Restarted ${name}`, `Restarted ${name} from its file.`) }
       : { ok: false, title: `Not restarted: ${name}`, reason: answer.reason };
   }
   return answer.ok ? { ok: true, title: "Stopped", text: `Stopped ${name || "the rig"}.` }
@@ -2042,6 +2080,8 @@ export function lockRefusal(locked, op) {
   if (locked && op === "amp_model") {
     return "Locked: changing the amp's model cuts the sound while the amp restarts, which the lock refuses. Unlock to change it.";
   }
+  // Amp on (#246) restarts the whole rig, so the sound cuts out for longer.
+  if (locked && op === "amp_on") return "Locked: turning the amp on restarts the rig, which cuts the sound, and the lock refuses it. Unlock to turn it on.";
   // The stage's own (#182): its volumes and its rig dropdown, which a thumb
   // knocks mid-song. The rack's volumes and picker are not behind the lock.
   if (locked && op === "stage_volume") return "Locked: the stage's volumes do not move while locked, so a stray thumb cannot change them. Unlock to set them.";
@@ -2091,7 +2131,14 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
   if (!answer) return { state: "hidden" };
   if (!answer.ok) {
     if (answer.code === "no_rig" || answer.code === "busy") return { state: "hidden" };
-    if (answer.code === "no_amp") return { state: "none", why: answer.reason };
+    if (answer.code === "no_amp") {
+      // Started with --no-amp, on a rig whose file has an amp (#246): the
+      // card offers Amp on, a restart with the amp, asked first.
+      const b = answer.body || {};
+      const ampOn = b.amp_on === true && typeof b.rig === "string" && b.rig
+        ? { rig: b.rig, why: locked ? lockRefusal(true, "amp_on") : pending ? "Wait for the amp." : null } : null;
+      return { state: "none", why: answer.reason, ampOn };
+    }
     return { state: "failed", why: answer.reason };
   }
   const b = answer.body;
@@ -2131,6 +2178,8 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
   return {
     state: "up", known: b.known, note: b.known_note, panel, down, model, faders, shown,
     override: b.override || null,
+    // Carla runs and its links are not made (#246): the guitar goes in dry.
+    unwired: down ? null : wiringTag(b.wiring),
     // Said on the picker too, as `why` when nothing more pressing is; kept
     // apart so the amp's tab can mark it (`ampFaults`).
     listProblem: models && !models.ok ? models.reason : null,
