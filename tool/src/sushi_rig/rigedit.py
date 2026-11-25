@@ -167,6 +167,72 @@ def with_input(raw: dict[str, Any], channel: str, change: dict[str, str]) -> dic
 
 
 # --------------------------------------------------------------------------- #
+# An amp put on a rig that has none (#246)
+# --------------------------------------------------------------------------- #
+#
+# The amp is the rig's (`amp:`, wired in front of `guitar-in`), and a rig made
+# on the New rig screen, or one whose channels were all loaded from rigs with
+# an amp, has none: nothing on the page could give it one. `POST /amp/add`
+# writes one (`new_amp`: NAM, the model chosen, every parameter at the amp's
+# own default, `amp.DEFAULTS`), and a channel loaded "with amp" copies the
+# source rig's (`channelcopy.rig_amp`). Either way the file gains `amp:`
+# above its channels, where `convert` writes it (`with_amp`), and a rig that
+# has one already is refused: a second amp is not a thing, and replacing a
+# model is POST /amp/model's.
+
+_AMP_KEYS = ("model", "rig", "discard")
+
+
+def amp_request(body: Any) -> dict[str, Any]:
+    """`{"model", "rig", "discard"}` from `POST /amp/add`'s body: `model`,
+    the name of a file in amp/models (checked by the route, never made a
+    path here); `rig`, the rig the page drew, None when not said; `discard`,
+    true to drop unsaved work."""
+    body = _only(body, _AMP_KEYS, "the body of an amp added")
+    out: dict[str, Any] = {"model": _text(body, "model", "the amp added")}
+    rig = body.get("rig")
+    if rig is not None and (not isinstance(rig, str) or not rig.strip()):
+        raise EditRequestError(f"the amp added: 'rig' must name the rig it is meant for, not {rig!r}")
+    out["rig"] = rig
+    discard = body.get("discard", False)
+    if not isinstance(discard, bool):
+        raise EditRequestError(f"the amp added: 'discard' must be true or false, not {discard!r}")
+    out["discard"] = discard
+    return out
+
+
+def has_amp(raw: Any) -> bool:
+    """Whether a rig file's document has an `amp:` at all: one that is there
+    and wrong is the compiler's to refuse, never one to write over."""
+    return isinstance(raw, dict) and raw.get("amp") is not None
+
+
+def new_amp(model: str) -> dict[str, Any]:
+    """The `amp:` a rig is given with `model` (as a rig file stores it,
+    `amp/models/<name>`): NAM, and each parameter at the amp's default, as
+    a save writes an amp (`amp.write_amp`)."""
+    from .amp import CONFIG_KEY, write_amp
+
+    return write_amp({}, model, {})[CONFIG_KEY]
+
+
+def with_amp(raw: dict[str, Any], amp: dict[str, Any]) -> dict[str, Any]:
+    """`raw` with `amp` as its `amp:`, placed before `channels` (where
+    `convert` writes it, so a rig file reads the same whichever way it got
+    its amp: `write_rig` puts a new key after the one before it here); `raw`
+    is left as it is."""
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key == "amp":
+            continue
+        if key == "channels" and "amp" not in out:
+            out["amp"] = copy.deepcopy(amp)
+        out[key] = copy.deepcopy(value)
+    out.setdefault("amp", copy.deepcopy(amp))
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # A channel removed (#190): the rig file without it, and what named it
 # --------------------------------------------------------------------------- #
 #

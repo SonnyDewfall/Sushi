@@ -350,3 +350,72 @@ def test_a_load_is_taken_back_by_the_one_undo_held_while_locked(browser, files_s
     expect(p.locator(".undo-said")).to_have_text("Undone: load spare / lead")
     assert path.read_bytes() == before
     page.close()
+
+
+# --------------------------------------------------------------------------- #
+# Load with amp (#246): a channel of a rig with an amp onto a rig with none
+# --------------------------------------------------------------------------- #
+
+# A rig with an amp: spare, under another name, with an invented model.
+AMPED = SPARE.replace("name: spare\n", "name: amped\namp:\n  plugin: nam\n  model: amp/models/Invented.nam\n"
+                      "  parameters:\n    Input Lvl: -1.5\n    Output Lvl: 4.0\n    Quality: 1.0\n")
+
+
+def test_load_with_amp_is_offered_from_a_rig_with_an_amp_onto_one_with_none(blank):
+    out = rigjs(blank, """
+      const byRig = {electric_board: {ok: true, body: {amp: false}}, amped: {ok: true, body: {amp: true}},
+                     spare: {ok: true, body: {amp: false}}, gone: {ok: false, reason: 'no'}};
+      return [R.loadWithAmp(byRig, {rig: 'amped', channel: 'lead'}, 'electric_board'),
+              R.loadWithAmp(byRig, {rig: 'spare', channel: 'lead'}, 'electric_board'),
+              R.loadWithAmp({...byRig, electric_board: {ok: true, body: {amp: true}}}, {rig: 'amped', channel: 'lead'}, 'electric_board'),
+              R.loadWithAmp(byRig, {rig: 'gone', channel: 'lead'}, 'electric_board'),
+              R.loadWithAmp(byRig, null, 'electric_board'),
+              R.channelLoadCall('board', {rig: 'amped', channel: 'lead'}, {withAmp: true}, 'electric_board'),
+              R.loadOutcome('board', {rig: 'amped', channel: 'lead'}, {ok: true, body: {file: 'f', how: 'restart',
+                why: [{code: 'amp', detail: 'the next rig has an amp'}], followed: [], dropped: [], amp: {note: null},
+                amp_copied: {from: 'amped', model: 'amp/models/Invented.nam', parameters: {}}}}),
+              R.loadOutcome('board', {rig: 'amped', channel: 'lead'}, {ok: false, code: 'unsaved', reason: 'r', body: {}},
+                {withAmp: true}).offer];""")
+    assert out[:5] == [True, False, False, False, False]
+    assert out[5] == {"path": "/rig/channels/board/load", "json": {
+        "from": {"rig": "amped", "channel": "lead"}, "rig": "electric_board", "with_amp": True}}
+    assert out[6]["title"] == "Loaded amped / lead onto board with amp"
+    assert out[6]["notes"][0] == "amped's amp came too: Invented."
+    assert out[7] == {"withAmp": True, "label": "Load anyway", "discard": True}, "the second tap keeps the amp"
+
+
+def test_a_channel_is_loaded_with_its_rigs_amp_after_restart(browser, files_served):
+    """From amped, whose file has an amp, onto electric_board, whose file has
+    none: the panel offers Load with amp beside Load, which asks
+    "Restart?" and writes amped's `amp:` into the rig's file with the
+    channel; from spare, which has none, it is not offered."""
+    root = files_served.save.root
+    (root / "config" / "rigs" / "amped.yaml").write_text(AMPED)
+    (root / "amp" / "models").mkdir(parents=True)
+    (root / "amp" / "models" / "Invented.nam").write_text("")
+    files_served.lifecycle.how["electric_board"] = ("restart", [{"code": "amp", "detail": "the next rig has an amp"}])
+    page = rack(browser, files_served)
+    p = page.page
+    unlock(p)
+    group = panel(p, "board")
+    picker = group.get_by_label("Channel to load onto board")
+    picker.select_option(label="spare / lead")
+    expect(group.get_by_role("button", name="Load", exact=True)).to_be_enabled()
+    expect(group.get_by_role("button", name="Load with amp")).to_have_count(0)
+    picker.select_option(label="amped / lead")
+    button = group.get_by_role("button", name="Load with amp")
+    expect(button).to_be_enabled()
+    expect(button).to_have_attribute("title", re.compile("^Load it with amped's amp"))
+    button.click()
+    confirm = group.get_by_role("group", name="Restart?")
+    expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
+    assert "amp" not in rig(files_served), "nothing until the confirm"
+    confirm.get_by_role("button", name="Yes").click()
+    result = group.locator(".load-result")
+    expect(result).to_contain_text("Loaded amped / lead onto board with amp")
+    written = rig(files_served)
+    assert written["amp"] == yaml.safe_load(AMPED)["amp"]
+    assert [e["name"] for e in written["channels"][0]["chain"]] == ["board_drive", "board_echo"]
+    assert ["switch", "electric_board", {"amp_on": True}] in files_served.lifecycle.calls
+    assert page.errors == []
+    page.close()

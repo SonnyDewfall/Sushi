@@ -100,6 +100,10 @@ const state = {
   ampModels: null, ampModelsAt: 0,  // GET /amp/models: kept once it answers, read again after a model change
   ampChoice: null,           // the model picked in the amp card, awaiting its confirm
   ampOnAsk: false,           // the amp card's Amp on pressed, awaiting its "Restart?" (#246)
+  // The amp card's Add amp (#246), for a rig whose file has no amp: open
+  // (the model picker shown), the model chosen (awaiting "Restart?"), and
+  // the add in flight.
+  ampAdd: { open: false, model: null, pending: false },
   ampPicker: null,           // the amp card's picker, patched on its own key: see ampRegion
   ampPending: null,          // the model change in flight
   ampUpdaters: [],           // the amp region's own, emptied whenever it is rebuilt
@@ -140,7 +144,8 @@ const state = {
   // A strip's Load… panel (#208): a channel of another rig onto this one.
   // `pending` and `result` name the channel and rig the load was for, so an
   // answer is shown in its own strip's panel only.
-  loadUi: { channel: null, choice: null, pending: null, result: null, rig: null },
+  // `ampAsk`: Load with amp pressed (#246), awaiting its "Restart?".
+  loadUi: { channel: null, choice: null, pending: null, result: null, rig: null, ampAsk: false },
   // A strip's Remove (#190): the ask open on `channel` of `rig`, the removal
   // in flight, what it said there (a refusal, its offer), and `done`, said
   // at the strips' foot once the channel has gone.
@@ -506,7 +511,8 @@ async function poll() {
     inBackground("profiles", refreshProfiles);
     inBackground("names", refreshNames);
     inBackground("rigs", refreshRigs);
-    if (amp && amp.ok) inBackground("amp models", refreshAmpModels);
+    // And for Add amp's picker (#246), on a rig whose file has no amp.
+    if (amp && (amp.ok || (amp.body || {}).add_amp === true)) inBackground("amp models", refreshAmpModels);
     if (state.screen === "newrig") {
       inBackground("roles", refreshRoles);
       inBackground("rig channels", refreshAllRigChannels);
@@ -1393,6 +1399,37 @@ async function ampOn(rig) {
   await lifecycle("restart", rig, { amp: true });
 }
 
+// Add amp (#246): `model` written into the running rig's file as its amp,
+// and the rig restarted with it, after "Restart?"; refused while locked. A
+// refusal for unsaved work offers "Add anyway", which drops it.
+async function addAmp(rig, model, opts = {}) {
+  const ui = state.ampAdd;
+  const refusal = R.lockRefusal(state.locked, "add_amp");
+  if (refusal) { fail(`Amp not added: ${R.modelName(model)}`, { reason: refusal }); render(); return; }
+  if (ui.pending || state.pending) return;
+  Object.assign(ui, { pending: true, model: null });
+  render();
+  const call = R.addAmpCall(rig, model, opts);
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    ui.pending = false;
+  }
+  const said = R.addAmpOutcome(rig, model, answer);
+  if (said.ok) {
+    ui.open = false;
+    state.notice = { text: said.title, title: said.text };
+  } else {
+    const offer = said.offer ? { label: said.offer.label, run: () => addAmp(rig, model, { ...opts, discard: true }) } : null;
+    fail(said.title, { reason: said.reason, code: answer.code }, offer);
+  }
+  render();
+  kick();
+  refreshAmpModels(true).then(render);
+  if (answer.ok || (answer.body || {}).written) refreshRigChannels(rig, true).then(render);
+}
+
 // A model change restarts the amp, so it takes a confirm that says the
 // sound will cut out (R.MODEL_WARNING), and is refused while locked.
 async function changeAmpModel(model) {
@@ -1679,7 +1716,7 @@ function ampRegion(el) {
   const { picker, listProblem, ...card } = view;
   // Amp on's ask is the card's own when there is no amp up (#246); with one
   // up it is not in the key, so nothing rebuilds the faders for it.
-  patch(el, JSON.stringify([card, view.state === "up" ? null : [state.ampOnAsk, !!state.pending]]), () => {
+  patch(el, JSON.stringify([card, view.state === "up" ? null : [state.ampOnAsk, !!state.pending, state.ampAdd]]), () => {
     state.ampUpdaters = [];
     state.ampPicker = null;
     if (view.state === "hidden") return [];
@@ -1692,7 +1729,8 @@ function ampRegion(el) {
           title: on.why || `Restart ${on.rig} with its amp: the sound cuts out while it restarts.`,
           onclick: () => { state.ampOnAsk = true; render(); } }, "Amp on") : null,
         on && state.ampOnAsk ? confirmBox("Restart?", () => ampOn(on.rig), () => { state.ampOnAsk = false; render(); },
-          { pending: !!state.pending || !!on.why, cls: "amp-on-ask" }) : null];
+          { pending: !!state.pending || !!on.why, cls: "amp-on-ask" }) : null,
+        view.addAmp ? addAmpParts(view.addAmp) : null];
     }
     state.ampPicker = h("div", { class: "amp-picker" });
     return [
@@ -1715,6 +1753,31 @@ function ampRegion(el) {
     ];
   });
   if (state.ampPicker) ampPickerRegion(state.ampPicker, picker);
+}
+
+// Add amp (#246), for a rig whose file has no amp: the button, then the
+// models of amp/models (as the picker lists them), then "Restart?" for the
+// one chosen. Behind the lock; the detail is in the titles.
+function addAmpParts(offer) {
+  const ui = state.ampAdd;
+  const busy = ui.pending || !!state.pending;
+  if (!ui.open) {
+    return h("button", { class: "rig-act small amp-add", disabled: !!offer.why || busy,
+      title: offer.why || `Give ${offer.rig} an amp: its file gains one, and the rig restarts with it.`,
+      onclick: () => { Object.assign(ui, { open: true, model: null }); render(); } }, ui.pending ? "Adding…" : "Add amp");
+  }
+  const select = h("select", { "aria-label": "Amp to add", disabled: !!offer.why || busy, title: offer.why },
+    h("option", { value: "" }, "Choose a model…"),
+    offer.options.map((o) => h("option", { value: o.model, disabled: !o.usable,
+      title: o.why || (o.declared ? `It calls itself ${o.declared}` : null) }, o.label)));
+  select.value = ui.model || "";
+  select.addEventListener("change", () => { ui.model = select.value || null; render(); });
+  const close = () => { Object.assign(ui, { open: false, model: null }); render(); };
+  return h("div", { class: "amp-add-pick" },
+    h("label", { class: "selector" }, h("span", { class: "label" }, "Model"), select),
+    ui.model ? confirmBox("Restart?", () => addAmp(offer.rig, ui.model), close,
+      { pending: !!offer.why || busy, cls: "amp-add-ask" })
+      : h("button", { class: "rig-act small amp-add-close", onclick: close }, "Cancel"));
 }
 
 function ampPickerRegion(el, picker) {
@@ -4189,7 +4252,7 @@ function stripsRegion(el, model, unsaved) {
     const rebuilt = patch(slot, JSON.stringify([view.blocked ? "blocked" : c === undefined ? "reading" : c, editing,
       editing ? [w.change, choices] : null, !!w.pending, view.rig || null, !!lu.pending, !!ru.pending,
       loadOpen ? [lu.choice, lu.pending, lu.result, R.sourceChoices(state.rigs, state.rigChannels, { rig: view.rig, channel: name }),
-        state.locked, !!state.pending] : null,
+        state.locked, !!state.pending, lu.ampAsk, R.loadWithAmp(state.rigChannels, lu.choice, view.rig)] : null,
       removeOpen ? [ru.pending, ru.result, state.locked, !!state.pending, filed.length, midiControls()] : null]), () => (
       view.blocked ? null
         : c === undefined ? h("p", { class: "sub strip-input" }, "Reading…")
@@ -4245,7 +4308,7 @@ function wiringRow(view, c, choices) {
     row.append(h("button", { class: "rig-act small load-toggle", "aria-expanded": open ? "true" : "false",
       "aria-label": `Load a channel onto ${c.name}`, disabled: !!lu.pending || !!state.removeUi.pending,
       onclick: () => {
-        Object.assign(state.loadUi, open ? { channel: null } : { channel: c.name, rig: view.rig, choice: null, result: null });
+        Object.assign(state.loadUi, open ? { channel: null, ampAsk: false } : { channel: c.name, rig: view.rig, choice: null, result: null, ampAsk: false });
         render();
         if (!open) inBackground("rig channels", async () => [await refreshRigs(), await refreshAllRigChannels(true)].some(Boolean));
       } }, "Load…"));
@@ -4290,13 +4353,22 @@ function loadPanel(view, c) {
     groups.map((g) => h("optgroup", { label: g.label },
       g.options.map((o) => h("option", { value: o.value, title: o.title }, o.label)))));
   select.value = R.sourceValue(lu.choice);
-  select.addEventListener("change", () => { lu.choice = R.sourceFrom(select.value); lu.result = null; render(); });
+  select.addEventListener("change", () => { lu.choice = R.sourceFrom(select.value); lu.result = null; lu.ampAsk = false; render(); });
   const result = lu.result && lu.result.channel === c.name && lu.result.rig === view.rig ? lu.result : null;
+  const off = !!lu.pending || !!state.removeUi.pending || !!state.pending || !!locked || !lu.choice;
+  // Load with amp (#246): from a rig with an amp onto this one, which has
+  // none, the source rig's amp comes too. It restarts the rig, so it asks.
+  const withAmp = R.loadWithAmp(state.rigChannels, lu.choice, view.rig);
   return h("div", { class: "load-panel", role: "group", "aria-label": `Load onto ${c.name}` },
     h("label", { class: "selector" }, h("span", { class: "label" }, "From"), select),
     h("button", { type: "button", class: "save-act primary load-go", title: locked,
-      disabled: !!lu.pending || !!state.removeUi.pending || !!state.pending || !!locked || !lu.choice,
-      onclick: () => loadChannel(c.name, view.rig, lu.choice, {}) }, lu.pending ? "Loading…" : "Load"),
+      disabled: off, onclick: () => { lu.ampAsk = false; loadChannel(c.name, view.rig, lu.choice, {}); } },
+      lu.pending ? "Loading…" : "Load"),
+    withAmp && !lu.ampAsk ? h("button", { type: "button", class: "save-act load-amp", disabled: off,
+      title: locked || `Load it with ${lu.choice.rig}'s amp: ${view.rig} gains that amp, and restarts with it.`,
+      onclick: () => { lu.ampAsk = true; render(); } }, "Load with amp") : null,
+    withAmp && lu.ampAsk ? confirmBox("Restart?", () => { lu.ampAsk = false; loadChannel(c.name, view.rig, lu.choice, { withAmp: true }); },
+      () => { lu.ampAsk = false; render(); }, { pending: off, cls: "load-amp-ask" }) : null,
     locked ? h("p", { class: "sub lock-says", title: locked }, lockIcon(), "Locked") : null,
     // A few words (#209): the title, and for a refusal what is wrong; the
     // rest of what it said (its notes too) is the box's title, for a hover.

@@ -2210,6 +2210,85 @@ def test_amp_on_restarts_a_rig_started_with_no_amp_after_restart_and_says_what_u
     page.close()
 
 
+def test_an_amp_card_for_a_rig_whose_file_has_no_amp_offers_add_amp(blank):
+    """#246's cause 1: no `amp:` in the file (`add_amp`) is offered Add amp,
+    with the models GET /amp/models lists, over Amp on (a restart from that
+    file would bring none). Behind the lock, as Amp on is."""
+    out = rigjs(blank, """const no = (body) => ({ok: false, code: 'no_amp', reason: 'its config has no _amp', body});
+        const models = {ok: true, body: {models: [{model: 'Room.nam', usable: true, declared: 'A room'},
+                                                  {model: 'Slow.nam', usable: false, why: 'trained at 44100 Hz'}]}};
+        return [R.ampCard(no({add_amp: true, amp_on: false, rig: 'board'}), models),
+                R.ampCard(no({add_amp: true, amp_on: true, rig: 'board'}), models),
+                R.ampCard(no({add_amp: true, rig: 'board'}), models, {locked: true}),
+                R.ampCard(no({add_amp: true, rig: 'board'}), {ok: true, body: {models: [models.body.models[1]]}}),
+                R.ampCard(no({add_amp: true, rig: 'board'}), null),
+                R.ampCard(no({add_amp: false, amp_on: false, rig: 'board'}), models),
+                R.addAmpCall('board', 'Room.nam'), R.addAmpCall('board', 'Room.nam', {discard: true}),
+                R.addAmpOutcome('board', 'Room.nam', {ok: true, body: {file: 'config/rigs/board.yaml', warnings: []}}),
+                R.addAmpOutcome('board', 'Room.nam', {ok: true, body: {file: 'f', warnings: [arg]}}),
+                R.addAmpOutcome('board', 'Room.nam', {ok: false, code: 'unsaved', reason: 'board is running with 1 change', body: {}}),
+                R.undoButton({ok: true, body: {next: {kind: 'file', act: 'add_amp', label: 'add amp Room', can: true}}},
+                             {locked: true}),
+                R.lockRefusal(false, 'add_amp')];""", AMP_EXITED)
+    assert out[0]["addAmp"] == {"rig": "board", "why": None, "options": [
+        {"model": "Room.nam", "usable": True, "why": None, "declared": "A room", "label": "Room"},
+        {"model": "Slow.nam", "usable": False, "why": "trained at 44100 Hz", "declared": None,
+         "label": "Slow (cannot be played here)"}]}
+    assert out[0]["ampOn"] is None
+    assert out[1]["addAmp"]["rig"] == "board" and out[1]["ampOn"] is None, "Add amp, not Amp on"
+    assert out[2]["addAmp"]["why"].startswith("Locked: adding an amp writes the rig's file and restarts the rig")
+    assert out[3]["addAmp"]["why"] == "amp/models has no model that can be played here."
+    assert out[4]["addAmp"]["why"] == "Reading amp/models…"
+    assert out[5]["addAmp"] is None
+    assert out[6] == {"path": "/amp/add", "json": {"model": "Room.nam", "rig": "board"}}
+    assert out[7]["json"] == {"model": "Room.nam", "rig": "board", "discard": True}
+    assert out[8] == {"ok": True, "title": "Amp: Room",
+                      "text": "Room added to config/rigs/board.yaml; board restarted with it. Not committed."}
+    assert out[9]["title"] == "Amp: Room · No amp" and out[9]["text"].endswith(AMP_EXITED)
+    assert out[10] == {"ok": False, "title": "Amp not added: Room", "reason": "board is running with 1 change",
+                       "offer": {"label": "Add anyway", "discard": True}}
+    assert out[11]["disabled"] is True, "its Undo restarts the rig: held while locked"
+    assert out[12] is None
+
+
+def test_add_amp_gives_a_rig_whose_file_has_none_an_amp_after_restart(browser, save_served):
+    """A rig whose file has no `amp:`: its card offers Add amp, behind the
+    lock; it shows the models of amp/models, asks "Restart?" for the one
+    chosen, and writes `amp:` (NAM, that model, the amp's defaults) into the
+    rig's file, then switches the rig into it with the amp (`amp_on`)."""
+    from sushi_rig.amp import DEFAULTS
+    from ui_fake import nam
+
+    models = save_served.save.root / "amp" / "models"
+    models.mkdir(parents=True)
+    nam(models / "Room.nam", "Invented Room")
+    nam(models / "Slow Tape.nam", "Invented Slow Tape", rate=44100)
+    save_served.lifecycle.how["electric_board"] = ("restart", [{"code": "amp", "detail": "the next rig has an amp"}])
+    page = save_rack(browser, save_served)
+    p = page.page
+    card = p.locator(".amp-card")
+    expect(card.locator(".amp-none")).to_contain_text("the running rig has no amp")
+    button = card.get_by_role("button", name="Add amp")
+    expect(button).to_be_disabled()
+    expect(button).to_have_attribute("title", re.compile("^Locked: adding an amp"))
+    unlock(p)
+    expect(button).to_be_enabled()
+    button.click()
+    picker = card.get_by_role("combobox", name="Amp to add")
+    expect(picker.locator("option")).to_have_text(["Choose a model…", "Room", "Slow Tape (cannot be played here)"])
+    expect(card.get_by_role("group", name="Restart?")).to_have_count(0)
+    picker.select_option(label="Room")
+    confirm = card.get_by_role("group", name="Restart?")
+    expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
+    assert "amp" not in rig_file(save_served), "nothing until the confirm"
+    confirm.get_by_role("button", name="Yes").click()
+    expect(p.locator(".notice")).to_contain_text("Amp: Room")
+    assert rig_file(save_served)["amp"] == {"plugin": "nam", "model": "amp/models/Room.nam", "parameters": DEFAULTS}
+    assert ["switch", "electric_board", {"amp_on": True}] in save_served.lifecycle.calls
+    assert page.errors == []
+    page.close()
+
+
 def test_on_stage_the_amp_is_its_model_and_output_level_and_only_unlocked(browser, amp_served):
     page = Watched(browser, amp_served, "/", width=390, height=844)
     p = page.page

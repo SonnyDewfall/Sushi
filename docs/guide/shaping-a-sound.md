@@ -233,8 +233,26 @@ The whole rig restarts, so the sound cuts out for a few seconds. Switching to
 another rig also brings the amp back if that rig has one. Going back to a
 saved version, loading a channel or Undo keep the amp off.
 
-Amp on, and the **Amp not wired** check, have not yet been tried on the rig
-itself, only against a stand-in.
+If the rig has no amp at all (one you made with **New rig**, for example),
+the card offers **Add amp** instead:
+
+1. Unlock the page.
+2. Click **Add amp**.
+3. Pick a model from the **Model** list.
+4. The card asks **Restart?**: click **Yes**, or **No**.
+
+The amp is written into the rig's file, with its levels at their defaults, and
+the whole rig restarts with it. Undo takes it out again. If you have changes
+you have not saved, the page says so: save first, or click **Add anyway** to
+drop them.
+
+When you load a channel from a rig that has an amp onto a rig that has none,
+the **Load…** panel also offers **Load with amp**. It brings that rig's amp,
+with its model and levels, along with the channel, and asks **Restart?**
+first. **Load** on its own still loads just the channel.
+
+Amp on, Add amp, Load with amp and the **Amp not wired** check have not yet
+been tried on the rig itself, only against a stand-in.
 
 On the stage screen, with the lock off, you get the amp's model name and
 **Output Lvl** only.

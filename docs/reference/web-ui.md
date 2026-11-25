@@ -103,7 +103,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
     **Restart?** (after an edit, a pedal, a Save as or an Undo that waits
     for one; and before a revert, or the Undo of a revert or a load, whose
     switch would restart Sushi: the page sends `restart: false` first and
-    asks on `restarts`; and before **Amp on**), **Restart amp?** (a model change), and **Drop
+    asks on `restarts`; and before **Amp on**, **Add amp**'s model and
+    **Load with amp**), **Restart amp?** (a model change), and **Drop
     changes?** (a revert, or the Undo of one, that would drop unsaved work,
     which no Undo brings back).
     A restart the agent refuses for unsaved work offers **Restart anyway**.
@@ -445,7 +446,17 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   `--no-amp` whose file has an amp shows **Amp on** on the card (behind the
   lock), which asks **Restart?** and restarts with the amp (`POST
   /rig/restart {"amp": true}`); a restart refused for unsaved work offers
-  **Restart anyway**, still with the amp.
+  **Restart anyway**, still with the amp. A rig whose file has no `amp:`
+  (`GET /amp`'s `add_amp`, #246) shows **Add amp** instead (behind the
+  lock, `lockRefusal(…, "add_amp")`): it opens a **Model** picker of the
+  models `GET /amp/models` lists (one that cannot be played here is listed
+  and off), and the one chosen asks **Restart?**; **Yes** sends `POST
+  /amp/add {"model", "rig"}`, which writes the amp into the file and
+  restarts the rig with it. The notice says "Amp: <model>", with the
+  restart's warnings in a word or two (`warningsTag`); a refusal for
+  unsaved work offers **Add anyway**. Its Undo is held while locked, as a
+  load's is. The decisions are rig.js's (`ampCard`'s `addAmp`,
+  `addAmpOffer`, `addAmpCall`, `addAmpOutcome`).
 - **Save (S4).** In the files column: Save writes the
   running rig's own file of `config/rigs/` in place, keeping its comments, and
   is offered whenever a rig that can be saved from here is up, since the
@@ -568,7 +579,13 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   refusal a second tap answers offers it, keeping any yes
   already given: **Load anyway** (`discard`, dropping the unsaved changes),
   **Drop N and load** (`drop_midi`, dropping N MIDI mappings, each mapping listed with
-  what it did and why it would do nothing). The call names the rig the
+  what it did and why it would do nothing). **Load with amp** (#246) is
+  beside **Load** when the channel chosen is of a rig whose file has an
+  `amp:` and the running rig's has none (`GET /rigs/<rig>/channels`'s
+  `amp`, `loadWithAmp`): it asks **Restart?**, since the amp comes with a
+  restart, and loads with `"with_amp": true`, the source rig's amp written
+  into the file with the channel; its title ends "with amp", and a second
+  tap keeps the amp. **Load** is as it was. The call names the rig the
   page drew (`rig`), which the agent refuses as `changed` if another is
   running by then. An answer is its channel's: it is shown in that strip's
   panel only and its second tap loads onto that channel, and while a load

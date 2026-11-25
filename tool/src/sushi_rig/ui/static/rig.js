@@ -2096,6 +2096,8 @@ export function lockRefusal(locked, op) {
   }
   // Amp on (#246) restarts the whole rig, so the sound cuts out for longer.
   if (locked && op === "amp_on") return "Locked: turning the amp on restarts the rig, which cuts the sound, and the lock refuses it. Unlock to turn it on.";
+  // Add amp (#246): it writes the rig's file and restarts the rig.
+  if (locked && op === "add_amp") return "Locked: adding an amp writes the rig's file and restarts the rig, which cuts the sound, and the lock refuses it. Unlock to add one.";
   // The stage's own (#182): its volumes and its rig dropdown, which a thumb
   // knocks mid-song. The rack's volumes and picker are not behind the lock.
   if (locked && op === "stage_volume") return "Locked: the stage's volumes do not move while locked, so a stray thumb cannot change them. Unlock to set them.";
@@ -2147,11 +2149,15 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
     if (answer.code === "no_rig" || answer.code === "busy") return { state: "hidden" };
     if (answer.code === "no_amp") {
       // Started with --no-amp, on a rig whose file has an amp (#246): the
-      // card offers Amp on, a restart with the amp, asked first.
+      // card offers Amp on, a restart with the amp, asked first. A rig whose
+      // file has no `amp:` (`add_amp`) is offered Add amp instead, since a
+      // restart from that file would bring none: a model, then "Restart?".
       const b = answer.body || {};
-      const ampOn = b.amp_on === true && typeof b.rig === "string" && b.rig
-        ? { rig: b.rig, why: locked ? lockRefusal(true, "amp_on") : pending ? "Wait for the amp." : null } : null;
-      return { state: "none", why: answer.reason, ampOn };
+      const rig = typeof b.rig === "string" && b.rig ? b.rig : null;
+      const addAmp = b.add_amp === true && rig ? addAmpOffer(rig, models, { locked, pending }) : null;
+      const ampOn = !addAmp && b.amp_on === true && rig
+        ? { rig, why: locked ? lockRefusal(true, "amp_on") : pending ? "Wait for the amp." : null } : null;
+      return { state: "none", why: answer.reason, ampOn, addAmp };
     }
     return { state: "failed", why: answer.reason };
   }
@@ -2199,6 +2205,51 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
     listProblem: models && !models.ok ? models.reason : null,
     picker: { options, canChange: !why, why, warning: MODEL_WARNING },
   };
+}
+
+// Add amp (#246): `{rig, why, options}` for a rig whose file has no `amp:`.
+// The models are GET /amp/models', as the card's picker lists them, each
+// with `usable` and `why` not; `why` says why none can be added now (the
+// lock, a change in flight, a list that could not be read or is empty).
+export function addAmpOffer(rig, models, { locked = false, pending = null } = {}) {
+  const listed = models && models.ok ? models.body.models || [] : [];
+  const options = listed.map((m) => ({
+    model: m.model, usable: !!m.usable, why: m.why || null, declared: m.declared || null,
+    label: modelName(m.model) + (!m.usable ? " (cannot be played here)" : ""),
+  }));
+  let why = null;
+  if (locked) why = lockRefusal(true, "add_amp");
+  else if (pending) why = "Wait for the amp.";
+  else if (!models) why = "Reading amp/models…";
+  else if (!models.ok) why = `amp/models could not be listed: ${models.reason}`;
+  else if (!options.some((o) => o.usable)) why = "amp/models has no model that can be played here.";
+  return { rig, why, options };
+}
+
+// POST /amp/add: `model` (a file of amp/models) written into `rig`'s file
+// as its `amp:`, then the rig restarted with it; `discard` once a refusal
+// for unsaved work was answered.
+export function addAmpCall(rig, model, { discard = false } = {}) {
+  const json = { model, rig };
+  if (discard) json.discard = true;
+  return { path: "/amp/add", json };
+}
+
+// What an amp added said: `{ok, title, text}`, the restart's warnings in a
+// word or two on the title (`warningsTag`), or `{ok: false, title, reason,
+// offer}`, with "Add anyway" for unsaved work.
+export function addAmpOutcome(rig, model, answer) {
+  const body = answer.body || {};
+  const name = modelName(model);
+  if (!answer.ok) {
+    const out = { ok: false, title: `Amp not added: ${name}`, reason: answer.reason, offer: null };
+    if (answer.code === "unsaved") out.offer = { label: "Add anyway", discard: true };
+    return out;
+  }
+  const tag = warningsTag(body.warnings);
+  const text = `${name} added to ${body.file || rig}; ${rig} restarted with it. Not committed.`
+    + (tag ? ` Warnings: ${body.warnings.join("; ")}` : "");
+  return { ok: true, title: `Amp: ${name}${tag ? ` · ${tag.text}` : ""}`, text };
 }
 
 // The stage screen's amp: the model's name and the output level, nothing
@@ -2722,12 +2773,25 @@ export function wiringView(health, channelsAnswer, unsaved) {
 
 // `rig` is the rig the page drew the channel in: the agent refuses the load
 // (`changed`) when another is running by then.
-export function channelLoadCall(channel, from, { discard = false, dropMidi = false } = {}, rig = null) {
+// `withAmp` (#246): the source rig's `amp:` comes too, onto a rig with none.
+export function channelLoadCall(channel, from, { discard = false, dropMidi = false, withAmp = false } = {}, rig = null) {
   const json = { from: { rig: from.rig, channel: from.channel } };
   if (rig) json.rig = rig;
   if (discard) json.discard = true;
   if (dropMidi) json.drop_midi = true;
+  if (withAmp) json.with_amp = true;
   return { path: `/rig/channels/${encodeURIComponent(channel)}/load`, json };
+}
+
+// Whether a strip's Load… offers "Load with amp" (#246): the channel chosen
+// is of a rig whose file has an `amp:`, and the running rig `rig`'s file has
+// none, as GET /rigs/<name>/channels says each (`amp`). Not when either is
+// not known.
+export function loadWithAmp(byRig, from, rig) {
+  if (!from || !rig || from.rig === rig) return false;
+  const source = (byRig || {})[from.rig];
+  const target = (byRig || {})[rig];
+  return !!(source && source.ok && source.body.amp === true && target && target.ok && target.body.amp === false);
 }
 
 // What a load said: `{ok, title, text, notes, offer}`, the agent's reason
@@ -2749,6 +2813,8 @@ export function loadOutcome(channel, from, answer, asked = {}) {
     return out;
   }
   const notes = [];
+  // A load with amp (#246): the amp the source rig plays through came too.
+  if (body.amp_copied) notes.push(`${body.amp_copied.from}'s amp came too: ${modelName(body.amp_copied.model)}.`);
   if (body.amp && body.amp.note) notes.push(`${body.amp.note}.`);
   if (body.width) notes.push(`${body.width}.`);
   for (const f of body.followed || []) notes.push(`MIDI ${f.control} follows its plugin: ${f.from} is now ${f.to}.`);
@@ -2758,7 +2824,7 @@ export function loadOutcome(channel, from, answer, asked = {}) {
   const how = body.how === "live" ? "Played live."
     : `Played by a restart${(body.why || []).length ? ` (${body.why.map((r) => r.detail).join("; ")})` : ""}.`;
   const kept = body.kept_before && body.kept_before.id ? " Revert… goes back." : "";
-  return { ok: true, title: `Loaded ${name} onto ${channel}`, notes, offer: null,
+  return { ok: true, title: `Loaded ${name} onto ${channel}${body.amp_copied ? " with amp" : ""}`, notes, offer: null,
     text: `${how} Wrote ${body.file}; not committed.${kept}` };
 }
 
@@ -3629,12 +3695,13 @@ export function undoCall(next, { discard = false, restart = false } = {}) {
 // the rig's structure (a move, an add, a remove), the amp's model (it
 // restarts the amp), a pedal's assignment, and what switches the rig back
 // (a revert's, a channel load's or a channel removal's Undo: the rig's
-// structure, as a load and a removal are).
+// structure, as a load and a removal are; an amp added's, #246, which
+// restarts the rig without it).
 // A knob, a fader and a bypass are let through, as they are locked, and so
 // are the rack's file edits that are not behind the lock (a channel, an
 // input, a save, a delete).
 const UNDO_STRUCTURAL = ["move", "add", "remove", "amp_model"];
-const UNDO_LOCKED_ACTS = ["pedal", "load", "revert", "remove_channel"];
+const UNDO_LOCKED_ACTS = ["pedal", "load", "revert", "remove_channel", "add_amp"];
 
 // The button: `{disabled, title, cant}`. `answer` is GET /undo's (request's
 // shape), `screen` "rack" or "stage": on the stage it is for the live edits.

@@ -25,7 +25,9 @@ edited rig is compiled, as for any rig file.
 The amp is one instance, in Carla, patched in front of `guitar-in`
 (`amp.amp_patchbay`). A source channel on `guitar-in` of a rig with an amp
 was heard through it (`heard_through_amp`, the model), so loading it where no
-amp is in front says so (`amp_note`), rather than be found out by ear.
+amp is in front says so (`amp_note`), rather than be found out by ear. A load
+"with amp" (#246) copies the source rig's `amp:` whole (`rig_amp`) onto a rig
+that has none, so the channel is heard through what it was heard through.
 
 ## MIDI
 
@@ -274,6 +276,16 @@ def drop_orphaned(midi: Any, orphaned: list[dict[str, Any]]) -> Any:
 def mapping_said(o: dict[str, Any]) -> str:
     """One orphaned mapping in words: what it was, and why it would point at nothing."""
     return f"{o['control']} ({o['binding']} {o['target']}): {o['why']}"
+
+
+def rig_amp(raw: Any) -> dict[str, Any] | None:
+    """A rig file's `amp:`, copied, as a load "with amp" (#246) gives it to a
+    rig that has none: the model and its parameters as that file has them;
+    None when the rig has no amp, or one with no model."""
+    amp = raw.get("amp") if isinstance(raw, dict) else None
+    if not isinstance(amp, dict) or not isinstance(amp.get("model"), str) or not amp["model"]:
+        return None
+    return copy.deepcopy(amp)
 
 
 def amp_note(source: Source, channel: str, input_role: str, rig_amp: str | None) -> dict[str, Any]:
