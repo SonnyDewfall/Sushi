@@ -2121,6 +2121,24 @@ def test_up_s_warnings_are_said_in_a_word_or_two_with_every_line_in_the_title(bl
     assert got[8] is None and got[9] is None, "not looked at is not unwired"
 
 
+def test_only_the_amps_warnings_and_links_not_made_are_boxes_for_the_run(blank):
+    """#246's review and #245: every warning a box for the whole run was more
+    to scroll past. The amp's and a link not made (a channel or the amp
+    silent) stay; the rest are on the notice that said them, and in
+    /health's `agent.warnings`."""
+    health = lambda warnings: {"ok": True, "body": {"agent": {"warnings": warnings}, "rig": {"running": True}}}
+    got = rigjs(blank, """return arg.map((h) => R.agentProblems(h).map((p) => [p.title, p.reason]));""", [
+        health(["no machine file at box.yaml, so the amp is wired to whatever feeds Sushi's first input"]),
+        health(["no machine file at box.yaml", "2 link(s) in rig.qpwgraph were not made: a -> sushi:audio_input_2"]),
+        health(["no machine file at box.yaml", AMP_EXITED]),
+    ])
+    assert got[0] == []
+    assert got[1] == [["Links not made", "2 link(s) in rig.qpwgraph were not made: a -> sushi:audio_input_2"]]
+    assert got[2] == [["No amp", AMP_EXITED]]
+    notice = rigjs(blank, """return R.lifecycleOutcome('restart', 'lead', {ok: true, body: {warnings: ['no machine file at box.yaml']}});""")
+    assert notice["title"] == "Restarted lead · 1 warning", "still said where it was said"
+
+
 def test_a_switch_by_restart_that_warned_says_so_on_its_notice(blank):
     said = rigjs(blank, """return [
         R.lifecycleOutcome('switch', 'lead', {ok: true, body: {how: 'restart', why: [{code: 'amp', detail: 'd'}],

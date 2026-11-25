@@ -199,8 +199,9 @@ prints as it always printed them, and so does a restart's, and every switch's
 (#246): the page's, a revert's, a channel load or removal's and an Undo's
 (`[]` for one made live, which ran no `up`). `/health`'s `agent.warnings` keeps
 the warnings of the start that brought the running rig up, for as long as that
-run is up (a live switch keeps the run), since a switch by a pedal has no page
-to answer: before #246 a switch by restart kept only `up`'s stdout, and an amp
+run is up (a live switch keeps the run; a model change that brings Carla back,
+which keeps it too, drops the amp's own warnings and adds what it said of the
+links), since a switch by a pedal has no page to answer: before #246 a switch by restart kept only `up`'s stdout, and an amp
 that did not start, exited, or was not wired came up silent. The agent binds to localhost; `--host 0.0.0.0`
 opens it to the LAN, and until the local/remote permission split in #29 exists
 that is your call, not a default.
@@ -670,7 +671,11 @@ Sushi is not made: the guitar goes in dry and the rig looks healthy. `GET
 patchbay (`rig-amp.qpwgraph`) asks for is in the graph, `null` with why when
 the graph could not be read, and `null` for the whole when no live Carla
 runs. One look (`pw-dump` and `pw-link -l`, as `up`'s own check of the links)
-per Carla run and ten seconds, shared by both and by a switch's decision.
+per Carla run and ten seconds, shared by both and by a switch's decision, and
+one at a time: callers while a look runs share it, and `/health` answers the
+last look of the Carla run without waiting while a new one runs behind it. A
+not-wired look is looked at again before a switch or the page's "Restart?"
+rests on it, so one taken before qpwgraph made the links is no restart.
 Not run against a real Carla and PipeWire: the parsing is `rig.link_problems`'s,
 which is.
 

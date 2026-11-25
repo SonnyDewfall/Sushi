@@ -1339,7 +1339,7 @@ export function agentProblems(health) {
   // What `up` warned of as the running rig came up, and an amp whose links
   // are not made (#246): by every other measure such a rig looks healthy.
   // Each in a word or two, the whole of it on hover.
-  const warned = warningsTag(agent.warnings);
+  const warned = warningsTag(boxedWarnings(agent.warnings));
   const unwired = wiringTag(agent.amp_wiring);
   if (unwired) out.push({ title: unwired.text, reason: unwired.title, at: null });
   if (warned && !(unwired && warned.text === unwired.text)) out.push({ title: warned.text, reason: warned.title, at: null });
@@ -1448,16 +1448,30 @@ export function lifecycleCall(op, name, { discard = false, amp = false } = {}) {
 // What `up` warned of, in a word or two (#246): `{text, title}`, the whole
 // lines the title, or null for none. The amp's first, since its absence is
 // a sound: "No amp" for one that did not start, exited or is missing,
-// "Amp not wired" for one whose links are not made, "N warnings" for the
-// rest. A switch by restart, a revert, a channel load, an Undo or a pedal
+// "Amp not wired" for one whose links are not made, "Links not made" for
+// a channel's links, "N warnings" for the rest. A switch by restart, a revert, a channel load, an Undo or a pedal
 // all come up through `up`, and these were lost on the way.
+const NO_AMP = /NO AMP|^amp did not start|^amp exited|amp model not found|^amp parameters not restored/i;
+const UNWIRED = /AMP IS NOT WIRED|NAM:(Input|Output)/;
+const UNLINKED = /link\(s\) in .* were not made/;
+
+// The warnings that are a box for the whole run (#246's review, #245's
+// scrolling): the amp's, and links not made, which are a channel or the amp
+// silent. The rest ("no machine file ...") are on the notice of the start
+// or switch that said them, and in /health's `agent.warnings`.
+export function boxedWarnings(lines) {
+  return (Array.isArray(lines) ? lines : []).filter((l) => typeof l === "string"
+    && (NO_AMP.test(l) || UNWIRED.test(l) || UNLINKED.test(l)));
+}
+
 export function warningsTag(lines) {
   const list = (Array.isArray(lines) ? lines : []).filter((l) => typeof l === "string" && l);
   if (!list.length) return null;
   const said = list.join("\n");
-  const noAmp = list.some((l) => /NO AMP|^amp did not start|^amp exited|amp model not found|^amp parameters not restored/i.test(l));
-  const unwired = list.some((l) => /AMP IS NOT WIRED|NAM:(Input|Output)/.test(l));
-  const text = noAmp ? "No amp" : unwired ? "Amp not wired" : list.length === 1 ? "1 warning" : `${list.length} warnings`;
+  const noAmp = list.some((l) => NO_AMP.test(l));
+  const unwired = list.some((l) => UNWIRED.test(l));
+  const text = noAmp ? "No amp" : unwired ? "Amp not wired" : list.every((l) => UNLINKED.test(l)) ? "Links not made"
+    : list.length === 1 ? "1 warning" : `${list.length} warnings`;
   return { text, title: said };
 }
 

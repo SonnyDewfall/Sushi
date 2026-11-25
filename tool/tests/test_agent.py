@@ -2875,6 +2875,20 @@ def test_a_switch_whose_carla_is_dead_or_unwired_restarts_and_brings_it_back(ali
         assert "NAM:Output -> sushi:audio_input_0" in body["why"][0]["detail"]
 
 
+def test_a_switch_does_not_restart_on_a_kept_unwired_look_that_is_wired_now():
+    """#246's review: a look taken just after a start, before qpwgraph made
+    the links, was kept for ten seconds, and a switch inside them restarted
+    as `amp_unwired` for nothing. A not-wired look is looked at again before
+    it is a reason: wired now, the switch is live."""
+    agent, fake, world, runner = switch_agent("electric-delay")
+    world.carla.wiring = {"wired": False, "problems": ["not linked: NAM:Output -> sushi:audio_input_0"]}
+    assert call(agent, "GET", "/amp")[1]["wiring"]["wired"] is False
+    world.carla.wiring = {"wired": True, "problems": []}
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["how"] == "live", body
+    assert world.carla.looked == 2 and runner.calls == []
+
+
 def test_a_carla_whose_links_cannot_be_looked_at_is_no_reason_to_restart():
     agent, fake, world, runner = switch_agent("electric-delay")
     world.carla.wiring = {"wired": None, "problems": ["the amp's links could not be looked at: pw-dump"]}

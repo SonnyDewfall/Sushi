@@ -7431,3 +7431,17 @@ restarts through `POST /rig/restart {"amp": true}` (`sushi-rig restart
 `amp_blockers` makes it a restart (`amp_down`, `amp_unwired`), asked first
 where the page asks (`_would_restart`). Not run against a real Carla or
 PipeWire, nor on the rig. *(2026-11-24)*
+
+**#246, PR #247's review.** Five findings. (1) A not-wired look, kept for
+10 s, could make a live switch an `amp_unwired` restart after qpwgraph had made
+the links: a not-wired look is looked at again first (`_amp_wiring_decided`).
+(2) "No amp" stayed in /health after a model change brought Carla back, since
+`rig.amp_restarted_state` keeps `started_at`: once Carla plays again (new
+model, or the old put back) the amp's warnings (`amp_warning`) go, and the
+restart's link problems take their place. (3) Every poll past the 10 s started
+its own `pw-dump` and `pw-link -l`: one look at a time now, shared and
+shielded, and `/health` answers the last look while a new one runs behind it.
+(4) A dead clause in `_would_restart`'s amp check is gone. (5) Only the amp's
+warnings and links not made are boxes for the whole run (`boxedWarnings`, "Links
+not made"); the rest are on the notice that said them, and in
+`agent.warnings`. Not run on the rig. *(2026-11-25)*

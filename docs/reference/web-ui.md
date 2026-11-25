@@ -736,11 +736,14 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   restart or any switch by restart (the picker's, a revert's, a channel load's,
   an Undo's, a pedal's), is in the same boxes from `/health`'s
   `agent.warnings`, in a word or two (`warningsTag`): **No amp** for an amp
-  that did not start, exited or is missing, **Amp not wired**, or **N
-  warnings**, every line in the title. An amp whose links are not made
-  (`agent.amp_wiring`) is **Amp not wired** there too. A start, restart or
-  switch by restart that warned adds the same words to its notice
-  ("Switched to lead · No amp").
+  that did not start, exited or is missing, **Amp not wired**, or **Links
+  not made**, every line in the title. Only those are boxes for the whole
+  run (`boxedWarnings`, so the page is not longer to scroll, #245); any
+  other warning ("no machine file ...") is on the notice of the start or
+  switch that said it, and in `agent.warnings`. An amp whose links are not
+  made (`agent.amp_wiring`) is **Amp not wired** there too. A start, restart
+  or switch by restart that warned adds the same words to its notice
+  ("Switched to lead · No amp", "Restarted lead · 1 warning").
 - **The amp is named by its file** on both screens and in the picker
   (`Neve 2`), and the name the `.nam` gives itself is shown under it as what
   the file calls itself, with the rest of its metadata under "What the model

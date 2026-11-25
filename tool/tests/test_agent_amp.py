@@ -292,6 +292,52 @@ def test_an_amp_whose_links_are_not_made_is_said_by_get_amp_and_health(root):
     assert world.carla.looked == 2
 
 
+def test_one_look_at_a_time_is_shared_and_health_answers_the_last_without_waiting(root):
+    """#246's review: once a look was old, every poll of /health and GET /amp
+    started its own `pw-dump` and `pw-link -l` and waited on them. A look in
+    flight is shared, and /health answers the last look of the Carla run
+    while a new one runs behind it."""
+    import threading
+
+    clock = Clock()
+    world = World(root)
+    world.carla.wiring = amp_live.wiring_said(["not linked: a -> NAM:Input"])
+    agent, _ = amp_agent(root, world, clock=clock)
+    described = world.described()
+    gate = threading.Event()
+    looks = []
+
+    def slow():
+        looks.append(1)
+        gate.wait(5)
+        return world.carla.wiring
+
+    agent.carla = amp_live.Carla(answering=lambda: True, send=lambda a, p: None, links=slow)
+
+    async def go():
+        first = asyncio.ensure_future(agent._amp_wiring(described))
+        second = asyncio.ensure_future(agent._amp_wiring(described))
+        await asyncio.sleep(0.05)
+        gate.set()
+        got = await asyncio.gather(first, second)
+        assert len(looks) == 1, "two callers, one look"
+        gate.clear()
+        clock.now += amp_live.WIRING_EVERY
+        world.carla.wiring = amp_live.wiring_said([])
+        health = await agent._amp_wiring(described, wait=False)
+        assert health == got[0], "the last look, at once, while the new one runs"
+        assert not agent._amp_wiring_look[1].done(), "a new look is under way behind it"
+        await asyncio.sleep(0.05)
+        assert len(looks) == 2
+        gate.set()
+        await agent._amp_wiring_look[1]
+        return got, await agent._amp_wiring(described, wait=False)
+
+    got, later = asyncio.run(go())
+    assert got[0] == got[1] == {"wired": False, "problems": ["not linked: a -> NAM:Input"]}
+    assert later == {"wired": True, "problems": []} and len(looks) == 2
+
+
 def test_a_dead_carla_or_no_amp_is_not_looked_at_for_links(root):
     world = World(root, alive=False)
     world.carla.wiring = amp_live.wiring_said(["x"])
@@ -608,6 +654,36 @@ def test_a_model_change_restarts_carla_alone_with_the_new_project_and_the_values
     assert "THE SOUND STOPS while Carla restarts" in capsys.readouterr().err
     assert amp["model"]["name"] == "Second" and by_name(amp)["Output Lvl"]["value"] == 3.0
     assert [e["op"] for e in log["log"]] == ["amp", "amp_model"]
+
+
+AMP_EXITED = ("amp exited during startup (status 1) — see /run/logs/amp.log; the rig is playable but "
+              "there is NO AMP in the signal path, so the guitar is running dry")
+
+
+@pytest.mark.parametrize("result, kept", [
+    (AmpRestart(True, pid=99, problems=("1 link(s) in rig-amp.qpwgraph were not made: NAM:Output -> x",)),
+     ["no machine file at box.yaml", "1 link(s) in rig-amp.qpwgraph were not made: NAM:Output -> x"]),
+    (AmpRestart(False, "did not come up", pid=98, restored=True), ["no machine file at box.yaml"]),
+    (AmpRestart(False, "did not come back", restored=False), [AMP_EXITED, "no machine file at box.yaml"]),
+])
+def test_a_model_change_that_brings_carla_back_drops_the_starts_no_amp(root, result, kept):
+    """#246's review: the start's warnings are kept by the run, and a model
+    change restarts Carla alone in the same run (`started_at` unchanged), so
+    "NO AMP" stayed in /health with the amp playing. Once Carla plays again,
+    new model or old, the amp's warnings go, the restart's own link
+    problems take their place, and the rest stay. One that left no Carla
+    keeps them."""
+    agent, world, supervisor = model_agent(root, result=result)
+
+    async def warned(args):
+        return Outcome(True, 0, "", f"warning: {AMP_EXITED}\nwarning: no machine file at box.yaml\n")
+
+    agent.run = warned
+    _, (_, before), _, (_, after) = calls(
+        agent, ("POST", "/rig/restart", {"json": {"discard": True}}), ("GET", "/health", {}),
+        ("POST", "/amp/model", {"json": {"model": "Second.nam"}}), ("GET", "/health", {}))
+    assert before["agent"]["warnings"] == [AMP_EXITED, "no machine file at box.yaml"]
+    assert after["agent"]["warnings"] == kept
 
 
 def test_choosing_the_rigs_own_model_again_is_no_override(root):

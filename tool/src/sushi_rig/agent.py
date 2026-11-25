@@ -2194,7 +2194,8 @@ class Agent:
                 # whether its amp is wired (`_amp_wiring`): an amp that is
                 # missing or unwired looks healthy by every other measure.
                 "warnings": self._run_warnings(rig),
-                "amp_wiring": await self._amp_wiring(rig),
+                # The last look, without waiting on a new one (`wait`).
+                "amp_wiring": await self._amp_wiring(rig, wait=False),
                 # The rig this agent holds, and its children that exited with
                 # no `down` asking them to: what a phone reads after a crash.
                 "supervisor": self.supervisor.describe(rig),
@@ -5501,7 +5502,7 @@ class Agent:
             return []
         if not (running.get("_amp") or {}).get("model") and state.get("amp_requested") is not False:
             return []
-        return amp_blockers(state, described, upcoming, await self._amp_wiring(described), amp_off=amp_off)
+        return amp_blockers(state, described, upcoming, await self._amp_wiring_decided(described), amp_off=amp_off)
 
     async def _switch_live(
         self, origin, name: str, running: dict[str, Any], upcoming: dict[str, Any], state: dict[str, Any],
@@ -5691,6 +5692,9 @@ class Agent:
         # The last look at the amp's links (#246, `_amp_wiring`): (the run
         # and Carla's pid, clock, `amp_live.wiring_said`'s answer).
         self._amp_wiring_seen: tuple[tuple, float, dict[str, Any]] | None = None
+        # The look in flight, shared by every caller of its Carla run: (that
+        # key, its task).
+        self._amp_wiring_look: tuple[tuple, "asyncio.Future"] | None = None
         # What the last start's `up` warned of, and the run it is of
         # (`_warned_run`): /health's `agent.warnings` while that run is up.
         self._start_warnings: tuple[tuple, list[str]] | None = None
@@ -5830,7 +5834,8 @@ class Agent:
         has = bool(((config or {}).get("_amp") or {}).get("model"))
         return {"amp_on": has, "rig": switching_from(state, self.describe()) if has else None}
 
-    async def _amp_wiring(self, described: dict[str, Any]) -> dict[str, Any] | None:
+    async def _amp_wiring(self, described: dict[str, Any], *, fresh: bool = False,
+                          wait: bool = True) -> dict[str, Any] | None:
         """Whether the running rig's amp is wired (#246): `{"wired",
         "problems"}` from Carla's `links` (`amp_live.read_links`), or None
         when there is no live Carla to ask about, or no way to tell. One look
@@ -5840,23 +5845,64 @@ class Agent:
         After an amp starts, by `up`, a restart or a model change, Carla can
         run with the link from the guitar into NAM, or from NAM into Sushi,
         not made: the guitar goes in dry while everything looks healthy, and
-        `up` warned of it once."""
+        `up` warned of it once.
+
+        One look at a time (#246's review): every page polls /health and
+        GET /amp each second, and once a look is old each poll started its
+        own `pw-dump` and `pw-link -l` and waited on them. A look in flight
+        is shared (`_amp_wiring_look`), shielded so that a caller that goes
+        away does not cancel it for the rest. `fresh` does not take the kept
+        look, for a decision that would restart on it; `wait` False (/health)
+        answers the last look of this Carla run, if there is one, and lets a
+        new one run behind it."""
         child = (described.get("children") or {}).get("amp") if described.get("running") else None
         if not child or child.get("alive") is not True:
             return None
         key = (described.get("pgid"), described.get("started_at"), described.get("config"), child.get("pid"))
         seen = self._amp_wiring_seen
-        if seen is not None and seen[0] == key and self.clock() - seen[1] < amp_live.WIRING_EVERY:
-            return seen[2]
+        kept = seen if seen is not None and seen[0] == key else None
+        if kept is not None and not fresh and self.clock() - kept[1] < amp_live.WIRING_EVERY:
+            return kept[2]
+        look = self._amp_wiring_look
+        if look is None or look[0] != key or look[1].done():
+            look = (key, asyncio.ensure_future(self._amp_wiring_once(key)))
+            self._amp_wiring_look = look
+        if not wait and kept is not None:
+            return kept[2]
+        return await asyncio.shield(look[1])
+
+    async def _amp_wiring_once(self, key: tuple) -> dict[str, Any] | None:
+        """One look at the amp's links for the Carla run `key`, kept for the
+        next callers (`_amp_wiring_seen`). Never raises."""
         try:
             said = await asyncio.to_thread(self.carla.links)
         except Exception as exc:  # noqa: BLE001 -- a look that fails is "cannot tell", said
             said = amp_live.wiring_said(None, checked=False,
                                         why=f"the amp's links could not be looked at: {type(exc).__name__}: {exc}")
-        if said is None:
-            return None
-        self._amp_wiring_seen = (key, self.clock(), said)
+        if said is not None:
+            self._amp_wiring_seen = (key, self.clock(), said)
         return said
+
+    async def _amp_wiring_decided(self, described: dict[str, Any]) -> dict[str, Any] | None:
+        """The wiring a restart is decided on (#246's review): the kept look,
+        unless it says not wired, which is looked at again first. A look
+        taken in the seconds after a start, before qpwgraph made the links,
+        would otherwise make a live switch a restart for ten seconds."""
+        wiring = await self._amp_wiring(described)
+        if wiring is not None and wiring.get("wired") is False:
+            wiring = await self._amp_wiring(described, fresh=True)
+        return wiring
+
+    def _amp_restarted_warnings(self, problems: list[str]) -> None:
+        """The start's warnings after Carla was restarted alone and plays
+        (`Supervisor.restart_amp`): the amp's own dropped (`amp_warning`),
+        since they were of the Carla that is gone, and what the restart said
+        of its links (`problems`) in their place. The run is the same, so
+        nothing else would drop them."""
+        if self._start_warnings is None:
+            return
+        run, warnings = self._start_warnings
+        self._start_warnings = (run, [w for w in warnings if not amp_warning(w)] + problems)
 
     def _run_warnings(self, described: dict[str, Any]) -> list[str]:
         """What `up` warned of as the rig that is up now came up, or [] when
@@ -5990,6 +6036,12 @@ class Agent:
                     result = await self.supervisor.restart_amp(
                         carla_project(path), dict(amp.values), model=stored, override=recorded)
                     seconds = round(self.clock() - started, 3)
+                    if result.ok or result.restored:
+                        # Carla plays again, the new model or the old: what
+                        # the start warned of the amp is no longer so (#246's
+                        # review), and the run's `started_at` is unchanged
+                        # (`rig.amp_restarted_state`), so it would stay.
+                        self._amp_restarted_warnings(list(result.problems))
                     if not result.ok:
                         if result.restored is None and result.pid is None:
                             # Refused before Carla was touched, each with its own code
@@ -6486,7 +6538,7 @@ class Agent:
             machine_file = root / machine_file
         # Whether the amp is wired (#246), for a switch into the edited file
         # to ask "Restart?" over (`_would_restart`), as the switch decides.
-        wiring = await self._amp_wiring(described)
+        wiring = await self._amp_wiring_decided(described)
         return {"described": described, "state": state, "running": running, "machine": machine_file,
                 "wiring": wiring}
 
@@ -7819,10 +7871,12 @@ class Agent:
         try:
             running = self.switching.read_config(run["described"].get("config"))
             # The running rig's own file, so a run with no amp keeps none
-            # (`keeps_no_amp`); a Carla that should run and is not, or is not
-            # wired, is a restart (#246), asked first as any is. The wiring
-            # as `_rigfile_run` looked at it: this runs off the loop.
-            if ((running or {}).get("_amp") or {}).get("model") or state.get("amp_requested") is False:
+            # (`keeps_no_amp`: `amp_blockers` says nothing for it); a Carla
+            # that should run and is not, or is not wired, is a restart
+            # (#246), asked first as any is. The wiring as `_rigfile_run`
+            # looked at it: this runs off the loop. From a running config
+            # with no amp, `rigfile.diff` says `amp` itself.
+            if ((running or {}).get("_amp") or {}).get("model"):
                 reasons += [r.as_dict() for r in amp_blockers(
                     state, run["described"], compiled, run.get("wiring"),
                     amp_off=state.get("amp_requested") is False)]
@@ -8916,6 +8970,20 @@ def keeps_no_amp(state: dict[str, Any], rig: str) -> bool:
     back on a rig the player took it off. A switch to another rig drops the
     request (#246). Pure."""
     return state.get("amp_requested") is False and rig == switching_from(state, {})
+
+
+# What `up` says of the amp itself (rig.startup_exit_problem, amp.prepare's
+# "THE AMP IS NOT WIRED", a link to or from NAM not made, `start_children`'s
+# replay): the warnings that end with the Carla they were said of.
+_AMP_WARNING = re.compile(
+    r"NO AMP|^amp did not start|^amp exited|amp model not found|^amp parameters not restored|AMP IS NOT WIRED"
+    r"|NAM:(?:Input|Output)", re.I)
+
+
+def amp_warning(line: str) -> bool:
+    """Whether a warning of `up`'s is about the amp (`_AMP_WARNING`), as
+    rig.js's `warningsTag` reads one. Pure."""
+    return bool(_AMP_WARNING.search(line))
 
 
 def up_warnings(stderr: str) -> list[str]:
