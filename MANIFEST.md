@@ -7445,3 +7445,32 @@ shielded, and `/health` answers the last look while a new one runs behind it.
 warnings and links not made are boxes for the whole run (`boxedWarnings`, "Links
 not made"); the rest are on the notice that said them, and in
 `agent.warnings`. Not run on the rig. *(2026-11-25)*
+
+**An amp for a rig with none, #246's cause 1.** A rig whose file has no
+`amp:` (made on the New rig screen, or given its channels by loads, which
+never brought the amp) could get one only by editing the YAML: a restart, Amp
+on and Save all kept it amp-less. Two ways now, both through the agent's
+rig-file path (lifecycle lock then live lock, `write_rig` in place with the
+comments, a revert point, the one Undo, `library` read outside the lock) and
+both a switch by restart into the file that brings the amp even into a run
+started with `--no-amp` (`_switch_held`'s `amp_on`, which `_revert_switch`
+passes through). (1) **Add amp**: `GET /amp`'s 409 `no_amp` says `add_amp`
+when the running rig's file has no `amp:`, a case apart from #247's `amp_on`
+(a no-amp run of a file that has one); the card offers **Add amp** over Amp
+on, a **Model** picker of `GET /amp/models`, then **Restart?**, and `POST
+/amp/add {"model", "rig"}` writes NAM, that model and the amp's defaults
+(`amp.DEFAULTS`, as a save writes an amp: `rigedit.new_amp`) above the
+channels (`rigedit.with_amp`), refused `has_amp`, `unsaved` (unless
+`discard`, **Add anyway**), `changed`, `panel`, and for a model that is not
+one, unreadable or at another rate. Behind the page's lock, and so is its
+Undo (`act: "add_amp"`). (2) **Load with amp**: `GET /rigs/<rig>/channels`
+says `amp`; a strip's Load… offers **Load with amp** beside **Load** from a
+rig with an amp onto a running rig with none, asks **Restart?**, and loads
+with `"with_amp": true`, which copies the source rig's `amp:` whole
+(`channelcopy.rig_amp`) in the same write (`amp_copied` in the answer;
+refused `no_amp` from a rig with none, `has_amp` onto one with one). The
+plain load is unchanged. `channel_load_request` takes `with_amp` and still
+answers its four values (`load_with_amp` reads it), so no test's expectation
+changed. Tested against the real compiler and switch with a stand-in Sushi
+and `FakeRunner` (`test_agent_amp_add.py`), and in Chromium against the UI
+fakes. Not run against a real Carla, nor on the rig. *(2026-11-25)*

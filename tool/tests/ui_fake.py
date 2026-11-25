@@ -1087,12 +1087,15 @@ class UiLifecycle:
     def _warned(self) -> str:
         return "".join(f"warning: {line}\n" for line in self.warnings)
 
-    async def switch_held(self, origin, name, program, mark, discarded=None, remove_tracks=()):
+    async def switch_held(self, origin, name, program, mark, discarded=None, remove_tracks=(), amp_on=False):
         # `discarded`: the unsaved work a revert or a load drops, which the
         # agent's real switch puts back (`agent.discard_plan`); this stand-in
         # changes no value, so it has nothing to put back. `remove_tracks`:
         # a channel removed (#190), which `UiSave.switched` takes out.
-        self.calls.append(["switch", name] + ([{"remove_tracks": list(remove_tracks)}] if remove_tracks else []))
+        # `amp_on`: an amp put on the file (#246), which the real switch
+        # brings even into a run with none; said in the call, nothing more.
+        self.calls.append(["switch", name] + ([{"remove_tracks": list(remove_tracks)}] if remove_tracks else [])
+                          + ([{"amp_on": True}] if amp_on else []))
         await asyncio.sleep(self.delay)
         if self.refuse_switch:
             raise SwitchRefused(*self.refuse_switch)

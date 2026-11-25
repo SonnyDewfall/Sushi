@@ -65,6 +65,8 @@ curl -X POST localhost:8029/rigs/electric-delay/restore -d '{"entry": "electric-
 curl localhost:8029/rigs/bin             # what is in the bin, newest first, and which agent's bin it is
 curl -X POST localhost:8029/rig/channels/vocal/load -d '{"from": {"rig": "string-machine", "channel": "strings"}}'   # writes the rig file, then plays it live where it can
 curl -X POST localhost:8029/rig/channels/vocal/remove -d '{"restart": false}'   # the channel out of the running rig (#190): a restart, so refused (409 restarts) until "restart": true
+curl -X POST localhost:8029/rig/channels/vocal/load -d '{"from": {"rig": "accustomed", "channel": "board"}, "with_amp": true}'   # and that rig's amp, onto a rig with none (#246): a restart
+curl -X POST localhost:8029/amp/add -d '{"model": "<a file of amp/models>"}'   # an amp for a rig whose file has none (#246): written, then a restart
 
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
@@ -686,6 +688,36 @@ and the `rig`, when the running config has an amp, and `POST /rig/restart
 {"amp": true}` restarts with the amp, refused for unsaved work as any restart
 is. A switch to another rig drops the request: see below.
 
+**Add amp** (#246's cause 1). A rig whose file has no `amp:` (one made on
+the New rig screen, or one whose amp was never written) gets none from a
+restart, Amp on or a save. `GET /amp`'s `409 no_amp` says `add_amp: true`
+and the `rig` when the running rig's file has no `amp:` (a rig of channels,
+run headless), whether or not the run asked for the amp: a different case
+from `amp_on`, which is a run with no amp on a file that has one. `POST
+/amp/add {"model", "rig"?, "discard"?}` writes `amp:` into the file, above
+its channels (`rigedit.with_amp`): NAM, `amp/models/<model>`, and each
+parameter at the amp's default (`amp.DEFAULTS`, as a save writes an amp,
+`rigedit.new_amp`). It goes the way a channel load goes: the lifecycle lock
+(`busy: "amp add"`), then the live lock; written in place with `write_rig`,
+comments kept; the file as it was kept for Revert… (`kept_before`); one
+Undo (`act: "add_amp"`, `apply="switch"`, label "add amp <model>"); what git
+says of the file (`library`), read outside the lock. Then the running rig is
+switched into its file (`_revert_switch`), always by restart, since Carla
+comes with the rig (`why` has `amp`), and with the amp even for a run
+started with `--no-amp` (`amp_on`: the switch sees the run as asking for
+the amp, and its `up` drops `--no-amp`). The answer carries the switch's
+`how`, `why`, `warnings` (what that `up` said of the amp) and `entry`
+(`args.amp_added`). Refused, nothing written: 400 for a body of the wrong
+shape, or a model that is not a file of amp/models (a path from this
+machine only, as `POST /amp/model`), cannot be read (`unreadable`) or was
+trained at another rate (`wrong_rate`); 409 `busy`, `no_rig`, `panel`,
+`v1`, `changed` (`rig` is not the running rig), `has_amp` (the file has an
+`amp:` already: a model is changed with `POST /amp/model`), `rig_problem`,
+`plugins_missing`, and `unsaved` for live work no save has written, unless
+`"discard": true`, since the restart drops it. 409 `not_switched` (or 504)
+with `written: true` when the file was written and the rig did not come up
+playing it. Not run against a real Carla or on the rig.
+
 ## Switching rigs live
 
 `POST /rig/switch {"config_name"}` (and a
@@ -1217,7 +1249,7 @@ compiler's (`rig.compile_rig_draft`). The page lists the channels from
 `GET /rigs` and `GET /rigs/<rig>/channels`, as "start from" does.
 
 - **`POST /rig/channels/<channel>/load {"from": {"rig", "channel"},
-  "rig"?, "discard"?, "drop_midi"?}`**: the channel's chain and level replaced by
+  "rig"?, "discard"?, "drop_midi"?, "with_amp"?}`**: the channel's chain and level replaced by
   the source's, each plugin named for the channel (`processor_name`:
   `lead_compressor` on `lead`, the source channel's prefix taken off and
   this one's put on, always, so two base names never become one name), its
@@ -1256,7 +1288,17 @@ compiler's (`rig.compile_rig_draft`). The page lists the channels from
   even from the running rig's own file; `null` if git does not answer
   within the save's timeout), `amp` says whether the amp is in front of the channel (and when a
   guitar channel heard through the amp in its own rig lands where none
-  is), and `width` when the source is the other width. **Discarded work is
+  is), and `width` when the source is the other width. **With the amp**
+  (`"with_amp": true`, #246): the source rig's `amp:`, model and parameters
+  as its file has them (`channelcopy.rig_amp`), is written into a running
+  rig whose file has none, above its channels, in the same write as the
+  chain; the switch is then a restart that brings the amp, even for a run
+  started with `--no-amp` (as `POST /amp/add`'s), the answer's `amp_copied`
+  says `{"from", "model", "parameters"}` (null without), and the one Undo
+  takes both back ("load accustomed / board with amp"). Refused, nothing
+  written, as `no_amp` from a rig with no amp and `has_amp` onto a rig whose
+  file has one. `GET /rigs/<rig>/channels` says `amp`, whether that file
+  has an `amp:`, for the page to offer it. **Discarded work is
   put back** (`discard_plan`, shared with a revert with `discard`): the
   switch's diff sets only what the two configs differ in, so each parameter
   and bypass the dropped entries set is also set, to the file's value or,

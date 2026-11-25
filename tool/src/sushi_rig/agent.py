@@ -5365,7 +5365,12 @@ class Agent:
                 await self._midi_sync()
 
     async def _switch_held(self, origin, name, program, mark, discarded: list[dict[str, Any]] | None = None,
-                           remove_tracks: tuple[str, ...] = ()) -> dict[str, Any]:
+                           remove_tracks: tuple[str, ...] = (), amp_on: bool = False) -> dict[str, Any]:
+        """The switch into rig `name`, under the lifecycle lock the caller
+        holds. `amp_on` (#246): the switch brings the amp, as if the run had
+        not been started with --no-amp, for a rig file just given one (an
+        amp added, a channel loaded with its rig's amp) into the same rig,
+        which `keeps_no_amp` would otherwise keep without."""
         started = self.clock()
         described = self.describe()
         if not described.get("running"):
@@ -5373,6 +5378,10 @@ class Agent:
                 f"no rig is running to switch from ({described.get('message')}): POST /rig/up", "no_rig")
         world = self.switching
         state = await asyncio.to_thread(world.read_state) or {}
+        if amp_on and state.get("amp_requested") is False:
+            # As the switch sees the run only: the `up` it restarts into
+            # writes the state file afresh, with the amp asked for.
+            state = {**state, "amp_requested": True}
         try:
             upcoming = await asyncio.to_thread(world.compile, name, self._midi_root(), state.get("machine"))
         except Exception as exc:  # noqa: BLE001 -- every failure to compile is a refusal, said
@@ -5704,6 +5713,7 @@ class Agent:
         app.router.add_get("/amp/models", self.amp_models_route)
         app.router.add_post("/amp/parameter", self.amp_parameter_route)
         app.router.add_post("/amp/model", self.amp_model_route)
+        app.router.add_post("/amp/add", self.amp_add_route)
 
     def _amp_root(self) -> Path:
         from .paths import checkout_root
@@ -5824,15 +5834,41 @@ class Agent:
     async def _amp_on_offer(self) -> dict[str, Any]:
         """For GET /amp's 409 `no_amp` (#246): `amp_on` true when the run was
         started with --no-amp and the running rig's config has an amp, which
-        `POST /rig/restart {"amp": true}` brings; `rig` names it. A run
-        started with --no-amp kept it through every restart and switch,
-        and nothing on the page could turn it back on."""
+        `POST /rig/restart {"amp": true}` brings; `add_amp` true when the
+        running rig's file has no `amp:` at all, which `POST /amp/add` gives
+        it; `rig` names the rig either is for. A run started with --no-amp
+        kept it through every restart and switch, and a rig with no `amp:`
+        could get one only by hand, with nothing on the page for either."""
         state = await asyncio.to_thread(self.switching.read_state) or {}
+        # `add_amp` (#246's cause 1): the running rig's own file has no
+        # `amp:`, which is another case than a run with no amp, and which
+        # neither Amp on nor a restart can mend: a rig made on the New rig
+        # screen, or given its channels by loads. `POST /amp/add` writes
+        # one. Only for a rig of channels the agent can write (`save_refusal`).
+        add = await asyncio.to_thread(self._amp_addable, state, self.describe())
         if state.get("amp_requested") is not False:
-            return {"amp_on": False}
-        config = await asyncio.to_thread(self._read_running_config, state)
-        has = bool(((config or {}).get("_amp") or {}).get("model"))
-        return {"amp_on": has, "rig": switching_from(state, self.describe()) if has else None}
+            has = False
+        else:
+            config = await asyncio.to_thread(self._read_running_config, state)
+            has = bool(((config or {}).get("_amp") or {}).get("model"))
+        rig = switching_from(state, self.describe()) if has or add else None
+        return {"amp_on": has, "add_amp": add, "rig": rig}
+
+    def _amp_addable(self, state: dict[str, Any], described: dict[str, Any]) -> bool:
+        """Whether the running rig's file has no `amp:` and is one `POST
+        /amp/add` would write: a rig of channels, run headless. A file that
+        will not read is not offered one. Off the loop."""
+        from . import rigedit
+
+        if save_refusal(state, described) is not None:
+            return False
+        try:
+            import yaml
+
+            raw = yaml.safe_load(rig_file_of(state, self._midi_root()).read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 -- not offered: the add would refuse it, and say why
+            return False
+        return isinstance(raw, dict) and not rigedit.has_amp(raw)
 
     async def _amp_wiring(self, described: dict[str, Any], *, fresh: bool = False,
                           wait: bool = True) -> dict[str, Any] | None:
@@ -5974,6 +6010,147 @@ class Agent:
             raise self._amp_http(amp_live.AmpRefused(wrong, 400, "wrong_rate"))
         answer = await self._change_model(request, override, path)
         return web.json_response(answer, status=200 if answer["ok"] else 502)
+
+    async def amp_add_route(self, request):
+        """`POST /amp/add {"model", "rig"?, "discard"?}` (#246's cause 1):
+        give the running rig, whose file has no `amp:`, an amp, and play it.
+
+        The rig file is written first, in place with `write_rig` (comments
+        kept), with `amp:` above its channels: NAM, `model` (a file in
+        amp/models, as POST /amp/model takes one) and every parameter at the
+        amp's default (`rigedit.new_amp`). The running rig is then switched
+        into the file, as a channel load is (`_revert_switch`): always by
+        restart, since Carla comes with the rig (`rigfile.diff`'s `amp`), and
+        with the amp even for a run started with --no-amp (`amp_on`). The
+        file as it was is kept for Revert…, and the one Undo puts it back and
+        switches the rig into it, by restart again.
+
+        Refused before anything is written: 400 for a body of the wrong shape
+        or a model that is not one (`model_request`), cannot be read
+        (`unreadable`) or was trained at another rate (`wrong_rate`); 409
+        `busy`, `no_rig`, `panel`, `v1` (as a save); `changed` when `rig` is
+        not the running rig; `has_amp` when the file has an `amp:` already
+        (a model is changed by POST /amp/model); `rig_problem`,
+        `plugins_missing`; and `unsaved` while the rig holds live work no
+        save has written, unless `"discard": true`, since the restart drops it.
+
+        200 with `file`, `amp` (what was written), `how` and `why` (the
+        switch's), `warnings` (what the restart's `up` warned of: an amp that
+        did not start is said there), `kept_before` and `library`. 409
+        `not_switched` (or 504) when the file was written and the rig could
+        not be made to play it, `written: true`.
+
+        Not run against a live Sushi or Carla: shown against the fakes of the
+        tests."""
+        from . import rigedit
+
+        try:
+            asked = rigedit.amp_request(await self._json_body(request))
+        except rigedit.EditRequestError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        try:
+            override, model_path = amp_live.model_request(
+                {"model": asked["model"]}, local=is_local(request.remote), root=self._amp_root(),
+                name_pattern=MODEL_NAME)
+        except amp_live.AmpRefused as exc:
+            raise self._amp_http(exc)
+        described_model = await asyncio.to_thread(self._amp_shelf.read, model_path)
+        if "error" in described_model:
+            raise self._amp_http(amp_live.AmpRefused(described_model["error"], 400, "unreadable"))
+        wrong = amp_live.rate_problem(described_model)
+        if wrong:
+            raise self._amp_http(amp_live.AmpRefused(wrong, 400, "wrong_rate"))
+        amp = rigedit.new_amp(amp_live.stored_model(override))
+        self._refuse_while_busy()
+        answer: dict[str, Any]
+        path: Path | None = None
+        async with self._lock:
+            self.busy = "amp add"
+            try:
+                run = await self._rigfile_run()
+                refusal = save_refusal(run["state"], run["described"])
+                if refusal is not None:
+                    raise _conflict(*refusal)
+                path = run["running"]
+                if asked["rig"] is not None and path.stem != asked["rig"]:
+                    raise _conflict(f"the running rig is {path.stem}, not {asked['rig']}, so no amp was added: "
+                                    "look at the rig and add it again", "changed")
+                try:
+                    planned = await self._rigfile_thread(request, path, lambda: self._plan_amp_add(path, amp, run))
+                    async with self._live_lock:
+                        refusal = load_refusal(run["state"], self.log, doing="adding the amp", again="add it")
+                        if refusal is not None and not asked["discard"]:
+                            raise RigFileRefused(*refusal)
+                        discarded = (unsaved_entries(self.log, since=run["state"].get("started_at"))
+                                     if refusal is not None else [])
+                        kept = await self._rigfile_thread(request, path, lambda: self._write_planned(
+                            path, planned, f"before the amp was added ({Path(amp['model']).stem})", "the amp"))
+                except RigFileRefused as exc:
+                    error = _conflict(" ".join(str(exc).split()), exc.code)
+                    if exc.extra:
+                        error.agent_extra = exc.extra
+                    raise error
+                self._history_file(path, planned["before"], planned["after"], f"add amp {Path(amp['model']).stem}",
+                                   run=run, apply="switch", act="add_amp")
+                answer = {"ok": True, "rig": path.stem, "file": self._save_shown(path), "amp": amp,
+                          "written": True, "discarded": bool(discarded), "kept_before": kept}
+                said = {"id": "add_amp", "what": f"with an amp ({Path(amp['model']).stem})"}
+
+                def mark(entry: dict[str, Any]) -> None:
+                    entry["args"]["amp_added"] = amp["model"]
+
+                answer.update(await self._revert_switch(
+                    request, path.stem, said, mark=mark, done="given an amp", discarded=discarded,
+                    command=["amp add", f"{Path(amp['model']).stem} onto {path.stem}"], amp_on=True))
+                if discarded:
+                    answer["discard"] = discard_said(discarded, answer)
+            finally:
+                self.busy = None
+                if path is not None:
+                    await self._midi_sync()  # the switch stopped the listener; it follows the rig now
+        await self._rigfile_git_after(answer, path)
+        if answer["ok"]:
+            return web.json_response(answer)
+        return web.json_response(answer, status=504 if answer.get("abandoned") else 409)
+
+    def _plan_amp_add(self, path: Path, amp: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+        """The running rig's file with `amp` added (`rigedit.with_amp`),
+        compiled before anything is written, or the refusal: `has_amp` for a
+        file with an `amp:` already, and the compiler's. Off the loop."""
+        import yaml
+
+        from . import rigedit
+
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise RigFileRefused(f"{path.name} is not a rig file", "rig_problem")
+        if rigedit.has_amp(raw):
+            raise RigFileRefused(f"nothing was written: {path.stem} has an amp already (its file's amp:): "
+                                 "change its model on the amp's card instead", "has_amp")
+        edited = rigedit.with_amp(raw, amp)
+        compiled = self._rigfile_compile(edited, run)
+        self._rigfile_plugins(compiled, path.stem, run, "given an amp", "add it again")
+        return {"raw": edited, "compiled": compiled}
+
+    def _write_planned(self, path: Path, planned: dict[str, Any], how: str, what: str) -> dict[str, Any]:
+        """Write `planned["raw"]` over rig file `path` in place (`write_rig`,
+        comments kept), and keep the file as it was for Revert… once it is
+        written (`_keep_for_revert`), as a load does; the bytes before and
+        after go in `planned`, for the one Undo. Off the loop, under the live
+        lock."""
+        from . import saves
+
+        root = self._midi_root()
+        rig = path.stem
+        before = path.read_bytes()
+        kept, _ = saves.snapshots(root, rig)
+        kept_as = saves.kept_as(before, kept, lambda sid: saves.snapshot_bytes(root, rig, sid))
+        try:
+            rigfile.write_rig(path, planned["raw"])
+        except rigfile.RigFileError as exc:
+            raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
+        planned["before"], planned["after"] = before, path.read_bytes()
+        return self._keep_for_revert(path, before, kept_as, how, what)
 
     async def _change_model(self, origin, override: str, path: Path, *, undoing: tuple | None = None,
                             skip: bool = False) -> dict[str, Any]:
@@ -6601,7 +6778,8 @@ class Agent:
     async def rig_channels_route(self, request):
         """`GET /rigs/{name}/channels`: a rig file's channels as the file has
         them (`rigedit.channels_of`), for "start from" and for the rack's
-        input change, which edits the file and not the running rig."""
+        input change, which edits the file and not the running rig; and
+        `amp`, whether the file has an `amp:`, for a load with amp (#246)."""
         from . import rigedit
 
         path = self._rigfile_path(request.match_info["name"])
@@ -6630,6 +6808,9 @@ class Agent:
             "ok": True, "rig": path.stem, "file": self._save_shown(path),
             "running": run["running"] is not None and run["running"].resolve() == path.resolve(),
             "channels": rigedit.channels_of(raw), "blended": blended, "blended_note": blended_note,
+            # Whether the file has an `amp:` (#246): a strip's Load… offers
+            # "Load with amp" from a rig with one onto a running rig with none.
+            "amp": rigedit.has_amp(raw),
         })
 
     async def new_rig_route(self, request):
@@ -7461,7 +7642,7 @@ class Agent:
                              mark: Callable[[dict[str, Any]], None] | None = None,
                              done: str = "reverted", discarded: list[dict[str, Any]] | None = None,
                              command: list[str] | None = None,
-                             remove_tracks: tuple[str, ...] = ()) -> dict[str, Any]:
+                             remove_tracks: tuple[str, ...] = (), amp_on: bool = False) -> dict[str, Any]:
         """The running rig into its reverted file, by the live switch, held
         under the lifecycle lock the caller holds. What it says, as a
         switch's answer does, and `ok: false` with `code: "not_switched"`
@@ -7469,14 +7650,20 @@ class Agent:
         A channel load (#208) comes this way too, with its own `mark` for
         the log entry and its own word for what was `done`, and a channel
         removed (#190), with the track it may take out live
-        (`remove_tracks`, `rigfile.diff`'s)."""
+        (`remove_tracks`, `rigfile.diff`'s), and an amp put on the file
+        (#246: `amp_on`, an amp added or a channel loaded with its rig's amp),
+        which the switch brings even into a run started with --no-amp."""
         if mark is None:
             def mark(entry: dict[str, Any]) -> None:
                 entry["args"]["revert"] = said["id"]
 
+        held: dict[str, Any] = {}
+        if remove_tracks:
+            held["remove_tracks"] = remove_tracks
+        if amp_on:
+            held["amp_on"] = True
         try:
-            switched = await (self._switch_held(request, name, None, mark, discarded, remove_tracks=remove_tracks)
-                              if remove_tracks else self._switch_held(request, name, None, mark, discarded))
+            switched = await self._switch_held(request, name, None, mark, discarded, **held)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- the file is written whatever went wrong: said, with `written`
@@ -7567,7 +7754,7 @@ class Agent:
         """`GET /undo`: what the next press of Undo would step back (`next`:
         `label`, `kind`, `op` for a live one, `act` for another (what was
         done: `channel`, `input`, `pedal`, `save`, `save_as`, `revert`,
-        `new_rig`, `delete`, `load`, `remove_channel`; the page's lock reads it), `can` and `why` when it cannot
+        `new_rig`, `delete`, `load`, `remove_channel`, `add_amp`; the page's lock reads it), `can` and `why` when it cannot
         be), `depth` (steps held) and `limit`. `next` is null with nothing
         to undo. A live step's `can` is true until it is tried: whether the
         rig is still as the change left it is Sushi's to say."""
@@ -7966,13 +8153,17 @@ class Agent:
 
     async def load_channel_route(self, request):
         """`POST /rig/channels/{channel}/load {"from": {"rig", "channel"},
-        "rig"?, "discard"?, "drop_midi"?}`: load channel `from.channel` of rig
+        "rig"?, "discard"?, "drop_midi"?, "with_amp"?}`: load channel `from.channel` of rig
         `from.rig` (config/rigs/) onto the running rig's channel `channel`:
         its chain replaced by the source's, settings and bypass as that file
         has them, each plugin named for the channel
         (`channelcopy.processor_name`), and its level set to the source's;
         its input and width stay its own, and the source rig's MIDI map is
-        not copied.
+        not copied. Nor its amp, unless `"with_amp": true` (#246): then the
+        source rig's `amp:`, model and parameters, is written into a running
+        rig whose file has none, in the same write, and the switch into it is
+        a restart that brings the amp (refused as `no_amp` from a rig with
+        no amp, `has_amp` onto one with an amp already).
 
         The rig file is written first, in place with `write_rig` (comments
         kept), and the running rig is then switched to it by the live switch
@@ -7999,15 +8190,19 @@ class Agent:
 
         200 with `file`, `from`, `channel`, `how`, `why`, `names` (each base
         name and what it is called here), `followed`, `dropped`, `amp`
-        (`channelcopy.amp_note`), `width`, `kept_before`, `library`. 409
+        (`channelcopy.amp_note`), `amp_copied` (`{"from", "model",
+        "parameters"}` for a load with amp, else null), `width`,
+        `kept_before`, `library`. 409
         `not_switched` (or 504) when the file was written and the rig could
         not be made to play it, `written: true`.
 
         Not run against a live Sushi: shown against the fakes of the tests."""
+        body = await self._json_body(request)
         try:
-            source, discard, drop_midi, meant = channel_load_request(await self._json_body(request))
+            source, discard, drop_midi, meant = channel_load_request(body)
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
+        with_amp = load_with_amp(body)
         channel = request.match_info["channel"]
         name = f"{source['rig']} / {source['channel']}"
         self._refuse_while_busy()
@@ -8027,7 +8222,7 @@ class Agent:
                                     "the rig and load again", "changed")
                 try:
                     planned = await self._rigfile_thread(
-                        request, path, lambda: self._plan_load(path, source, channel, drop_midi, run))
+                        request, path, lambda: self._plan_load(path, source, channel, drop_midi, run, with_amp))
                     async with self._live_lock:
                         refusal = load_refusal(run["state"], self.log)
                         if refusal is not None and not discard:
@@ -8043,25 +8238,32 @@ class Agent:
                     raise error
                 # One Undo (#209): the file put back and the rig switched into
                 # it, as a revert's is, whatever the switch below does.
-                self._history_file(path, planned["before"], planned["after"], f"load {name}", run=run,
+                self._history_file(path, planned["before"], planned["after"],
+                                   f"load {name}{' with amp' if with_amp else ''}", run=run,
                                    apply="switch", act="load")
                 shown = self._save_shown(path)
                 answer = {
                     "ok": True, "rig": path.stem, "file": shown, "from": planned["from"], "channel": channel,
                     "written": True, "discarded": dropped_work,
                     "names": planned["names"], "followed": planned["followed"], "dropped": planned["dropped"],
-                    "amp": planned["amp"], "width": planned["width"], "kept_before": kept,
+                    "amp": planned["amp"], "amp_copied": planned["amp_copied"], "width": planned["width"],
+                    "kept_before": kept,
                     **({"provenance_note": "; ".join(planned["provenance_problems"])}
                        if planned.get("provenance_problems") else {}),
                 }
                 said = {"id": f"load:{name}", "what": f"with {name} loaded onto {channel}"}
 
                 def mark(entry: dict[str, Any]) -> None:
-                    entry["args"]["load"] = {"rig": source["rig"], "channel": source["channel"], "onto": channel}
+                    entry["args"]["load"] = {"rig": source["rig"], "channel": source["channel"], "onto": channel,
+                                             **({"with_amp": True} if with_amp else {})}
 
+                # With the amp (#246), the switch is a restart (Carla comes
+                # with the rig), and brings the amp even into a run started
+                # with --no-amp (`amp_on`).
                 answer.update(await self._revert_switch(request, path.stem, said, mark=mark,
                                                         done="written", discarded=discarded,
-                                                        command=["load", f"{name} onto {path.stem}'s {channel}"]))
+                                                        command=["load", f"{name} onto {path.stem}'s {channel}"],
+                                                        amp_on=with_amp))
                 if discarded:
                     answer["discard"] = discard_said(discarded, answer)
                 if not answer.get("ok"):
@@ -8082,9 +8284,9 @@ class Agent:
             return web.json_response(answer)
         return web.json_response(answer, status=504 if answer.get("abandoned") else 409)
 
-    def _read_source(self, rig: str, channel: str) -> tuple[Any, Path]:
+    def _read_source(self, rig: str, channel: str) -> tuple[Any, Path, Any]:
         """Channel `channel` of rig `rig` of config/rigs/, as its file is now
-        (`channelcopy.source_of`), and that file; or the refusal,
+        (`channelcopy.source_of`), that file and its document; or the refusal,
         `no_source`. The rig is looked up among config/rigs/' names, never
         made a path as given."""
         import yaml
@@ -8097,22 +8299,28 @@ class Agent:
         path = root / "config" / "rigs" / f"{rig}.yaml"
         try:
             raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-            return channelcopy.source_of(raw, rig, channel), path
+            return channelcopy.source_of(raw, rig, channel), path, raw
         except LookupError as exc:
             raise RigFileRefused(str(exc), "no_source") from exc
         except Exception as exc:  # noqa: BLE001 -- a source that will not read is said
             raise RigFileRefused(f"{path.name} could not be read: {type(exc).__name__}: {exc}", "no_source") from exc
 
     def _plan_load(self, path: Path, source_ref: dict[str, str], channel: str, drop_midi: bool,
-                   run: dict[str, Any]) -> dict[str, Any]:
+                   run: dict[str, Any], with_amp: bool = False) -> dict[str, Any]:
         """What loading `source_ref` onto `channel` writes, decided and
         compiled before anything is written, or the refusal
-        (`RigFileRefused`). Off the loop."""
+        (`RigFileRefused`). Off the loop.
+
+        `with_amp` (#246): the source rig's `amp:` too, model and parameters
+        as its file has them (`channelcopy.rig_amp`), written into a running
+        rig whose file has none (`rigedit.with_amp`). Refused, nothing
+        written, as `no_amp` when the source rig has no amp and `has_amp`
+        when the running rig's file has one."""
         import yaml
 
-        from . import channelcopy
+        from . import channelcopy, rigedit
 
-        source, source_path = self._read_source(source_ref["rig"], source_ref["channel"])
+        source, source_path, source_raw = self._read_source(source_ref["rig"], source_ref["channel"])
         name = source.name
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
@@ -8128,8 +8336,20 @@ class Agent:
         bad = channelcopy.name_problems(channel, source)
         if bad:
             raise RigFileRefused(f"nothing was written: {'; '.join(bad)}", "name")
+        copied_amp = None
+        if with_amp:
+            copied_amp = channelcopy.rig_amp(source_raw)
+            if copied_amp is None:
+                raise RigFileRefused(f"nothing was written: {source.rig} has no amp to load with {name}: "
+                                     "load it without", "no_amp")
+            if rigedit.has_amp(raw):
+                raise RigFileRefused(f"nothing was written: {path.stem} has an amp already (its file's amp:), "
+                                     f"and a load brings {source.rig}'s only onto a rig with none: load it "
+                                     "without", "has_amp")
         edited = copy.deepcopy(raw)
         edited["channels"][index] = entry
+        if copied_amp is not None:
+            edited = rigedit.with_amp(edited, copied_amp)
         midi, followed, orphaned = channelcopy.midi_after_load(raw.get("midi"), channel, old.get("chain") or [],
                                                                entry["chain"])
         dropped: list[dict[str, Any]] = []
@@ -8147,7 +8367,9 @@ class Agent:
             dropped = orphaned
         compiled = self._rigfile_compile(edited, run)
         self._rigfile_plugins(compiled, path.stem, run, f"given {name} on {channel}", "load it again")
-        rig_amp = running_amp(run["state"], raw)
+        # The amp in front of the channel once loaded: the one copied, which
+        # the switch brings, or the rig's own as it runs.
+        rig_amp = copied_amp["model"] if copied_amp is not None else running_amp(run["state"], raw)
         width = None
         if source.width != old.get("width"):
             width = (f"{name} is {source.width}; {channel} stays {old.get('width')}, as its input "
@@ -8157,6 +8379,9 @@ class Agent:
             "names": {e["name"]: n["name"] for e, n in zip(source.chain, entry["chain"])},
             "followed": followed, "dropped": dropped, "width": width,
             "amp": channelcopy.amp_note(source, channel, str(old.get("input")), rig_amp),
+            "amp_copied": ({"from": source.rig, "model": copied_amp["model"],
+                            "parameters": copy.deepcopy(copied_amp.get("parameters"))}
+                           if copied_amp is not None else None),
             "from": {"rig": source.rig, "channel": source.channel, "file": self._save_shown(source_path),
                      "plugins": len(source.chain), "git": None},  # read before the lock
             "name": name, "channel": channel,
@@ -9373,15 +9598,16 @@ def channel_load_request(body: Any) -> tuple[dict[str, str], bool, bool, str | N
     """`(source, discard, drop_midi, rig)` from a load's body, or
     `AgentError` (400): `from`, `{"rig", "channel"}`, each text (the rig is
     looked up in config/rigs/ by the route, never made a path as given);
-    `discard` and `drop_midi`, true or absent; `rig`, the rig the page
+    `discard`, `drop_midi` and `with_amp`, true or absent (`with_amp` is
+    read by `load_with_amp`); `rig`, the rig the page
     meant to load onto, text or absent (review of PR #234: a Program Change
     between the page's render and the click must not land the load on
     another rig's channel of the same name). Anything beside them is
     refused."""
-    keys = {"from", "discard", "drop_midi", "rig"}
+    keys = {"from", "discard", "drop_midi", "rig", "with_amp"}
     shape = ('the body of a load is {"from": {"rig": "<rig>", "channel": "<channel>"}}, with "rig": "<rig>" for '
-             'the rig it is meant for, "discard": true to drop unsaved work and "drop_midi": true to drop MIDI '
-             'mappings it would orphan')
+             'the rig it is meant for, "discard": true to drop unsaved work, "drop_midi": true to drop MIDI '
+             'mappings it would orphan and "with_amp": true to bring the source rig\'s amp')
     if not isinstance(body, dict) or not set(body) <= keys:
         raise AgentError(f"{shape}, not {body!r}")
     source = body.get("from")
@@ -9392,12 +9618,18 @@ def channel_load_request(body: Any) -> tuple[dict[str, str], bool, bool, str | N
     if rig is not None and not (isinstance(rig, str) and rig.strip()):
         raise AgentError(f"'rig' must name the rig the load is for, not {rig!r}")
     flags = []
-    for key in ("discard", "drop_midi"):
+    for key in ("discard", "drop_midi", "with_amp"):
         value = body.get(key, False)
         if not isinstance(value, bool):
             raise AgentError(f"{key!r} must be true or false, not {value!r}")
         flags.append(value)
     return {"rig": source["rig"], "channel": source["channel"]}, flags[0], flags[1], rig
+
+
+def load_with_amp(body: Any) -> bool:
+    """Whether a load's body asks for the source rig's amp too (`"with_amp":
+    true`, #246), once `channel_load_request` has checked its shape. Pure."""
+    return isinstance(body, dict) and body.get("with_amp") is True
 
 
 def load_refusal(state: dict[str, Any], log: list[dict[str, Any]], doing: str = "loading a channel",
