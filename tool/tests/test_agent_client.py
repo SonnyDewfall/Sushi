@@ -56,6 +56,8 @@ def test_each_command_becomes_the_route_and_body_the_cli_would_have_run():
                       "tuner": False, "amp": False, "amp_model": "M.nam"})
     assert agent_client.lifecycle_request("down", namespace(force=True)) == ("/rig/down", {"force": True})
     assert agent_client.lifecycle_request("restart", namespace()) == ("/rig/restart", {})
+    assert agent_client.lifecycle_request("restart", namespace(amp_on=True)) == ("/rig/restart", {"amp": True}), \
+        "`restart --amp` (#246): the amp back on a run started with --no-amp"
 
 
 def test_no_visualiser_tap_reaches_the_agent_as_up_takes_it_and_comes_back_as_the_flag():
@@ -136,6 +138,16 @@ def direct(monkeypatch):
 
 def nothing_listening(base, *args, **kwargs):
     raise Absent(f"nothing is listening at {base}")
+
+
+def test_restart_amp_with_no_agent_brings_the_amp_back_directly(monkeypatch):
+    """`sushi-rig restart --amp` (#246) acting directly: `rig.restart(amp=True)`."""
+    calls = []
+    monkeypatch.setattr(rig, "restart", lambda amp=False: calls.append(amp) or 0)
+    monkeypatch.setattr(agent_client, "probe", nothing_listening)
+    assert cli._main(["restart", "--amp"]) == 0
+    assert cli._main(["restart"]) == 0
+    assert calls == [True, False]
 
 
 def test_with_no_agent_running_each_command_acts_directly_and_says_so(direct, monkeypatch, capsys):

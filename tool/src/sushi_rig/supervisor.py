@@ -184,8 +184,8 @@ def parse_lifecycle(args: Sequence[str]) -> tuple[str, dict[str, Any]]:
         return "up", options
     if command == "down" and rest in ([], ["--force"]):
         return "down", {"force": rest == ["--force"]}
-    if command == "restart" and not rest:
-        return "restart", {}
+    if command == "restart" and rest in ([], ["--amp"]):
+        return "restart", {"amp": True} if rest else {}
     raise ValueError(f"not a lifecycle command: {' '.join(args)!r}")
 
 
@@ -613,7 +613,7 @@ class Supervisor:
             return await self.up(**options)
         if command == "down":
             return await self.down(**options)
-        return await self.restart()
+        return await self.restart(**options)
 
     # --------------------------------------------------------------------- up
 
@@ -916,17 +916,20 @@ class Supervisor:
         if model is not None:
             held.launch = dataclasses.replace(held.launch, amp_model=model, amp_model_requested=override)
 
-    async def restart(self) -> Outcome:
+    async def restart(self, amp: bool = False) -> Outcome:
         """`rig.restart`'s steps with the agent's own `down` and `up`, and its
         words. What to bring back is read from the state file first, as the
         CLI reads it -- a live switch (#93) rewrites the file to the rig it
         switched to -- and from the agent's record of a held rig whose file
-        is gone."""
+        is gone. `amp` (`restart --amp`, #246) brings the amp back on a run
+        started with --no-amp; the rest is as the run was asked for."""
         held = self.held
         state = read_state() or (held.record if held is not None else None)
         if not state:
             return Outcome(False, 1, "", rig_module.NOTHING_TO_RESTART)
         config_name, options = rig_module.restart_arguments(state)
+        if amp:
+            options["amp"] = True
         # Before `down`, so a rig `up` would refuse is never taken away for it.
         refusal = await asyncio.to_thread(
             self.world.restart_refusal, config_name, options, running=rig_module.restart_is_playing(state))

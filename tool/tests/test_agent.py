@@ -2569,9 +2569,12 @@ class SwitchWorld:
     """The state file, the compiled configs and what was written, for a
     switch: a dict of rig name to compiled config stands in for config/rigs."""
 
-    def __init__(self, running="electric-delay", state=None):
+    def __init__(self, running="electric-delay", state=None, amp_alive=True):
         self.state = dict(state or HEADLESS, config_name=running, config=f"/run/rigs/{running}.json",
                           rig=f"config/rigs/{running}.yaml")
+        # Whether the amp child `described` reports is alive: False is a
+        # Carla that died while the rig played on (#246).
+        self.amp_alive = amp_alive
         self.configs = {f"/run/rigs/{running}.json": switch_config(running)}
         self.written_configs: list = []
         self.written_states: list = []
@@ -2602,14 +2605,15 @@ class SwitchWorld:
     def described(self):
         return {"verdict": "running", "running": True, "config_name": self.state["config_name"],
                 "config": self.state["config"], "rig": self.state["rig"], "mode": self.state["mode"],
-                "children": {name: {"pid": pid, "alive": True} for name, pid in self.state["children"].items()},
+                "children": {name: {"pid": pid, "alive": self.amp_alive if name == "amp" else True}
+                             for name, pid in self.state["children"].items()},
                 "message": f"{self.state['config_name']} ({self.state['mode']} mode), up 2m"}
 
 
-def switch_agent(running="electric-delay", state=None, runner=None, carla=None):
+def switch_agent(running="electric-delay", state=None, runner=None, carla=None, amp_alive=True):
     from carla_fake import FakeCarla
 
-    world = SwitchWorld(running, state)
+    world = SwitchWorld(running, state, amp_alive=amp_alive)
     fake = RigLive(switch_config(running))
     runner = runner or FakeRunner()
     world.carla = carla or FakeCarla()
@@ -2707,22 +2711,81 @@ def test_a_switch_whose_carla_does_not_answer_restarts_into_the_next_rig():
     assert world.carla.sent == []
 
 
-def test_a_rig_run_with_no_amp_switches_live_to_a_rig_with_another_model_or_no_amp():
-    """`up --no-amp`, then a switch: no Carla runs and a restart would start
-    none, so a different model, or an amp on one side only, is no reason to
-    restart (review). The rig switches live and Carla is not asked."""
+def test_a_rig_run_with_no_amp_switches_to_another_rig_with_its_amp_and_live_to_one_with_none():
+    """`up --no-amp`, then a switch to another rig (#246): the no-amp request
+    is the running rig's, not the next one's. It used to be carried into
+    every switch, on the reasoning that a restart would start no amp anyway,
+    so the owner switched to a rig with an amp and heard none, with nothing on
+    the page to turn it back on. Now a next rig with an amp, of another model
+    or the same, is a restart that brings Carla (`amp_down`), with no
+    `--no-amp`; a next rig with none switches live, and the run asks for the
+    amp again from then on."""
     state = {**HEADLESS, "amp_requested": False, "children": {"sushi": 4243}}
     agent, fake, world, runner = switch_agent("electric-delay", state=state)
     other = switch_config("electric-octave-up")
     other["_amp"]["model"] = "amp/models/another.nam"
     agent.switching = replace(agent.switching, compile=lambda name, root, machine: _copy.deepcopy(other))
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
-    assert status == 200 and body["how"] == "live", body
-    assert runner.calls == [] and world.carla.asked == 0 and world.carla.sent == []
+    assert status == 200 and body["how"] == "restart", body
+    assert [r["code"] for r in body["why"]] == ["amp_down"]
+    assert "--no-amp" in body["why"][0]["detail"]
+    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless", "--machine", "/m/box.yaml"]]
+    assert world.carla.asked == 0 and world.carla.sent == []
+
+    # The same model and knobs: no amp step at all, which once switched live
+    # and left the next rig with no Carla.
+    agent, fake, world, runner = switch_agent("electric-delay", state=state)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["how"] == "restart", body
+    assert [r["code"] for r in body["why"]] == ["amp_down"]
+    assert runner.calls[1] == ["up", "electric-octave-up", "--rig", "--headless", "--machine", "/m/box.yaml"]
+
     agent, fake, world, runner = switch_agent("electric-delay", state=state)
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric_board"})
     assert status == 200 and body["how"] == "live", body
     assert runner.calls == []
+    (written,) = world.written_states
+    assert written["amp_requested"] is True, "the next rig's restart and switches bring the amp"
+
+
+def test_a_rig_with_no_amp_run_with_none_switches_to_a_rig_with_one_by_restart():
+    """`up --no-amp` of a rig that has no amp anyway, then a switch to one
+    that has: the amp comes with the restart, as from any rig with none."""
+    state = {**NO_AMP, "amp_requested": False}
+    agent, fake, world, runner = switch_agent("electric_board", state=state)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-delay"})
+    assert status == 200 and body["how"] == "restart", body
+    assert [r["code"] for r in body["why"]] == ["amp_down"]
+    assert runner.calls[1] == ["up", "electric-delay", "--rig", "--headless", "--machine", "/m/box.yaml"]
+
+
+def test_a_rig_run_with_no_amp_switched_into_the_same_rig_keeps_no_amp():
+    """A revert, a channel loaded or removed, or an Undo switches the running
+    rig into its own edited file: that keeps the run without an amp, as a
+    restart of it does (`keeps_no_amp`), so neither side's `_amp` is a step
+    or a reason, Carla is not asked, and the state file still says no amp."""
+    state = {**HEADLESS, "amp_requested": False, "children": {"sushi": 4243}}
+    agent, fake, world, runner = switch_agent("accustomed", state=state)
+    edited = switch_config("electric-chorus-2")
+    agent.switching = replace(agent.switching, compile=lambda name, root, machine: _copy.deepcopy(edited))
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "accustomed"})
+    assert status == 200 and body["how"] == "live", body
+    assert body["counts"] == {"parameter": 2}
+    assert world.carla.sent == [] and world.carla.asked == 0
+    (written,) = world.written_states
+    assert written["amp_requested"] is False
+
+
+def test_a_rig_run_with_no_amp_switched_by_restart_into_itself_keeps_no_amp():
+    """The same rule for a restart: the `up` into the same rig keeps
+    `--no-amp`, and the fallback `up` that brings a rig back is the same
+    rig's, so it keeps it too."""
+    from sushi_rig.agent import fallback_arguments, switch_steps
+
+    state = {**HEADLESS, "amp_requested": False, "children": {"sushi": 4243}}
+    assert "--no-amp" in switch_steps(state, "electric-delay")[1]
+    assert "--no-amp" not in switch_steps(state, "electric-octave-up")[1]
+    assert "--no-amp" in fallback_arguments(state)
 
 
 def test_with_an_amp_running_a_different_model_still_restarts_with_it():
@@ -2734,13 +2797,112 @@ def test_with_an_amp_running_a_different_model_still_restarts_with_it():
     assert body["how"] == "restart" and [r["code"] for r in body["why"]] == ["amp"]
 
 
-def test_a_rig_run_with_no_amp_drops_the_amp_steps_since_a_restart_would_start_none():
+def test_a_rig_run_with_no_amp_switched_to_another_rig_with_amp_steps_restarts_with_its_amp():
+    """accustomed to electric-chorus-2, which differ in the amp's levels: run
+    with no amp, those steps were dropped since a restart would start none.
+    Into another rig the amp comes back (#246), so it is a restart, and its
+    `up` has no `--no-amp`."""
     state = {**HEADLESS, "amp_requested": False, "children": {"sushi": 4243}}
     agent, fake, world, runner = switch_agent("accustomed", state=state)
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
-    assert status == 200 and body["how"] == "live", body
-    assert body["counts"] == {"parameter": 2}
+    assert status == 200 and body["how"] == "restart", body
+    assert [r["code"] for r in body["why"]] == ["amp_down"]
+    assert runner.calls == [["down"], ["up", "electric-chorus-2", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert world.carla.sent == [] and world.carla.asked == 0
+
+
+AMP_EXITED = ("amp exited during startup (status 1) — see /run/logs/amp.log; the rig is playable but "
+              "there is NO AMP in the signal path, so the guitar is running dry")
+
+
+def test_a_switch_by_restart_answers_the_warnings_up_said_and_health_keeps_them():
+    """#246, cause 2: `_switch_held` kept only `up`'s stdout, so an amp that
+    exited as it started, one not wired, a link not made, all said on stderr,
+    were lost from every switch by restart: the page's, a revert's, a channel
+    load's, an Undo's and a pedal's. They are in the answer now, and in
+    /health (`agent.warnings`) for as long as that run is up, since a pedal's
+    switch has no page to answer."""
+    runner = FakeRunner(Outcome(True, 0, "started\n", f"warning: {AMP_EXITED}\nnot a warning line\n"))
+    agent, fake, world, runner = switch_agent("electric_board", state=NO_AMP, runner=runner)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-delay"})
+    assert status == 200 and body["how"] == "restart", body
+    assert body["warnings"] == [AMP_EXITED]
+    assert body["output"] == "started\n"
+    status, health = call(agent, "GET", "/health")
+    assert health["agent"]["warnings"] == [AMP_EXITED]
+
+
+def test_a_live_switch_answers_no_new_warnings():
+    agent, fake, world, runner = switch_agent("electric-delay")
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert body["how"] == "live" and body["warnings"] == []
+
+
+def test_the_warnings_of_another_run_are_not_said_as_this_ones():
+    """Kept by the run they are of (its group and start): a rig that is
+    down, or came up since by some other way, is not given them."""
+    runner = FakeRunner(Outcome(True, 0, "", f"warning: {AMP_EXITED}\n"))
+    agent, fake, world, runner = switch_agent("electric_board", state=NO_AMP, runner=runner)
+    call(agent, "POST", "/rig/switch", json={"config_name": "electric-delay"})
+    world.state["started_at"] = "2026-11-24T10:00:00+00:00"
+    described = world.described
+
+    def later():
+        return {**described(), "started_at": world.state["started_at"]}
+
+    agent.describe = later
+    assert call(agent, "GET", "/health")[1]["agent"]["warnings"] == []
+
+
+@pytest.mark.parametrize("alive, wiring, why", [
+    (False, None, ["amp_down"]),
+    (True, {"wired": False, "problems": ["not linked: NAM:Output -> sushi:audio_input_0"]}, ["amp_unwired"]),
+])
+def test_a_switch_whose_carla_is_dead_or_unwired_restarts_and_brings_it_back(alive, wiring, why):
+    """#246, cause 4: electric-delay to electric-octave-up shares the model
+    and knobs, so the plan has no amp step and a live switch never touched
+    Carla: a dead one, or one whose links were gone, survived the switch and
+    the guitar played dry. Now it restarts into the next rig, Carla and the
+    patchbay with it."""
+    agent, fake, world, runner = switch_agent("electric-delay", amp_alive=alive)
+    world.carla.wiring = wiring
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["how"] == "restart", body
+    assert [r["code"] for r in body["why"]] == why
+    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless", "--machine", "/m/box.yaml"]]
+    assert fake.writes() == [], "Sushi was not touched live"
+    if wiring:
+        assert "NAM:Output -> sushi:audio_input_0" in body["why"][0]["detail"]
+
+
+def test_a_switch_does_not_restart_on_a_kept_unwired_look_that_is_wired_now():
+    """#246's review: a look taken just after a start, before qpwgraph made
+    the links, was kept for ten seconds, and a switch inside them restarted
+    as `amp_unwired` for nothing. A not-wired look is looked at again before
+    it is a reason: wired now, the switch is live."""
+    agent, fake, world, runner = switch_agent("electric-delay")
+    world.carla.wiring = {"wired": False, "problems": ["not linked: NAM:Output -> sushi:audio_input_0"]}
+    assert call(agent, "GET", "/amp")[1]["wiring"]["wired"] is False
+    world.carla.wiring = {"wired": True, "problems": []}
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["how"] == "live", body
+    assert world.carla.looked == 2 and runner.calls == []
+
+
+def test_a_carla_whose_links_cannot_be_looked_at_is_no_reason_to_restart():
+    agent, fake, world, runner = switch_agent("electric-delay")
+    world.carla.wiring = {"wired": None, "problems": ["the amp's links could not be looked at: pw-dump"]}
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert body["how"] == "live", body
+    assert world.carla.looked == 1
+
+
+def test_a_dead_carla_is_not_said_as_a_reason_when_the_next_rig_has_no_amp():
+    """Into a rig with no amp, the reason is the amp going (`amp`, as for
+    any rig with an amp to one without), not a Carla the next rig needs."""
+    agent, fake, world, runner = switch_agent("electric-delay", amp_alive=False)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric_board"})
+    assert body["how"] == "restart" and [r["code"] for r in body["why"]] == ["amp"], body
 
 
 def test_an_amp_knob_turned_since_is_put_where_the_next_rig_says_by_the_switch():

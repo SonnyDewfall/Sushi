@@ -548,6 +548,8 @@ class UiAmp:
                                               "parameters": {"Input Lvl": 0.0, "Output Lvl": -3.0, "Quality": 1.0}}}
         self.mode = "headless"
         self.alive = True
+        # False: the rig was started with --no-amp, so no Carla runs (#246).
+        self.requested = True
         self.held = type("Held", (), {"ready": True, "stopping": False})()
         self.restarts: list = []
         self.restart_result: AmpRestart | None = None
@@ -560,8 +562,9 @@ class UiAmp:
         return {
             "supervisor_pid": 4242, "pgid": 4242, "mode": self.mode, "config_name": rig,
             "config": f"/fake/{rig}.json", "started_at": self.lifecycle.started.isoformat(),
-            "amp_model": self.model, "amp_requested": True, "amp_model_requested": self.override,
-            "children": {"sushi": 4243, "amp": 4244},
+            "amp_model": self.model if self.requested else None, "amp_requested": self.requested,
+            "amp_model_requested": self.override,
+            "children": {"sushi": 4243, **({"amp": 4244} if self.requested else {})},
         }
 
     def switching(self) -> Switching:
@@ -573,7 +576,8 @@ class UiAmp:
     def describe(self):
         if self.lifecycle.rig is None:
             return self.lifecycle.describe()
-        return describe_up(self.lifecycle.started, self.lifecycle.rig, self.model, self.alive)()
+        return describe_up(self.lifecycle.started, self.lifecycle.rig, self.model if self.requested else None,
+                           self.alive)()
 
     async def restart_amp(self, project, values, *, model, override):
         self.restarts.append({"model": model, "override": override, "values": dict(values)})
@@ -1047,6 +1051,9 @@ class UiLifecycle:
         self.agent: Agent | None = None
         self.on_restart = None  # `UiSave.restarted`, when there is a rig file
         self.on_switch = None  # `UiSave.switched`, likewise
+        # What `up` warns of on stderr as an `up` or a restart brings a rig
+        # up (#246), one line each, as `Supervisor._start` writes them.
+        self.warnings: list[str] = []
 
     def describe(self):
         if self.rig is None:
@@ -1062,7 +1069,7 @@ class UiLifecycle:
             if self.rig is not None:
                 return Outcome(False, 1, "", f"error: a rig is already running ({self.rig}); 'sushi-rig down' first\n")
             self.rig, self.started = args[1], datetime.now(timezone.utc).replace(microsecond=0)
-            return Outcome(True, 0, f"{self.rig} up (headless mode)\n", "")
+            return Outcome(True, 0, f"{self.rig} up (headless mode)\n", self._warned())
         if args[0] == "down":
             if self.rig is None:
                 return Outcome(False, 1, "", "error: no rig is running\n")
@@ -1074,8 +1081,11 @@ class UiLifecycle:
             self.started = datetime.now(timezone.utc).replace(microsecond=0)
             if self.on_restart:
                 self.on_restart()
-            return Outcome(True, 0, f"{self.rig} restarted (headless mode)\n", "")
+            return Outcome(True, 0, f"{self.rig} restarted (headless mode)\n", self._warned())
         return Outcome(False, 2, "", f"error: the fake does not know {args[0]!r}\n")
+
+    def _warned(self) -> str:
+        return "".join(f"warning: {line}\n" for line in self.warnings)
 
     async def switch_held(self, origin, name, program, mark, discarded=None, remove_tracks=()):
         # `discarded`: the unsaved work a revert or a load drops, which the

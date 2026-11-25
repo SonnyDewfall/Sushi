@@ -215,6 +215,27 @@ the change.
 The values are what the page last sent the amp: it cannot be asked what it is
 set to.
 
+If the card says **Amp not wired**, the amp is running but the guitar is not
+going through it, so you hear it dry. Hover over the words to see which link
+is missing. Restart the rig; if it still says so, check the patchbay and the
+machine file. The same words, or **No amp** when the amp did not start, show
+at the top of the page after a start, a restart or a switch of rig. Hover over
+them for what the rig said.
+
+If the rig was started without its amp, the card says so and offers **Amp
+on**:
+
+1. Unlock the page.
+2. Click **Amp on**.
+3. The card asks **Restart?**: click **Yes**, or **No**.
+
+The whole rig restarts, so the sound cuts out for a few seconds. Switching to
+another rig also brings the amp back if that rig has one. Going back to a
+saved version, loading a channel or Undo keep the amp off.
+
+Amp on, and the **Amp not wired** check, have not yet been tried on the rig
+itself, only against a stand-in.
+
 On the stage screen, with the lock off, you get the amp's model name and
 **Output Lvl** only.
 

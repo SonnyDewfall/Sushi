@@ -168,6 +168,7 @@ async def settle_until(condition, seconds: float = 5.0) -> None:
     (None, "down"),
     ({"force": True}, "down"),
     ({}, "restart"),
+    ({"amp": True}, "restart"),
 ])
 def test_the_steps_the_agent_plans_are_read_back_as_they_were_meant(body, command):
     """`parse_lifecycle` is `lifecycle_arguments` backwards, so a route, a
@@ -187,7 +188,7 @@ def test_the_steps_the_agent_plans_are_read_back_as_they_were_meant(body, comman
     elif command == "down":
         assert options == {"force": bool((body or {}).get("force"))}
     else:
-        assert options == {}
+        assert options == ({"amp": True} if body.get("amp") else {})
 
 
 def test_a_machine_file_the_agent_carries_is_read_back_as_up_s_machine():
@@ -207,7 +208,7 @@ def test_a_machine_file_the_agent_carries_is_read_back_as_up_s_machine():
 
 @pytest.mark.parametrize("args", [
     [], ["shell"], ["up"], ["up", "--headless"], ["up", "x", "--force"], ["up", "x", "--amp-model"],
-    ["down", "--headless"], ["restart", "now"],
+    ["down", "--headless"], ["restart", "now"], ["restart", "--amp", "--amp"], ["restart", "--no-amp"],
 ])
 def test_anything_else_is_not_a_lifecycle_step(args):
     with pytest.raises(ValueError):
@@ -569,6 +570,25 @@ def test_restart_brings_back_what_was_asked_for_in_a_new_group(world):
     assert "Rig up: t (headless mode)" in outcome.stdout
     assert world.asked[0] == world.asked[1] == dict(
         config_name="t", headless=True, tuner=False, amp=False, amp_model=None, rig=False, visualiser_tap=True)
+
+
+def test_restart_with_the_amp_on_brings_the_amp_to_a_run_started_without_it(world):
+    """`restart --amp` (#246): a run started with --no-amp keeps it through a
+    plain restart; this one asks `up` for the amp, the rest as asked before."""
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False, amp=False)).ok
+        assert (await supervisor.restart()).ok
+        outcome = await supervisor.run(["restart", "--amp"])
+        await supervisor.down()
+        return outcome
+
+    outcome = run(go())
+    assert outcome.ok, outcome
+    assert [a["amp"] for a in world.asked] == [False, False, True]
+    assert world.asked[2] == dict(
+        config_name="t", headless=True, tuner=False, amp=True, amp_model=None, rig=False, visualiser_tap=True)
 
 
 def test_a_restart_whose_up_would_refuse_is_refused_before_down_and_the_rig_plays_on(world, monkeypatch, tmp_path):

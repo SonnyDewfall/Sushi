@@ -193,7 +193,10 @@ def lifecycle_request(command: str, args: Any) -> tuple[str, dict[str, Any]]:
     if command == "restart":
         # Refused by the agent when it saw changes since the last save, which
         # the restart would drop; `--discard` is saying to drop them.
-        return "/rig/restart", {"discard": True} if getattr(args, "discard", False) else {}
+        body = {"discard": True} if getattr(args, "discard", False) else {}
+        if getattr(args, "amp_on", False):
+            body["amp"] = True  # `restart --amp` (#246): the amp back on a run started with --no-amp
+        return "/rig/restart", body
     raise ValueError(f"not a lifecycle command: {command!r}")
 
 

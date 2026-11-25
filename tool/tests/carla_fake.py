@@ -37,6 +37,10 @@ class FakeCarla:
         self.asked = 0
         self.forgotten = 0
         self.fail: BaseException | None = None
+        # What `links` answers (#246): None, "cannot tell", until a test
+        # says the amp is wired or not (`amp_live.wiring_said`'s shape).
+        self.wiring: dict | None = None
+        self.looked = 0
 
     def carla(self) -> Carla:
         def answering():
@@ -51,7 +55,11 @@ class FakeCarla:
         def forget():
             self.forgotten += 1
 
-        return Carla(answering=answering, send=send, forget=forget)
+        def links():
+            self.looked += 1
+            return self.wiring
+
+        return Carla(answering=answering, send=send, forget=forget, links=links)
 
     def values(self) -> dict:
         """The last value sent for each parameter, by name."""
