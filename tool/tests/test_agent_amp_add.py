@@ -117,6 +117,37 @@ def test_a_rig_run_with_its_panel_is_offered_none_to_add(root):
     assert (status, body["add_amp"]) == (409, False), body
 
 
+def test_the_offer_reads_the_rig_file_once_until_it_changes(root, monkeypatch):
+    """#248's review: every page polls GET /amp each second, and the offer
+    parsed the rig file on every poll. Kept by the file's path, size and
+    mtime: two polls parse it once, and a write makes the next parse it
+    again (and say what it now says)."""
+    import os
+
+    parsed = []
+    real = yaml.safe_load
+
+    def counting(text, *args, **kwargs):
+        if isinstance(text, str) and "name: guitar_vocal" in text:
+            parsed.append(1)
+        return real(text, *args, **kwargs)
+
+    agent, world, _, _ = make_agent(root)  # which compiles the file: counted from here
+    monkeypatch.setattr(yaml, "safe_load", counting)
+    path = rig_file(root, "guitar_vocal")
+    assert call(agent, "GET", "/amp")[1]["add_amp"] is True
+    assert call(agent, "GET", "/amp")[1]["add_amp"] is True
+    assert len(parsed) == 1, "two polls, one parse"
+    stat = path.stat()
+    path.write_text(path.read_text().replace("\nchannels:", "\namp: {plugin: nam, model: amp/models/x.nam}\nchannels:", 1))
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert call(agent, "GET", "/amp")[1]["add_amp"] is False, "the file as written"
+    assert len(parsed) == 2, "a write is parsed again"
+    world.state["mode"] = "panel"
+    assert call(agent, "GET", "/amp")[1]["add_amp"] is False and len(parsed) == 2, \
+        "the run is asked each time; the file is not read for it"
+
+
 # --------------------------------------------------------------------------- #
 # POST /amp/add
 # --------------------------------------------------------------------------- #

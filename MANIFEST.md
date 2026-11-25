@@ -7474,3 +7474,14 @@ answers its four values (`load_with_amp` reads it), so no test's expectation
 changed. Tested against the real compiler and switch with a stand-in Sushi
 and `FakeRunner` (`test_agent_amp_add.py`), and in Chromium against the UI
 fakes. Not run against a real Carla, nor on the rig. *(2026-11-25)*
+
+**#246, PR #248's review.** Three cleanups, no bug. (1) An amp added and a
+channel removed now write through one path (`_write_removal` calls
+`_write_planned`: `write_rig` in place, then the revert point); a load keeps
+its own, for `replace_chains` and the provenance line. (2) `GET /amp` is polled
+each second, and on a rig with no amp its offer parsed the rig file every
+time: the answer is kept by the file's path, size and `st_mtime_ns`
+(`_amp_addable_seen`), and `save_refusal` is still asked each poll, since the
+run can change without the file. Tested: two polls parse once, and a write is
+parsed again. (3) Add amp's picker shares the model picker's CSS rules. Not run
+on the rig. *(2026-11-25)*

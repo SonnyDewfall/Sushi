@@ -360,15 +360,11 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .fader .value-field { font-size: 13px; text-align: right; }
 .fader.failed .note { color: var(--refused); }
 .shown { flex: 1 1 220px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 4px 10px; min-height: 48px; }
-.amp-picker { display: flex; flex-direction: column; gap: 8px; }
-.amp-picker .selector { display: flex; flex-direction: row; align-items: center; gap: 10px; }
-.amp-picker .selector .label { font-size: 13px; }
-.amp-picker select { min-height: 44px; flex: 1 1 auto; max-width: 360px; padding: 0 10px; border-radius: 10px; background: var(--ground); border: 1px solid var(--edge); }
-/* Add amp (#246): the picker of a rig whose file has no amp, laid out as the card's own. */
-.amp-add-pick { display: flex; flex-direction: column; gap: 8px; }
-.amp-add-pick .selector { display: flex; flex-direction: row; align-items: center; gap: 10px; }
-.amp-add-pick .selector .label { font-size: 13px; }
-.amp-add-pick select { min-height: 44px; flex: 1 1 auto; max-width: 360px; padding: 0 10px; border-radius: 10px; background: var(--ground); border: 1px solid var(--edge); }
+/* The card's model picker, and Add amp's (#246) for a rig whose file has no amp. */
+.amp-picker, .amp-add-pick { display: flex; flex-direction: column; gap: 8px; }
+.amp-picker .selector, .amp-add-pick .selector { display: flex; flex-direction: row; align-items: center; gap: 10px; }
+.amp-picker .selector .label, .amp-add-pick .selector .label { font-size: 13px; }
+.amp-picker select, .amp-add-pick select { min-height: 44px; flex: 1 1 auto; max-width: 360px; padding: 0 10px; border-radius: 10px; background: var(--ground); border: 1px solid var(--edge); }
 
 /* ---------------------------------------------------------------- the stage (S5) */
 

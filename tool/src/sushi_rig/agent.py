@@ -5707,6 +5707,9 @@ class Agent:
         # What the last start's `up` warned of, and the run it is of
         # (`_warned_run`): /health's `agent.warnings` while that run is up.
         self._start_warnings: tuple[tuple, list[str]] | None = None
+        # Whether the running rig's file has no `amp:` (#246, `_amp_addable`),
+        # by (its path, size and mtime): GET /amp's offer, polled each second.
+        self._amp_addable_seen: tuple[tuple, bool] | None = None
 
     def _amp_routes(self, app) -> None:
         app.router.add_get("/amp", self.amp_route)
@@ -5857,18 +5860,36 @@ class Agent:
     def _amp_addable(self, state: dict[str, Any], described: dict[str, Any]) -> bool:
         """Whether the running rig's file has no `amp:` and is one `POST
         /amp/add` would write: a rig of channels, run headless. A file that
-        will not read is not offered one. Off the loop."""
+        will not read is not offered one. Off the loop.
+
+        Every page polls GET /amp each second, so the file's answer is kept
+        by its path, size and `st_mtime_ns` (`_amp_addable_seen`), and an
+        unchanged file is not read and parsed again (#248's review). Whether
+        the run is one the agent can write (`save_refusal`, over the state
+        file and `described`) is asked each time: it changes without the
+        file changing."""
         from . import rigedit
 
         if save_refusal(state, described) is not None:
             return False
+        path = rig_file_of(state, self._midi_root())
+        try:
+            stat = path.stat()
+        except OSError:
+            return False
+        key = (str(path), stat.st_size, stat.st_mtime_ns)
+        seen = self._amp_addable_seen
+        if seen is not None and seen[0] == key:
+            return seen[1]
         try:
             import yaml
 
-            raw = yaml.safe_load(rig_file_of(state, self._midi_root()).read_text(encoding="utf-8"))
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001 -- not offered: the add would refuse it, and say why
-            return False
-        return isinstance(raw, dict) and not rigedit.has_amp(raw)
+            raw = None
+        addable = isinstance(raw, dict) and not rigedit.has_amp(raw)
+        self._amp_addable_seen = (key, addable)
+        return addable
 
     async def _amp_wiring(self, described: dict[str, Any], *, fresh: bool = False,
                           wait: bool = True) -> dict[str, Any] | None:
@@ -6136,8 +6157,10 @@ class Agent:
         """Write `planned["raw"]` over rig file `path` in place (`write_rig`,
         comments kept), and keep the file as it was for Revert… once it is
         written (`_keep_for_revert`), as a load does; the bytes before and
-        after go in `planned`, for the one Undo. Off the loop, under the live
-        lock."""
+        after go in `planned`, for the one Undo (#209). An amp added's and a
+        channel removal's (`_write_removal`) one path; a load's is its own
+        (`_write_load`: `replace_chains` and the provenance line). Off the
+        loop, under the live lock."""
         from . import saves
 
         root = self._midi_root()
@@ -8648,21 +8671,10 @@ class Agent:
 
     def _write_removal(self, path: Path, planned: dict[str, Any]) -> dict[str, Any]:
         """Write a planned removal into the rig file, then keep the file as it
-        was for Revert… (`_keep_for_revert`, as a load does); what was kept.
+        was for Revert… (`_write_planned`, as an amp added is); what was kept.
         Off the loop, under the live lock."""
-        from . import saves
-
-        root = self._midi_root()
-        before = path.read_bytes()
-        kept, _ = saves.snapshots(root, path.stem)
-        kept_as = saves.kept_as(before, kept, lambda sid: saves.snapshot_bytes(root, path.stem, sid))
-        try:
-            rigfile.write_rig(path, planned["raw"])
-        except rigfile.RigFileError as exc:
-            raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
-        planned["before"], planned["after"] = before, path.read_bytes()  # for the one Undo (#209)
-        return self._keep_for_revert(path, before, kept_as, f"before removing {planned['channel']}",
-                                     f"the removal of {planned['channel']}")
+        return self._write_planned(path, planned, f"before removing {planned['channel']}",
+                                   f"the removal of {planned['channel']}")
 
     # ======================================================================= #
     # (end of a channel removed from the running rig)
