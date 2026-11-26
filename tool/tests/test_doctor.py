@@ -660,14 +660,26 @@ GUITAR_VOCAL = frozen("guitar_vocal")  # the rig as these tests know it (rig_fix
 THIS_MACHINE = FROZEN_MACHINE
 
 
+# The rig's own `pw-dump`, which the plan names each port off as JACK does
+# (`transport.jack_port`, the one resolver, #217).
+CAPTURED_GRAPH = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
+
+
+def captured_names():
+    from sushi_rig.patchbay import jack_port_names
+
+    return jack_port_names(CAPTURED_GRAPH, "out")
+
+
 def planned_stems():
-    """guitar_vocal's take on this machine, planned as the recorder plans it."""
+    """guitar_vocal's take on this machine, planned as the recorder plans it,
+    over the rig's captured graph."""
     from sushi_rig.machine import MachineSpec
     from sushi_rig.rigfile import compile_rig, emit_compiled, load_rig
     from sushi_rig.transport import rig_stems
 
     rig = load_rig(GUITAR_VOCAL)
-    return rig_stems(rig, MachineSpec.load(THIS_MACHINE), emit_compiled(rig, *compile_rig(rig)))
+    return rig_stems(rig, MachineSpec.load(THIS_MACHINE), emit_compiled(rig, *compile_rig(rig)), captured_names())
 
 
 def planned_columns():
@@ -688,17 +700,19 @@ def jack_listing(drop=(), extra=None):
     return [JackPort(name, tuple(aliases)) for name, aliases in ports.items()]
 
 
-def test_the_recorders_ports_are_found_among_jacks_and_say_which_by_alias():
+def test_the_recorders_ports_are_found_among_jacks_by_the_names_the_plan_gives():
+    """The plan names each port as JACK does (#217), so every one is found by
+    its name: no alias is looked up."""
+    assert "Audient iD14 Multichannel:capture_AUX0" in {c.source for c in planned_columns()}
     check = doctor.record_ports_check(planned_columns(), jack_listing())
     assert check.state == OK, check.message
     assert "8 column(s)" in check.message
-    assert "Audient iD14:capture_AUX0 is Audient iD14 Multichannel:capture_AUX0" in check.message
 
 
 def test_a_dry_tap_jack_has_no_port_for_is_a_fault_naming_it_and_every_port():
     check = doctor.record_ports_check(planned_columns(), jack_listing(drop={"Audient iD14 Multichannel:capture_AUX0"}))
     assert check.state == FAULT
-    assert "no JACK port is called or aliased 'Audient iD14:capture_AUX0' (for guitar-dry.wav)" in check.message
+    assert "no JACK port is called 'Audient iD14 Multichannel:capture_AUX0' (for guitar-dry.wav)" in check.message
     assert "Audient iD14 Multichannel:capture_AUX1 (aliases:" in check.message
     assert "jack_lsp -A" in check.remedy
 
@@ -728,7 +742,11 @@ def test_doctor_fails_exactly_when_the_engine_would_refuse_the_take(graph, monke
     except capture.CaptureError:
         refused = True
     assert (doctor.record_ports_check(planned_columns(), jack.listed()).state == FAULT) is refused
-    assert refused is (graph != "the rig's")
+    # A second profile carrying the alias is no refusal at this step any more:
+    # the plan named the port as JACK does, and that port is there. Two live
+    # nodes answering to one alias are the plan's to refuse, off the graph
+    # (`transport.jack_port`, #217; test_record_session.py).
+    assert refused is (graph in ("guitar gone", "sushi gone"))
 
 
 def running_rig(tmp_path, **state):
@@ -744,10 +762,13 @@ def running_rig(tmp_path, **state):
     return recorded, {"running": True, "children": {}}
 
 
-def test_the_record_check_plans_the_running_rig_from_its_state_file(tmp_path):
+def test_the_record_check_plans_the_running_rig_from_its_state_file(tmp_path, monkeypatch):
+    from sushi_rig import transport
+
+    monkeypatch.setattr(transport, "_live_jack_names", captured_names)
     state, described = running_rig(tmp_path)
     check = doctor.record_check(ROOT, described, state, list_ports=jack_listing)
-    assert check.state == OK and "Audient iD14 Multichannel:capture_AUX0" in check.message
+    assert check.state == OK and "8 column(s)" in check.message, check.message
 
 
 @pytest.mark.parametrize("case, said", [

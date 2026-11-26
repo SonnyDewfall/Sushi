@@ -130,6 +130,39 @@ def test_a_run_no_take_can_be_planned_for_says_why_before_record(duo, tmp_path):
     assert refused["code"] == "unavailable" and refused["reason"] == answer["reason"]
 
 
+def test_a_status_refused_for_a_port_the_graph_lacks_is_planned_again_after_a_while(duo, monkeypatch):
+    """The one resolver is strict (#217): a port the live graph lacks refuses
+    the plan, and the graph changes without the run's files (Sushi registering
+    after the recorder starts, a device plugged in). A status's refusal is
+    planned again after `REPLAN_S`; a plan that was made is kept until the
+    files change, as before."""
+    from sushi_rig import recorder_process, transport
+
+    graphs = []
+
+    class Graph(dict):
+        def get(self, port, default=None):
+            return None if graphs[-1] == "no sushi" and port.startswith("sushi:") else [port]
+
+    def read():
+        return Graph()
+
+    monkeypatch.setattr(transport, "_live_jack_names", read)
+    clock = FakeClock()
+    recorder = RecorderCore(engine=Pushing, clock=clock, say=lambda m: None)
+    graphs.append("no sushi")
+    first = asked(recorder, {"op": "status", "run": duo})
+    assert first["state"] == "unavailable" and "sushi:audio_output_2 is no capture port" in first["reason"]
+    graphs.append("sushi up")
+    clock.advance(recorder_process.REPLAN_S / 2)
+    assert asked(recorder, {"op": "status", "run": duo})["state"] == "unavailable", "not every poll"
+    clock.advance(recorder_process.REPLAN_S)
+    assert asked(recorder, {"op": "status", "run": duo})["state"] == "idle"
+    graphs.append("no sushi")
+    clock.advance(recorder_process.REPLAN_S * 3)
+    assert asked(recorder, {"op": "status", "run": duo})["state"] == "idle", "a plan is kept until the files change"
+
+
 def test_without_jack_client_the_reason_says_how_to_get_it(duo):
     """Found once, at the process's start (`main`), and said by every status
     without making an engine; a start that tries says the same."""
@@ -376,6 +409,18 @@ class Engine:
         self.running.clear()
         self.thread.join()
         return None
+
+# No live graph is read here, as in conftest.py: each port is its own name to
+# JACK (`transport._live_jack_names`, the one resolver, #217).
+from sushi_rig import transport
+
+
+class AsWritten(dict):
+    def get(self, port, default=None):
+        return [port]
+
+
+transport._live_jack_names = AsWritten
 
 sys.exit(serve(sys.argv[1], RecorderCore(engine=Engine)))
 """

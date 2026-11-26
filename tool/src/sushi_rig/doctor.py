@@ -566,8 +566,8 @@ def record_ports_check(columns: list, ports: list) -> Check:
     be refused at that step. Added after the rig, on 2026-11-02, passed 11
     checks while every RECORD was refused: the machine file names the guitar
     by its PipeWire alias, and the recorder looked among JACK's names alone.
-    The message gives each port the machine file names that JACK knows by
-    another name, so the two can be compared.
+    The plan now names each port as JACK does (`transport.jack_port`, off
+    the live graph), and this checks that JACK lists each one by that name.
     """
     from .capture import match_sources
 
@@ -576,16 +576,11 @@ def record_ports_check(columns: list, ports: list) -> Check:
         return Check(
             "record-ports", FAULT,
             f"a take of the running rig would be refused: {'; '.join(problems)}",
-            "the machine file names each port by its PipeWire alias, as qpwgraph shows it; "
-            "compare it with `pw-jack jack_lsp -A`, which lists every JACK port with its "
-            "aliases, and the recorder matches either",
+            "the machine file names each port by its PipeWire alias, as qpwgraph shows it, and "
+            "the plan names it as JACK does from the live graph (pw-dump); compare them with "
+            "`pw-jack jack_lsp -A`, which lists every JACK port with its aliases",
         )
-    renamed = [f"{c.source} is {c.jack}" for c in matched if c.jack != c.source]
-    return Check(
-        "record-ports", OK,
-        f"the recorder's {len(matched)} column(s) are all JACK ports"
-        + (f" ({'; '.join(renamed)}, by alias)" if renamed else ""),
-    )
+    return Check("record-ports", OK, f"the recorder's {len(matched)} column(s) are all JACK ports")
 
 
 def record_check(root: Path, rig: dict, state: dict | None, *,

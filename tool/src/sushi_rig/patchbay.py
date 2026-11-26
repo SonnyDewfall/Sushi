@@ -689,9 +689,10 @@ def live_port_nodes(dump: str) -> dict[str, list[LivePort]]:
     A list because nothing makes an alias unique: `Audient iD14:capture_AUX0` is
     the same under every ALSA profile of the device, so two profiles live at once
     would both answer to it. The one reader of ports in the dump: everything
-    that needs a port's node or its `pw-link` name derives from this. The
-    recorder does not read the dump: it finds a take's ports among the ports
-    its own JACK client lists, by name or alias (`capture.match_sources`).
+    that needs a port's node or its `pw-link` name derives from this, and so
+    does the name a take records each port by (`jack_port_names`,
+    `transport.jack_port`), which the capture engine then finds by that name
+    among the ports its JACK client lists (`capture.match_sources`).
     """
     objects = _objects(dump)
     nodes = {o.get("id"): _props(o) for o in objects if o.get("type") == _NODE}

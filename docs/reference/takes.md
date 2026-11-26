@@ -135,16 +135,19 @@ not yet tried on a real phone, is in [the web UI](web-ui.md).
 The capture engine (#53, `tool/src/sushi_rig/capture.py`) is the part that takes
 audio from PipeWire: a JACK client with one input port per column of a take,
 each linked to the port the take names, copying every block into the recorder.
-A take names its ports as the machine file does, by PipeWire alias; at each
-RECORD the engine matches each against the JACK ports its client lists, by
-name or alias (`capture.match_sources`), so `Audient iD14:capture_AUX0` is found
-as `Audient iD14 Multichannel:capture_AUX0`. Before that match, the plan itself
-resolves each machine-file port to the name a JACK client sees, read off
-`pw-dump` (`transport.jack_port`), which is the path the rig's first take
-recorded through; the engine's own match by alias is the second line, and that
-pipewire-jack lists the PipeWire alias among a port's JACK aliases is expected
-and not yet seen on the rig (`pw-jack jack_lsp -A` would show it). A name no port carries, or more than
-one does, is refused with every port and its aliases listed, and `take.yaml`
+A machine file names a take's ports by PipeWire alias. The plan names each as
+a JACK client sees it, read off the live `pw-dump` (`transport.jack_port`), so
+`Audient iD14:capture_AUX0` is recorded as `Audient iD14
+Multichannel:capture_AUX0`, which is the path the rig's first take recorded
+through; at RECORD the engine finds each by that name among the ports its
+client lists (`capture.match_sources`). That is a take's one resolver (#217):
+a port the live graph does not have, or has under two nodes, and a graph that
+cannot be read refuse the take when it is planned, and a name JACK does not
+list refuses it at the start, with every port and its aliases listed. The
+engine no longer looks a machine-file alias up among JACK's aliases, a second
+resolver that could disagree with the first, and whose premise (that
+pipewire-jack lists the PipeWire alias, `pw-jack jack_lsp -A`) is still not
+seen on the rig. `take.yaml` names each stem by the resolved port, and
 records what was linked under `capture.engine.sources`.
 
 **It has run against a live PipeWire: the first take that captured audio was

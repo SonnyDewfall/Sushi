@@ -32,11 +32,26 @@ from sushi_rig.transport import (
     record_session,
     rig_stems,
 )
-# Bound at import, before `no_live_graph` rebinds the module's own attribute:
+# Bound at import, before conftest's `_no_test_reads_the_live_graph` rebinds the module's own attribute:
 # the one test that means to run the real reader needs the real one.
 from sushi_rig.transport import _live_jack_names as live_jack_names
 
 ROOT = checkout_root()
+class Graph(dict):
+    """A live graph's alias -> JACK names, as `patchbay.jack_port_names`
+    gives it, for the ports a test names; any other port is its own name, as
+    Sushi's are, unless `strict`, where only the ports named are there."""
+
+    def __init__(self, names, strict=False):
+        super().__init__(names)
+        self.strict = strict
+
+    def get(self, port, default=None):
+        if port in self:
+            return self[port]
+        return default if self.strict else [port]
+
+
 GUITAR_VOCAL = frozen("guitar_vocal")  # the rig as these tests know it (rig_fixtures.py)
 THIS_MACHINE = FROZEN_MACHINE
 
@@ -81,15 +96,6 @@ def stems_of(rig_path, machine) -> tuple:
 # The real `pw-dump` from the rig, the same capture test_patchbay.py asserts
 # against: the one evidence here of what a JACK client calls the rig's ports.
 CAPTURED = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
-
-
-@pytest.fixture(autouse=True)
-def no_live_graph(monkeypatch):
-    """No test here reads the live graph. A plan resolves its ports through
-    `pw-dump` (`transport._live_jack_names`), which on a machine with a rig up
-    would make every assertion below depend on what is plugged into it; the
-    tests that mean to resolve pass a map themselves."""
-    monkeypatch.setattr(transport, "_live_jack_names", lambda: {})
 
 
 def write(path: Path, text: str) -> Path:
@@ -227,17 +233,26 @@ def test_a_stereo_role_resolves_every_port_it_is_captured_from(tmp_path):
     ]
 
 
-def test_a_port_the_graph_does_not_have_is_left_for_the_engine_to_name():
-    """A plan made before Sushi has registered (the OSC listener's was, at
-    its start, until it was retired) sees no `sushi:` port. Leaving it as written is what lets the next RECORD resolve
-    it; refusing the plan here would say recording is unavailable for a rig
-    that is simply still starting, and the engine's own check names what is in
-    the graph anyway."""
-    assert jack_port("sushi:audio_output_0", {}) == ("sushi:audio_output_0", None)
-    assert jack_port("iface:capture_AUX0", {"other:port": ["x:port"]}) == ("iface:capture_AUX0", None)
-    # No map at all: every port as it was written, which is what the plan did
-    # before the graph was read.
+def test_a_port_the_graph_does_not_have_is_refused_not_passed_on():
+    """The one resolver is strict (#217). A port the live graph does not list
+    used to be passed on as written, for the engine to look for among JACK's
+    aliases: a second resolver, there for the OSC listener, which planned
+    before Sushi registered, and one the rig never showed working. The
+    recorder plans at RECORD, with the rig up, so a port the graph lacks is
+    a device gone or a machine file that names it otherwise, and is said."""
+    port, why = jack_port("iface:capture_AUX0", {"other:port": ["x:port"]})
+    assert port == "iface:capture_AUX0"
+    assert why.startswith("iface:capture_AUX0 is no capture port of the live graph")
+    assert "machine file" in why
+    assert jack_port("sushi:audio_output_0", {})[1] is not None, "Sushi's ports too"
+    # No map at all is a plan from the files alone: every port as written.
     assert jack_port("Audient iD14:capture_AUX0", None) == ("Audient iD14:capture_AUX0", None)
+
+
+def test_a_port_the_graph_does_not_have_refuses_the_whole_plan(duo, tmp_path, monkeypatch):
+    monkeypatch.setattr(transport, "_live_jack_names", lambda: Graph({"iface:capture_AUX2": []}))
+    said = no_engine(session_for(duo, tmp_path))
+    assert "iface:capture_AUX2 is no capture port of the live graph" in said
 
 
 def test_an_alias_two_live_nodes_answer_to_is_refused_not_guessed():
@@ -270,7 +285,7 @@ def test_the_live_graph_is_read_for_every_take_planned(duo, tmp_path, monkeypatc
 
     def read():
         reads.append(1)
-        return {"iface:capture_AUX0": [f"profile-{len(reads)}:capture_AUX0"]}
+        return Graph({"iface:capture_AUX0": [f"profile-{len(reads)}:capture_AUX0"]})
 
     monkeypatch.setattr(transport, "_live_jack_names", read)
     first = session_for(duo, tmp_path).plan
@@ -279,32 +294,98 @@ def test_the_live_graph_is_read_for_every_take_planned(duo, tmp_path, monkeypatc
     assert [s.port for s, _ in second.stems if s.tap == DRY][0] == "profile-2:capture_AUX0"
 
 
-def test_a_graph_that_cannot_be_read_still_plans_a_take(monkeypatch, capsys):
-    """`pw-dump` missing or hung must not be the reason RECORD does nothing:
-    the ports stay as they were written, exactly as before the graph was read,
-    and the engine says if they are not there."""
+def test_a_graph_that_cannot_be_read_refuses_the_plan_and_says_why(monkeypatch):
+    """`pw-dump` missing or hung used to leave the ports as they were
+    written, for the engine's match by alias: the second resolver (#217). A
+    take that cannot be named as JACK sees it is refused, saying what failed."""
     from sushi_rig import patchbay
 
     def no_dump(*a, **kw):
         raise patchbay.PatchbayError(["pw-dump is not installed"])
 
     monkeypatch.setattr(patchbay, "read_pw_dump", no_dump)
-    assert live_jack_names() == {}
-    said = capsys.readouterr().err
-    assert "could not read the graph" in said and "pw-dump is not installed" in said, said
+    with pytest.raises(PlanError) as refused:
+        live_jack_names()
+    assert "could not be read" in refused.value.problems[0] and "pw-dump is not installed" in refused.value.problems[0]
 
     def exploded(*a, **kw):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(patchbay, "read_pw_dump", exploded)
-    assert live_jack_names() == {}
-    assert "RuntimeError: boom" in capsys.readouterr().err
+    with pytest.raises(PlanError, match="RuntimeError: boom"):
+        live_jack_names()
 
     # And it really is the reader, not a stand-in: a graph it can read answers.
     monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **kw: CAPTURED)
     assert live_jack_names()["Audient iD14:capture_AUX0"] == [
         "Audient iD14 Multichannel:capture_AUX0"
     ]
+
+
+def test_an_unreadable_graph_is_the_takes_refusal(duo, tmp_path, monkeypatch):
+    def unread():
+        raise PlanError(["the live graph could not be read to name the take's ports as JACK sees them (x)"])
+
+    monkeypatch.setattr(transport, "_live_jack_names", unread)
+    said = no_engine(session_for(duo, tmp_path))
+    assert said.endswith("the live graph could not be read to name the take's ports as JACK sees them (x)")
+
+
+# --------------------------------------------------------------------------- #
+# Which ports a take records (#217): mono and stereo channels, and the amp
+# --------------------------------------------------------------------------- #
+
+AMPED = TWO_CHANNELS.replace("name: duo", "name: duo\namp: {plugin: nam, model: amp/models/x.nam}")
+
+# What a JACK client calls the stand-in interface: its description, where the
+# machine file's alias carries its nick, as the iD14's do on the rig.
+GRAPH = {
+    "iface:capture_AUX0": ["iface Multichannel:capture_AUX0"],
+    "iface:capture_AUX2": ["iface Multichannel:capture_AUX2"],
+    "iface:capture_AUX3": ["iface Multichannel:capture_AUX3"],
+    **{f"sushi:audio_output_{n}": [f"sushi:audio_output_{n}"] for n in range(8)},
+    # The amp's own output, which is not a take's: the guitar's dry tap is the
+    # interface's port, before the amp, and its stem is Sushi's, after it.
+    "NAM:Output": ["NAM:Output"],
+}
+
+
+@pytest.mark.parametrize("amp", [False, True], ids=["no amp", "amp"])
+def test_a_take_records_these_ports_for_a_mono_and_a_stereo_channel(tmp_path, monkeypatch, amp):
+    """Pinned whole (#217): which port each stem of a take of a rig with a
+    mono channel (on one input port, widened in Sushi) and a stereo one (on
+    two) is linked from, as JACK names it, with the amp in front of the
+    guitar and without. The amp changes none of it: a channel's stem is its
+    own track's output on Sushi, after the amp, and its dry tap the
+    interface's port, before it."""
+    rig_path = write(tmp_path / "config" / "rigs" / "duo.yaml", AMPED if amp else TWO_CHANNELS)
+    machine_path = write(tmp_path / "machines" / "box.yaml", MACHINE)
+    config = config_of(load_rig(rig_path))
+    assert ("_amp" in config) is amp
+    config_path = write(tmp_path / "run" / "duo.json", json.dumps(config))
+    monkeypatch.setattr(transport, "_live_jack_names", lambda: Graph(GRAPH, strict=True))
+    session = session_for((rig_path, config_path, machine_path), tmp_path)
+    assert isinstance(session, TakeSession), session
+    assert [(s.filename, s.port, width) for s, width in session.plan.stems] == [
+        ("guitar.wav", "sushi:audio_output_2", 2),
+        ("guitar-dry.wav", "iface Multichannel:capture_AUX0", 1),
+        ("keys.wav", "sushi:audio_output_4", 2),
+        ("keys-dry.wav", "iface Multichannel:capture_AUX2", 2),
+        ("master.wav", "sushi:audio_output_0", 2),
+    ]
+    columns = plan_columns(session.plan.stems)
+    assert [c.source for c in columns] == [
+        "sushi:audio_output_2", "sushi:audio_output_3", "iface Multichannel:capture_AUX0",
+        "sushi:audio_output_4", "sushi:audio_output_5",
+        "iface Multichannel:capture_AUX2", "iface Multichannel:capture_AUX3",
+        "sushi:audio_output_0", "sushi:audio_output_1",
+    ]
+    # The engine finds every one by that name among what JACK lists, and the
+    # amp's port is never among them.
+    listing = [capture.JackPort(name, (alias,)) for alias, (name,) in GRAPH.items()]
+    matched, problems = capture.match_sources(columns, listing)
+    assert problems == [] and [c.jack for c in matched] == [c.source for c in columns]
+    assert "NAM:Output" not in {c.source for c in columns}
 
 
 def test_a_channel_whose_input_role_is_not_in_the_machine_file_is_refused(duo, tmp_path):
@@ -578,9 +659,10 @@ def test_a_take_of_the_planned_stems_checks_clean(tmp_path, monkeypatch):
     """Real folder, real recorder, real stems, and the real capture engine,
     over guitar_vocal on this machine's file and the ports JACK listed on the
     rig: only JACK itself stands in (`jack_fake.py`, whose aliases are a
-    guess). The machine file's `Audient iD14:capture_AUX0` is not a JACK name,
-    `Audient iD14 Multichannel:capture_AUX0` is and carries it as an alias, and
-    the take must link the second for the first. The stand-in this replaced pushed blocks
+    guess) and the live graph is the rig's captured `pw-dump`. The machine
+    file's `Audient iD14:capture_AUX0` is not a JACK name, `Audient iD14
+    Multichannel:capture_AUX0` is, and the take must link the second for the
+    first: the plan names it so off the graph, the one resolver (#217). The stand-in this replaced pushed blocks
     without asking which ports, and so passed while the rig could not record
     at all (2026-11-02)."""
     np = pytest.importorskip("numpy")
@@ -593,6 +675,9 @@ def test_a_take_of_the_planned_stems_checks_clean(tmp_path, monkeypatch):
     levels = {port: (i + 1) / 40 for i, port in enumerate(JACK_PORTS)}
     jack = FakeJack(levels=levels)
     jack.install(monkeypatch)
+    from sushi_rig.patchbay import jack_port_names
+
+    monkeypatch.setattr(transport, "_live_jack_names", lambda: jack_port_names(CAPTURED, "out"))
     config = config_of(load_rig(GUITAR_VOCAL))
     config_path = write(tmp_path / "run" / "guitar_vocal.json", json.dumps(config))
     session = record_session(
@@ -608,7 +693,8 @@ def test_a_take_of_the_planned_stems_checks_clean(tmp_path, monkeypatch):
     take = load_take(folder)
     assert check_take(take) == [] and take.complete
     meta = yaml.safe_load((folder / "take.yaml").read_text())
-    assert {s["file"]: s["port"] for s in meta["stems"]}["guitar-dry.wav"] == ALIAS, "named as the machine file names it"
+    assert {s["file"]: s["port"] for s in meta["stems"]}["guitar-dry.wav"] == JACK_NAME, \
+        "named as the plan resolved it, which is as JACK names it"
     assert meta["capture"]["engine"]["sources"]["guitar-dry.wav"] == JACK_NAME, "linked as JACK names it"
     from sushi_rig.signals import read_wav
 

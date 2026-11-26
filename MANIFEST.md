@@ -7756,3 +7756,24 @@ in turn and its tests failed (five without (1), three without (2)).
 `group_members` moved from `supervisor.py` to `procs.py`. Tested with real
 processes (`test_child_signals.py`, `test_procs.py`, `test_supervisor.py`); not
 with a real Sushi, qpwgraph or Carla, nor on the rig. *(2026-11-26)*
+
+**One recording port resolver (#217).** A take's ports were found twice: the
+plan named each machine-file port as JACK sees it, off the live `pw-dump`
+(`transport.jack_port`), and passed on any it could not name; then the capture
+engine looked each up among its JACK client's ports by name *or by JACK alias*
+(`capture.match_sources`). The two could disagree (a port the plan left as
+written, found by the engine through an alias the plan never saw), and the
+engine's alias match was never seen to work on the rig (the `pw-jack jack_lsp
+-A` check is still to do); the plan's was, on 2026-11-06. With the panel's
+listener gone (it planned before Sushi registered, which is why the plan
+passed unknown ports on), the forgiving branch had no caller left. Now the
+plan is the one resolver, and strict: a port the live graph does not list, one
+it lists under two nodes, and a graph that cannot be read (`_live_jack_names`
+raises `PlanError`) refuse the plan; the engine and `doctor`'s record check
+find each named port by its JACK name alone. The recorder's status plans a
+refusal again after `REPLAN_S` (5 s) with the files unchanged, since the graph
+changes without them. Pinned: which port each stem of a take of a rig with a
+mono and a stereo channel records from, with the amp and without
+(`test_a_take_records_these_ports_for_a_mono_and_a_stereo_channel`). The
+tests stand the live graph in (conftest's `GraphAsWritten`) instead of reading
+the machine's. Not run on the rig. *(2026-11-26)*

@@ -73,6 +73,30 @@ def _the_checkouts_rigs_to_check_are_the_frozen_ones(request, monkeypatch):
     yield
 
 
+class GraphAsWritten(dict):
+    """A live graph in which every port is one JACK client sees by the name
+    it is written with: `patchbay.jack_port_names` of a graph that holds
+    whatever a plan asks for, once. What Sushi's own ports are, and what
+    every test's stand-in ports are."""
+
+    def get(self, port, default=None):
+        return [port]
+
+
+@pytest.fixture(autouse=True)
+def _no_test_reads_the_live_graph(monkeypatch):
+    """A take's plan names each port as JACK sees it, off the live `pw-dump`
+    (`transport._live_jack_names`), and refuses where it cannot (#217). No
+    test reads the machine's graph: on one with a rig up every assertion
+    would depend on what is plugged in, and on one with none every plan
+    would be refused. Each port is its own name here (`GraphAsWritten`); a
+    test of the resolver gives its own map, and the reader's own tests bind
+    it at import."""
+    from sushi_rig import transport
+
+    monkeypatch.setattr(transport, "_live_jack_names", lambda: GraphAsWritten())
+
+
 @pytest.fixture
 def real_dump() -> dict:
     """The real `--dump-plugins` output captured from Sushi 1.3.0.

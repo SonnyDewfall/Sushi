@@ -94,6 +94,10 @@ REQUEST_LIMIT = 64 * 1024
 # the writer to disk. Guesses with room in them: nothing here has run against
 # a live PipeWire, and how long a stop takes on the rig is for it to measure.
 STATUS_TIMEOUT = 3.0
+
+# How long a status's refusal stands before it is planned again with the
+# files unchanged (`Core._available`): the graph changes without them.
+REPLAN_S = 5.0
 START_TIMEOUT = 20.0
 STOP_TIMEOUT = 20.0
 
@@ -265,7 +269,7 @@ class RecorderCore:
         self._lock = threading.Lock()  # one start or stop at a time
         self._take: _Take | None = None
         self.doing: str | None = None  # "starting" or "stopping", read by a status
-        self._plan: tuple[tuple, dict[str, Any]] | None = None  # (Run.key, what a status says of it)
+        self._plan: tuple[tuple, dict[str, Any], float] | None = None  # (Run.key, what a status says, when)
 
     # ------------------------------------------------------------- requests
 
@@ -308,14 +312,20 @@ class RecorderCore:
         The ports it shows are the ones that read of the graph resolved
         (`transport.jack_port`), so a device that comes back under another
         profile is named as it was until the files change. A take is not: its
-        own plan reads the graph again at RECORD."""
+        own plan reads the graph again at RECORD. A refusal is planned again
+        after `REPLAN_S` even with the files unchanged: the resolver is strict
+        (#217), so a port missing from the graph refuses the plan, and the
+        graph changes without the files (Sushi registering after the recorder
+        starts, a device plugged in)."""
         from .transport import NoEngine, PlanError, plan_for_run
 
         if self.engine_problem:
             return {"state": "unavailable", "reason": NoEngine(self.engine_problem).message}
         key = run.key()
         planned = self._plan
-        if planned is None or planned[0] != key:
+        stale = (planned is not None and planned[1].get("state") == "unavailable"
+                 and self.clock() - planned[2] >= REPLAN_S)
+        if planned is None or planned[0] != key or stale:
             try:
                 plan = plan_for_run(
                     Path(run.rig) if run.rig else None, Path(run.config) if run.config else None,
@@ -329,7 +339,7 @@ class RecorderCore:
             except Exception as exc:  # noqa: BLE001 -- as record_session says it
                 said = {"state": "unavailable", "reason": NoEngine(
                     f"no take can be planned for this run: unexpected error: {exc}").message}
-            planned = (key, said)
+            planned = (key, said, self.clock())
             self._plan = planned  # one assignment: a status racing it sees one plan or the other
         return dict(planned[1])
 

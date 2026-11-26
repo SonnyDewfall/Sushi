@@ -5,8 +5,9 @@ documented shape, not a capture, so it proves the engine's own logic (what it
 calls, how many times, what it does when a read comes back empty) and nothing
 about JACK or PipeWire. Where the real library behaves otherwise, these pass
 and the rig run fails. The ports JACK lists have the rig's names, which are
-not the machine file's spelling; their aliases, which carry that spelling, are
-a guess until the rig shows them (`jack_fake.py`).
+not the machine file's spelling; a take's plan names each port as JACK does,
+off the live graph (`transport.jack_port`, the one resolver, #217), so the
+engine is handed JACK's names, and finds each by its name alone.
 
 Its own module because it needs numpy (the pump allocates its buffer).
 """
@@ -24,7 +25,7 @@ from sushi_rig.take import DRY, PROCESSED, Stem  # noqa: E402
 
 from jack_fake import ALIAS, JACK_NAME, JACK_PORTS, FakeJack  # noqa: E402
 
-SOURCE = ALIAS
+SOURCE = JACK_NAME  # as the plan names the guitar's dry tap
 PLAN = ((Stem("guitar", DRY, SOURCE), 1),)
 
 
@@ -162,18 +163,18 @@ def test_a_start_that_fails_early_does_not_hand_back_the_last_takes_account(monk
 
 # -- which port a column is linked from (the rig, 2026-11-02) ------------------------------
 
-def test_a_machine_file_port_is_linked_from_the_jack_port_that_carries_it_as_an_alias(monkeypatch):
+def test_each_column_is_linked_from_the_jack_port_the_plan_names(monkeypatch):
     """The rig refused every take: `no port called 'Audient iD14:capture_AUX0'
     (for board-dry.wav) is in the graph`, listing `Audient iD14
-    Multichannel:capture_AUX0` among those that were. The machine file names the
-    alias, which the patchbay needs; JACK names the port otherwise and lists the
-    alias among its aliases (a guess until the rig shows it)."""
-    assert ALIAS not in JACK_PORTS and ALIAS in JACK_PORTS[JACK_NAME], "the two spellings differ"
+    Multichannel:capture_AUX0` among those that were. The plan now names the
+    dry tap as JACK does (`transport.jack_port`), and the engine links each
+    column from the port of that name, each column holding its own port's
+    signal."""
     jack = FakeJack(levels={JACK_NAME: 0.25, "sushi:audio_output_2": 0.5, "sushi:audio_output_3": 0.75})
     jack.install(monkeypatch)
     pushed = []
     e = engine()
-    plan = ((Stem("board", PROCESSED, "sushi:audio_output_2"), 2), (Stem("board", DRY, ALIAS), 1))
+    plan = ((Stem("board", PROCESSED, "sushi:audio_output_2"), 2), (Stem("board", DRY, JACK_NAME), 1))
     e.start(plan, lambda block: pushed.append(block.copy()) or len(block))
     assert [source for source, _ in jack.connected] == ["sushi:audio_output_2", "sushi:audio_output_3", JACK_NAME]
     jack.clients[0].process(256)
@@ -184,28 +185,33 @@ def test_a_machine_file_port_is_linked_from_the_jack_port_that_carries_it_as_an_
     }
 
 
+def test_a_port_named_by_its_alias_is_not_looked_for_among_the_aliases(monkeypatch):
+    """The second resolver is gone (#217): the engine used to find a
+    machine-file alias among JACK's aliases, which could disagree with the
+    plan's and was never seen to work on the rig. A port the plan did not
+    name as JACK does is refused, with the port that carries the alias in the
+    listing, so it can be read off."""
+    assert ALIAS not in JACK_PORTS and ALIAS in JACK_PORTS[JACK_NAME], "the two spellings differ"
+    jack = FakeJack()
+    jack.install(monkeypatch)
+    with pytest.raises(capture.CaptureError) as caught:
+        engine().start(((Stem("board", DRY, ALIAS), 1),), lambda block: 0)
+    said = caught.value.problems
+    assert said[0] == f"no JACK port is called {ALIAS!r} (for board-dry.wav)"
+    assert f"{JACK_NAME} (aliases: alsa:acp:iD14:2:capture:capture_0, {ALIAS})" in said[-1]
+    assert jack.connected == [] and jack.clients[0].closed
+
+
 def test_a_port_jack_does_not_have_is_refused_before_any_port_is_made_with_every_port_listed(monkeypatch):
     jack = FakeJack()
     jack.install(monkeypatch)
     with pytest.raises(capture.CaptureError) as caught:
         engine().start(((Stem("guitar", DRY, "Audient iD14:capture_AUX42"), 1),), lambda block: 0)
     said = caught.value.problems
-    assert said[0] == "no JACK port is called or aliased 'Audient iD14:capture_AUX42' (for guitar-dry.wav)"
+    assert said[0] == "no JACK port is called 'Audient iD14:capture_AUX42' (for guitar-dry.wav)"
     assert f"{JACK_NAME} (aliases: alsa:acp:iD14:2:capture:capture_0, {ALIAS})" in said[-1]
     assert all(name in said[-1] for name in JACK_PORTS), "every port JACK lists, with its aliases"
     assert jack.clients[0].inports == [] and jack.clients[0].closed
-
-
-def test_an_alias_two_ports_carry_is_refused_naming_both(monkeypatch):
-    """Two profiles of one interface live at once would both carry
-    `Audient iD14:capture_AUX0`: which to record is not guessed."""
-    ports = {**JACK_PORTS, "Audient iD14 Pro:capture_AUX0": ("alsa:acp:iD14:1:capture:capture_0", ALIAS)}
-    FakeJack(ports=ports).install(monkeypatch)
-    with pytest.raises(capture.CaptureError) as caught:
-        engine().start(PLAN, lambda block: 0)
-    first = caught.value.problems[0]
-    assert first.startswith(f"{ALIAS!r} (for guitar-dry.wav) names more than one JACK port: ")
-    assert JACK_NAME in first and "Audient iD14 Pro:capture_AUX0" in first
 
 
 def test_a_port_named_as_jack_names_it_is_found_too(monkeypatch):

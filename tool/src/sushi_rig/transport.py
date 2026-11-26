@@ -59,9 +59,9 @@ The plan names those ports as the machine file does, by PipeWire alias
 client links from: through `pw-jack` the same port is `Audient iD14
 Multichannel:capture_AUX0`, and an engine that looked the alias up among JACK's
 names alone refused every take on the rig (2026-11-02, the MANIFEST). The
-engine finds each port at each RECORD among the ports its client lists, by name
-or by JACK alias (`capture.match_sources`), because JACK is only there to ask
-at RECORD.
+plan names each port as a JACK client sees it, off the live graph
+(`jack_port`, below), and the engine finds each by that name among the ports
+its client lists at RECORD (`capture.match_sources`).
 
 Channels that play from one input (a blend of two chains on one guitar) share
 one dry tap, recorded once and named for the role, `guitar-in-dry.wav`: it is
@@ -82,8 +82,10 @@ profile of the device shares. For Sushi they are all `sushi`.
 
 So the plan resolves every port through `jack_port` before it checks anything,
 with the map `patchbay.jack_port_names` reads off a live `pw-dump`
-(`_live_jack_names`). `take.yaml` then records the name the column was really
-linked from, and the record bar's stem list shows it.
+(`_live_jack_names`): the one resolver of a take's ports (#217), and a strict
+one. A port the graph does not have, or has under two nodes, and a graph that
+cannot be read, refuse the plan. `take.yaml` then records the name the column
+was really linked from, and the record bar's stem list shows it.
 
 This is the defect the record button's first live run found, on 2026-11-06: the
 machine file's alias is no port to the engine, so `capture.missing_sources`
@@ -432,6 +434,7 @@ class PlanError(Exception):
 
 def jack_port(port: str, jack_names: Mapping[str, Sequence[str]] | None) -> tuple[str, str | None]:
     """The name a JACK client connects `port` by, and why that cannot be said.
+    A take's one resolver of its ports (#217).
 
     `jack_names` is `patchbay.jack_port_names(dump, "out")`: port alias -> the
     name(s) a JACK client sees it under. A machine file names a port by its
@@ -445,20 +448,24 @@ def jack_port(port: str, jack_names: Mapping[str, Sequence[str]] | None) -> tupl
     Sushi's own ports come back unchanged, since its description, nick and
     `node.name` are all `sushi`.
 
-    Pure, and forgiving by design. A port that is not in `jack_names` is
-    returned as it came, with no problem: either it is not in the graph, and
-    the engine's own `capture.missing_sources` says so in a sentence naming
-    what *is* there, or the graph was read before the client registered --
-    which was the normal case for Sushi while the OSC listener planned its
-    takes before Sushi started.
-    Only ambiguity is refused here, because only it cannot be left to the
-    engine: two names means two live nodes answering to one alias (two
-    profiles of a device, or two of the same interface), and linking a take's
-    column from either would be a guess at which socket the player meant.
+    Strict, and pure. A port the graph lists under one name is that name. One
+    it lists under two (two live nodes answering to one alias: two profiles of
+    a device, or two of the same interface) is refused, since linking a take's
+    column from either would be a guess at which socket the player meant. One
+    it does not list at all is refused too: the device is gone, or the machine
+    file names it otherwise than qpwgraph does. It used to be passed on as
+    written, for the capture engine to look for among JACK's aliases at the
+    start; that was a second resolver, needed while the OSC listener planned
+    its takes before Sushi had registered, which could disagree with this one
+    and was never seen to work on the rig. The recorder plans each take at
+    RECORD, with the rig up, so there is nothing left for it to do.
+
+    `jack_names` None is no graph at all, for a plan made from the files alone
+    (the tests of what a plan holds): every port as written.
     """
     if jack_names is None:
         return port, None
-    names = list(jack_names.get(port) or [])
+    names = list(dict.fromkeys(jack_names.get(port) or []))
     if len(names) == 1:
         return names[0], None
     if names:
@@ -468,7 +475,11 @@ def jack_port(port: str, jack_names: Mapping[str, Sequence[str]] | None) -> tupl
             f"the alias names the socket and not the profile, so leave one profile "
             f"of the device live, or name the node in the machine file"
         )
-    return port, None
+    return port, (
+        f"{port} is no capture port of the live graph: no node has a port called or aliased "
+        f"{port}, so a take cannot be linked from it; is the device connected, and does the "
+        f"machine file name the port as qpwgraph shows it?"
+    )
 
 
 def _consecutive(ports: Sequence[str]) -> str | None:
@@ -507,8 +518,8 @@ def rig_stems(rig: Any, machine: Any, config: dict[str, Any],
     it by (`jack_port`), before the checks below, so that each one -- the
     consecutive numbering, two stems on one port -- is made on the names that
     will actually be linked and not on the aliases they were written as.
-    Without it the ports stay as the machine file and the config name them,
-    which is what every test of this plan asserts.
+    With None the ports stay as the machine file and the config name them, a
+    plan from the files alone; `plan_for_run` always gives the live graph's.
 
     Channels that share an input role (a blend of two chains on one guitar)
     share one dry tap, recorded once and named for the role, since it is one
@@ -623,33 +634,27 @@ def _capture_engine(sample_rate: int, quantum: int) -> Engine:
 
 def _live_jack_names() -> dict[str, list[str]]:
     """Port alias -> the name a JACK client sees it under, for every live
-    capture port; `{}` when the graph cannot be read.
+    capture port, read off `pw-dump`; `PlanError` when the graph cannot be
+    read.
 
-    Empty on failure rather than raising, because a plan is worth making
-    either way: with no map every port stays as it was written, which is what
-    the engine was given before this existed, and its own check still names
-    what is in the graph. A `pw-dump` that is missing or hung must not be the
-    reason RECORD does nothing.
+    Refused rather than planned with no map, since #217: with no map the
+    ports stayed as the machine file writes them, and only the capture
+    engine's match by JACK alias could still have found them, a second
+    resolver the rig never showed working. A take that cannot be named as
+    JACK sees it is not started.
 
     Capture ports only (`"out"`, the direction from the node's side): every
     source a take records is something that produces audio, and the filter is
     what keeps `Audient iD14:playback_FL` from answering for a dry tap.
     """
-    import sys
-
     from .patchbay import PatchbayError, jack_port_names, read_pw_dump
 
     try:
         return jack_port_names(read_pw_dump(), "out")
-    except Exception as exc:  # noqa: BLE001 — a plan is made with no map; see above
-        # Said, not swallowed: without the map a take falls back to the
-        # engine's alias match, which the rig has not yet shown to work, and
-        # a refusal then would otherwise give no hint that this step failed.
+    except Exception as exc:  # noqa: BLE001 -- said as the plan's refusal
         kind = "" if isinstance(exc, PatchbayError) else f"{type(exc).__name__}: "
-        print(f"sushi-rig: could not read the graph to name ports as JACK sees them "
-              f"({kind}{exc}); the take's ports stay as the machine file writes them",
-              file=sys.stderr, flush=True)
-        return {}
+        raise PlanError([f"the live graph could not be read to name the take's ports as JACK sees them "
+                         f"({kind}{exc})"]) from exc
 
 
 def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
