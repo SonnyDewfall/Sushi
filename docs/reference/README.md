@@ -15,6 +15,7 @@ The detail, for looking things up. To play the rig, start with the
 | [Takes](takes.md) | what a take's folder holds, `take check` and `take repair`, and the capture engine |
 | [Plugins and portability](plugins.md) | `plugins/`, the manifest, `LV2_PATH`, choosing a plugin with `probe`, a known plugin fault |
 | [Environment](environment.md) | what the machine needs, setting up from scratch, `doctor` and the other preflight checks |
+| [Dependencies](dependencies.md) | every outside project the rig runs on or is built with: the version used, where it is pinned, how to check upstream for a newer one, and the faults worked around |
 | [Tests and CI](testing.md) | running the suites, the rule about `config/rigs/` and the frozen fixtures, the two workflows |
 | [The v1 workflow](v1-workflow.md) | retired: the v1 configs and the Open Stage Control panel, and what each part, and each of the panel's jobs, is now |
 | [Repository layout](repository-layout.md) | what each folder is for |

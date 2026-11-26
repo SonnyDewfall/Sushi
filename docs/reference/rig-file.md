@@ -35,7 +35,11 @@ midi: ...                       # optional: see the MIDI page
 
 A chain entry carries its settings (`bypassed`, `program`, `parameters`,
 `properties`), a channel may carry a `strip` (gain, pan, mute), and the rig its
-`amp`. A channel's name becomes its track's, its stem's file name in a take and
+`amp`. `meta:` is provenance (`status`, `source`), carried into the compiled
+config's `_meta` and never into the sound. A rig has no version number (#143,
+dropped 2026-11-26: a rig is its name, and git is its history): a
+`meta.version` in an older file is ignored, without a message, and the next
+Save or Save as writes the file without it. A channel's name becomes its track's, its stem's file name in a take and
 its send's prefix, so it follows the naming rule takes and rigs share
 (lowercase letters, digits, `-` and `_`); `master`, `master_return` and
 `<channel>_send` belong to the compiler, and so does `master_limiter` (#137). The roles are the

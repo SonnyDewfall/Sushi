@@ -32,7 +32,7 @@ that fails that is left out of the tests over every pair of rigs, which ask
 only what holds of any two. A test that needs a rig it knows (one channel
 called `board`, two rigs that differ only in the amp's levels) reads the
 frozen set in `tests/fixtures/`: `rigs/`, the eleven rigs as they were at
-c494625, with the v1 configs and sources they were converted from (`v1/`) and
+c494625 (less the `version:` line the format dropped, #143), with the v1 configs and sources they were converted from (`v1/`) and
 the machine file they are wired against (`machines/`). They are test data,
 pinned by checksum, and do not follow `config/` or `machines/`. The
 conversions of #30 are held to their v1 configs there, and as `convert`

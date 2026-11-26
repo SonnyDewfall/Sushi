@@ -22,7 +22,6 @@ name: string-machine
 description: Electric guitar as a string machine — an ensemble and a hall on the guitar and on an octave
   up beside it
 meta:
-  version: '1.0'
   status: draft
 host:
   samplerate: 48000

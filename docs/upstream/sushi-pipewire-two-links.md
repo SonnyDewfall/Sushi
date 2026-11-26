@@ -1,31 +1,49 @@
-# Draft: report to Elk on Sushi 1.3.0 under PipeWire, an input fed by two links
+# Draft: report to Elk on Sushi under PipeWire, an input fed by two links
 
 **Status: draft, not posted.** Written 2026-11-24 for #143, from the rig's
-measurement of 31 Oct 2026 (#81, #106). For
+measurement of 31 Oct 2026 (#81, #106), and checked against Sushi's source on
+2026-11-26. For
 [elk-audio/sushi's issues](https://github.com/elk-audio/sushi/issues). When it
 is posted, put its link in MANIFEST's entry for this draft and in #143.
 
-Before posting, check two things this draft could not (the session that wrote
-it had neither Sushi's source nor PipeWire):
+What was checked before posting, by the session that closed #143 out, on
+2026-11-26:
 
-- that line 345 of `src/audio_frontends/jack_frontend.cpp` at the 1.3.0 tag
-  (commit `08f24e9cd47ce2f95c827db19350593b023cebe9`) is the
-  `jack_port_get_buffer` call quoted below. The line and the call are as read
-  and recorded in #81 on 2026-10-31; they were not read again for this draft;
-- whether a newer Sushi than 1.3.0 has changed it, in which case say so in
-  the report, or do not post it.
+- **The source line.** Read from shallow clones of the `1.3.0` tag (commit
+  `08f24e9cd47ce2f95c827db19350593b023cebe9`, the commit the release
+  AppImage's `--version` prints) and the `1.4.0` tag (commit
+  `c6ddde6b6b6c06229118432c8c7f7a7c61a61408`, dated 2026-10-12). The call
+  quoted by the first draft, `jack_port_get_buffer(port, AUDIO_CHUNK_SIZE)`,
+  was not the line: line 345 of `src/audio_frontends/jack_frontend.cpp` is
+  `jack_port_get_buffer(_input_ports[i], framecount)` plus `start_frame`,
+  inside `process_audio(start_frame, framecount, ...)`, which
+  `internal_process_callback` calls once per 64-frame chunk with
+  `AUDIO_CHUNK_SIZE` as its `framecount` (lines 295 to 300). The effect is
+  what the draft said, 64 frames asked for once per chunk; the report now
+  quotes the real line and its caller.
+- **A newer Sushi.** 1.4.0 is the newest tag. Its `jack_frontend.cpp` differs
+  from 1.3.0's in one line, 273, where the chunk-size check reads
+  `AUDIO_CHUNK_SIZE` instead of the literal 64 (its HISTORY.md: "Allow
+  buffersizes < 64 in JackFrontend"). Lines 295 to 300 and 345 are the same,
+  so the fault is still there in 1.4.0 as read. 1.4.0 has not been run.
+- **An existing report.** None. elk-audio/sushi's issues (seven in all, one
+  open) return nothing for "jack_port_get_buffer", "pipewire", "pw-jack",
+  "jack input zeros" or "chunk jack".
+- **Not checked:** `pipewire-jack`'s source, for how it mixes two
+  connections (the report says so), and JACK2 (likewise).
 
 Everything below the line is the report.
 
 ---
 
-## JACK frontend: an input port fed by two connections carries only the first 64 frames of each period (PipeWire)
+## JACK frontend: an input port fed by two connections carries only the first 64 frames of each period (PipeWire; 1.3.0 and 1.4.0)
 
 ### Versions
 
 | | |
 |---|---|
 | Sushi | 1.3.0, the release AppImage (`sushi-linux-x86_64_1_3_0.zip`), extracted. `--version`: `Build options enabled: vst3, lv2, jack, rpc control, ableton link`, `Audio buffer size in frames: 64`, `Git commit: 08f24e9cd47ce2f95c827db19350593b023cebe9` |
+| Sushi 1.4.0 | Not run. Read at the `1.4.0` tag (commit `c6ddde6b6b6c06229118432c8c7f7a7c61a61408`, 2026-10-12): the lines below are unchanged, so we expect the same. The one change to `jack_frontend.cpp` since 1.3.0 is line 273's chunk-size check (`AUDIO_CHUNK_SIZE` for the literal 64, "Allow buffersizes < 64 in JackFrontend") |
 | Frontend | JACK (`sushi -j -c config.json`), run under `pw-jack` |
 | PipeWire | 1.6.2 (compiled and linked against 1.6.2), `pipewire-jack 1.6.2-1ubuntu1.2` |
 | OS | Ubuntu 26.04.1 LTS, kernel 7.0.0-42-generic, x86_64 (Intel i7-1260P) |
@@ -114,24 +132,47 @@ Two controls put it in Sushi rather than in PipeWire:
 
 ### Where it seems to come from
 
-`src/audio_frontends/jack_frontend.cpp`, line 345 at 1.3.0: `process_audio`
-fetches each input's buffer once per 64-frame chunk, with the chunk's size,
+`src/audio_frontends/jack_frontend.cpp`, at 1.3.0 and unchanged at 1.4.0.
+The process callback cuts the period into 64-frame chunks and calls
+`process_audio` once per chunk, passing the chunk's size as its frame count
+(`internal_process_callback`, lines 295 to 300):
 
 ```cpp
-jack_port_get_buffer(port, AUDIO_CHUNK_SIZE)
+    /* Process in chunks of AUDIO_CHUNK_SIZE */
+    for (jack_nframes_t frame = 0; frame < framecount; frame += AUDIO_CHUNK_SIZE)
+    {
+        Time delta_time = std::chrono::microseconds((frame * 1'000'000) / _int_sample_rate);
+        process_audio(frame, AUDIO_CHUNK_SIZE, start_time + delta_time, current_frames + frame - _start_frame);
+    }
 ```
 
-rather than once per callback with the callback's frame count. The JACK API
-asks for the latter: `jack_port_get_buffer`'s `nframes` is the number of frames
-passed to the process callback. Our reading, which we have not checked in
-`pipewire-jack`'s source: with one connection, `pipewire-jack` can hand back
-the connected port's own buffer, and the size does not matter; with two, it
-mixes the connections into a buffer of the frames asked for, 64, and the
-rest of the period stays zero. JACK2 may behave differently, which would
-explain why this has not been seen there. We have not tried JACK2.
+and `process_audio(jack_nframes_t start_frame, jack_nframes_t framecount, ...)`
+gets each input port's buffer with that frame count and reads the chunk at
+`start_frame` into it (line 345):
 
-A fix would be to call `jack_port_get_buffer(port, nframes)` once per port at
-the top of the callback and step through that buffer chunk by chunk.
+```cpp
+        float* in_data = static_cast<float*>(jack_port_get_buffer(_input_ports[i], framecount)) + start_frame;
+```
+
+So at a period of 256 each input's buffer is asked for four times, each time
+for 64 frames, and read at offsets 0, 64, 128 and 192. The JACK API asks for
+the callback's frame count: `jack_port_get_buffer`'s `nframes` is the number
+of frames passed to the process callback. Our reading, which we have not
+checked in `pipewire-jack`'s source: with one connection, `pipewire-jack` can
+hand back the connected port's own buffer, and the size asked for does not
+matter; with two, it mixes the connections into a buffer of the frames asked
+for, 64, and the rest of the period stays zero, which is what the offsets 64
+to 255 read. JACK2 may behave differently, which would explain why this has
+not been seen there. We have not tried JACK2.
+
+The CV inputs (line 350) and the outputs (line 367) get their buffers the same
+way. We saw nothing wrong on an output: the singly fed input came back whole
+through one at every period.
+
+A fix would be to get each port's buffer once per callback, at the top of
+`internal_process_callback`, with the callback's `framecount`, and step
+through it chunk by chunk (passing the pointers, or the offset into them, to
+`process_audio`).
 
 ### What we do meanwhile
 

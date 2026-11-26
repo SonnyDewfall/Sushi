@@ -99,6 +99,7 @@ For looking things up.
 | [Takes](docs/reference/takes.md) | What a recording is on disk |
 | [Plugins and portability](docs/reference/plugins.md) | `plugins/`, the manifest, choosing a plugin |
 | [Environment](docs/reference/environment.md) | Setting up a machine, and `doctor` |
+| [Dependencies](docs/reference/dependencies.md) | What the rig runs on, the versions, and how to check for newer ones |
 | [Tests and CI](docs/reference/testing.md) | Running the suites; the rule about `config/rigs/` |
 | [The v1 workflow](docs/reference/v1-workflow.md) | The retired v1 configs and Open Stage Control panel: what each part, and each of the panel's jobs, is now |
 | [Repository layout](docs/reference/repository-layout.md) | What each folder is for |

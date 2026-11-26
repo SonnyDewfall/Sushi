@@ -31,7 +31,7 @@ import threading
 import sys
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Callable
 
 from . import stereo
 from .spec import PROBE_TRACK
@@ -63,7 +63,120 @@ def _controller(address: str):
             "elkpy not found. Install it into the tool's venv: "
             "pip install elkpy (see docs/reference/environment.md)"
         ) from None
-    return sc.SushiController(address)
+    # Asked for by name: elkpy 1.3.0 subscribes to Sushi's notices of async
+    # commands by default, 1.4.0 (what pip gives Python 3.12, the rig
+    # container's) does not, and without the subscription no strict command
+    # is ever confirmed by its notice (#241).
+    controller = sc.SushiController(address, auto_update_async_command_responses=True)
+    # Before any command is sent on it, so no response is registered yet.
+    controller.command_responses = Confirmations()
+    return controller
+
+
+# --------------------------------------------------------------------------- #
+# A command's confirmation (#241)
+# --------------------------------------------------------------------------- #
+#
+# How elkpy 1.3.0 confirms an async command, read from its installed source
+# (sushicontroller.py, notificationcontroller.py): the command's RPC returns
+# ASYNC_RESPONSE with an id, and only then, on the caller's thread,
+# `validate_command_response` registers a SushiCommandResponse under that id
+# in `controller.command_responses`. Sushi's notice that the command was
+# carried out comes on another stream, SubscribeToAsyncCommandUpdates, which
+# elkpy's notification thread opens on a channel of its own when the
+# connection is made, and matches by `command_responses.get(request_id)`. A
+# notice is lost, and the command never confirmed, two ways:
+#
+# 1. It came before the response was registered: Sushi carried the command
+#    out before its RPC's answer had been read on the caller's thread. elkpy
+#    finds nothing under the id and drops it. At any time on any connection.
+# 2. It came before the subscription was up: Sushi sends a notice to the
+#    subscribers it has, and the thread's channel was still connecting. Only
+#    on a new connection, so nearly always its first command. Nothing the
+#    client does recovers that notice, and nothing elkpy exposes says when
+#    the stream is up (waiting for the command channel to be ready does not:
+#    it is already up, since elkpy's constructor made an RPC on it).
+#
+# `Confirmations` closes the first: a notice that comes first is kept, and
+# confirms its command when the command is registered. The second is closed
+# by reading the change back (`_wait`'s `applied`): a strict change that has
+# no notice yet is looked for in Sushi itself, so a change that was made is
+# confirmed by what Sushi holds, and one that is not there by the deadline is
+# reported as not applied. Inferred from the source and from the probe's
+# counts (tool/spikes/live_remove_track/): not yet run against a real Sushi.
+
+# How many notices with no command registered a connection keeps. Every
+# subscriber is sent every client's notices, so most of them are someone
+# else's; the newest are kept, since a command's own notice comes within
+# moments of its answer.
+EARLY_NOTICES_KEPT = 256
+
+
+class _EarlyNotice:
+    """A notice that came before its command was registered: what elkpy's
+    notification thread sets in place of a SushiCommandResponse (`error`,
+    then `set()`), passed on to the response once it is registered."""
+
+    def __init__(self, lock: threading.Lock):
+        self._lock = lock
+        self.error = False
+        self.done = False
+        self.response: Any = None
+
+    def set(self) -> None:
+        with self._lock:
+            self.done = True
+            response = self.response
+        if response is not None:
+            _confirm(response, self.error)
+
+
+def _confirm(response: Any, error: bool) -> None:
+    if error:
+        response.error = True
+    response.set()
+
+
+class Confirmations(dict):
+    """`SushiController.command_responses` that does not lose a notice which
+    comes before its command is registered (see above). elkpy's own use of
+    it is all there is: the caller's thread stores a response under its id,
+    the notification thread `get`s an id, sets what it got, and `pop`s the
+    id. Anything else is a plain dict's."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._early: dict[int, _EarlyNotice] = {}
+
+    def get(self, key, default=None):
+        with self._lock:
+            if dict.__contains__(self, key):
+                return dict.get(self, key)
+            notice = self._early.get(key)
+            if notice is None:
+                notice = self._early[key] = _EarlyNotice(self._lock)
+                while len(self._early) > EARLY_NOTICES_KEPT:
+                    del self._early[next(iter(self._early))]
+            return notice
+
+    def pop(self, key, *default):
+        with self._lock:
+            # elkpy pops with no default after each notice it matched,
+            # including one matched to a kept notice, which is not here.
+            return dict.pop(self, key, *(default or (None,)))
+
+    def __setitem__(self, key, response) -> None:
+        with self._lock:
+            notice = self._early.pop(key, None)
+            if notice is None:
+                dict.__setitem__(self, key, response)
+                return
+            if not notice.done:
+                # The notification thread has it and is about to set it.
+                notice.response = response
+                return
+        _confirm(response, notice.error)
 
 
 def close_controller(controller) -> None:
@@ -408,7 +521,8 @@ def set_live_parameter(
     with _connection(address, controller) as c:
         proc_id = c.audio_graph.get_processor_id(processor)
         param_id = c.parameters.get_parameter_id(proc_id, parameter)
-        _wait(c.parameters.set_parameter_value(proc_id, param_id, float(value)), strict=True)
+        _wait(c.parameters.set_parameter_value(proc_id, param_id, float(value)), strict=True,
+              applied=lambda: _holds_value(c, proc_id, param_id, float(value)))
 
 
 def set_live_bypass(
@@ -424,7 +538,8 @@ def set_live_bypass(
     """
     with _connection(address, controller) as c:
         proc_id = c.audio_graph.get_processor_id(processor)
-        _wait(c.audio_graph.set_processor_bypass_state(proc_id, bool(bypassed)), strict=True)
+        _wait(c.audio_graph.set_processor_bypass_state(proc_id, bool(bypassed)), strict=True,
+              applied=lambda: bool(c.audio_graph.get_processor_bypass_state(proc_id)) == bool(bypassed))
 
 
 # --------------------------------------------------------------------------- #
@@ -468,7 +583,8 @@ def connect_live_cc(mapping: dict[str, Any], address: str = DEFAULT_GRPC_ADDRESS
         _wait(c.midi_controller.connect_cc_to_parameter(
             proc_id, param_id, midi_channel(mapping.get("channel")), int(mapping.get("port", 0)),
             int(mapping["cc_number"]), float(mapping["min_range"]), float(mapping["max_range"]),
-            mapping.get("mode") == "relative"), strict=True)
+            mapping.get("mode") == "relative"), strict=True,
+            applied=lambda: _holds_cc(c, proc_id, param_id, mapping))
 
 
 def disconnect_live_cc(mapping: dict[str, Any], address: str = DEFAULT_GRPC_ADDRESS,
@@ -481,7 +597,8 @@ def disconnect_live_cc(mapping: dict[str, Any], address: str = DEFAULT_GRPC_ADDR
         _wait(c.midi_controller.disconnect_cc(
             proc_id, param_id, midi_channel(mapping.get("channel")), int(mapping.get("port", 0)),
             int(mapping["cc_number"]), float(mapping["min_range"]), float(mapping["max_range"]),
-            mapping.get("mode") == "relative"), strict=True)
+            mapping.get("mode") == "relative"), strict=True,
+            applied=lambda: _negate(_holds_cc(c, proc_id, param_id, mapping)))
 
 
 def read_live_cc(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> list[dict[str, Any]]:
@@ -745,8 +862,10 @@ def send_live_move(
         response = c.audio_graph.move_processor_on_track(
             processor_id, track_id, track_id, before_id, add_to_back,
         )
-        # Strict: "moved" is said only of a move Sushi confirmed.
-        _wait(response, strict=True)
+        # Strict: "moved" is said only of a move Sushi confirmed, by its
+        # notice or by the chain read back.
+        _wait(response, strict=True,
+              applied=lambda: _moved(c, processor_id, track_id, before_id, add_to_back))
 
     with _connection(address, controller) as c:
         send(c, move.command)
@@ -790,7 +909,8 @@ def move_live_processor(
 
 
 def _wait(
-    response: Any, timeout: float | None = None, interval: float = 0.02, strict: bool = False
+    response: Any, timeout: float | None = None, interval: float = 0.02, strict: bool = False,
+    applied: Callable[[], bool | None] | None = None,
 ) -> None:
     """Poll a SushiCommandResponse until Sushi confirms the command.
 
@@ -800,7 +920,16 @@ def _wait(
     `LiveError` instead: the live setters and `move_live_processor` use it, because
     their callers report the change as made.
 
-    Not `.wait()` — see the module docstring. `is_set()` is a plain attribute
+    `applied` reads the change back from Sushi: True if Sushi holds it, False
+    if it does not, None if the reading cannot tell (or fails). It is what
+    decides a command whose notice has not come (#241, "A command's
+    confirmation" above): looked at `READBACK_AFTER` in and every
+    `READBACK_EVERY` after, a change Sushi holds is confirmed then, and at the
+    deadline one it does not hold is "not applied" rather than "may or may
+    not". A notice that says the command failed is still a failure, whatever
+    a reading says.
+
+    Not `.wait()` -- see the module docstring. `is_set()` is a plain attribute
     read on `asyncio.Event`, safe to poll from a thread other than the one
     running elkpy's event loop.
     """
@@ -809,10 +938,22 @@ def _wait(
         return
     if timeout is None:
         timeout = CONFIRM_TIMEOUT
-    deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    deadline, look = start + timeout, start + READBACK_AFTER
     while not is_set():
-        if time.monotonic() > deadline:
+        now = time.monotonic()
+        if now > deadline:
+            seen = _read_back(applied)
+            if seen and not is_set():
+                return
+            if is_set():
+                break
             if strict:
+                if seen is False:
+                    raise LiveError(
+                        f"Sushi did not confirm the command within {timeout:g}s, and reading it "
+                        "back shows it was not applied"
+                    )
                 raise LiveError(
                     f"Sushi did not confirm the command within {timeout:g}s, so it "
                     "may or may not have been applied"
@@ -822,11 +963,93 @@ def _wait(
                 file=sys.stderr,
             )
             return
+        if applied is not None and now >= look:
+            look = now + READBACK_EVERY
+            if _read_back(applied) and not is_set():
+                return  # Sushi holds the change; its notice was lost
+            continue  # the reading took time: look at the notice again first
         time.sleep(interval)
     if getattr(response, "error", False):
         if strict:
             raise LiveError("Sushi reported an error completing the command")
         print("warning: Sushi reported an error completing the command", file=sys.stderr)
+
+
+# When a strict `_wait` with nothing heard yet first reads the change back,
+# and how often after. A notice normally comes within milliseconds; a lost one
+# then costs this, not `CONFIRM_TIMEOUT`.
+READBACK_AFTER = 0.25
+READBACK_EVERY = 0.25
+
+
+def _read_back(applied: Callable[[], bool | None] | None) -> bool | None:
+    """`applied()`, with a reading that fails taken as one that cannot tell."""
+    if applied is None:
+        return None
+    try:
+        return applied()
+    except Exception:  # noqa: BLE001 -- a reading that fails says nothing either way
+        return None
+
+
+# -- what each strict command reads back (`_wait`'s `applied`) ------------- #
+# Each answers True (Sushi holds the change), False (it does not) or None (the
+# reading cannot tell). Read with the same calls the reads in this module use.
+
+def _negate(seen: bool | None) -> bool | None:
+    return None if seen is None else not seen
+
+
+def _holds_value(c, proc_id: int, param_id: int, value: float) -> bool | None:
+    """A parameter reads back as set, within `verify.TOLERANCE` (the margin
+    the switch's own check gives: float32 on the wire). Any other value
+    cannot say it was not set, since Sushi may hold a stepped or clamped
+    parameter at a value next to the one asked: None."""
+    from .verify import TOLERANCE
+
+    now = c.parameters.get_parameter_value(proc_id, param_id)
+    return True if abs(float(now) - value) <= TOLERANCE else None
+
+
+def _on_track(c, track_id: int, *, name: str | None = None, processor_id: int | None = None) -> bool:
+    """Whether the track holds a processor of that name, or that id."""
+    for proc in c.audio_graph.get_track_processors(track_id):
+        if (name is not None and proc.name == name) or (processor_id is not None and proc.id == processor_id):
+            return True
+    return False
+
+
+def _moved(c, processor_id: int, track_id: int, before_id: int, add_to_back: bool) -> bool:
+    """Whether the processor stands where the move put it: last, or just in
+    front of `before_id`. A planned move always changes where it stands."""
+    order = [proc.id for proc in c.audio_graph.get_track_processors(track_id)]
+    if processor_id not in order:
+        return False
+    at = order.index(processor_id)
+    if add_to_back:
+        return at == len(order) - 1
+    return at + 1 < len(order) and order[at + 1] == before_id
+
+
+def _holds_cc(c, proc_id: int, param_id: int, mapping: dict[str, Any]) -> bool:
+    """Whether Sushi holds a CC connection with the mapping's own values on
+    that parameter, the ranges within `CC_READ_TOLERANCE` (float32 on the
+    wire)."""
+    for held in c.midi_controller.get_cc_input_connections_for_processor(proc_id) or []:
+        if (held.parameter_id == param_id
+                and held.channel == midi_channel(mapping.get("channel"))
+                and held.port == int(mapping.get("port", 0))
+                and held.cc_number == int(mapping["cc_number"])
+                and abs(float(held.min_range) - float(mapping["min_range"])) <= CC_READ_TOLERANCE
+                and abs(float(held.max_range) - float(mapping["max_range"])) <= CC_READ_TOLERANCE
+                and bool(held.relative_mode) == (mapping.get("mode") == "relative")):
+            return True
+    return False
+
+
+# How far a CC range read back may be from the one sent: float32 holds a
+# range to about 1e-7 of its size.
+CC_READ_TOLERANCE = 1e-5
 
 
 _PLUGIN_TYPE_NAMES = {"internal": "INTERNAL", "vst2x": "VST2X", "vst3x": "VST3X", "lv2": "LV2"}
@@ -1078,7 +1301,7 @@ def add_live_processor(
             name=name, uid="", path=uri, processor_type=info.PluginType.LV2,
             track_id=track_id, before_processor=before_id, add_to_back=add_to_back,
         )
-        _wait(response, strict=True)
+        _wait(response, strict=True, applied=lambda: _on_track(c, track_id, name=name))
 
 
 def add_live_copy(
@@ -1096,7 +1319,7 @@ def add_live_copy(
             name=name, uid=stereo.COPY_UID, path="", processor_type=info.PluginType.INTERNAL,
             track_id=track_id, before_processor=before_id, add_to_back=add_to_back,
         )
-        _wait(response, strict=True)
+        _wait(response, strict=True, applied=lambda: _on_track(c, track_id, name=name))
 
 
 def remove_live_processor_named(
@@ -1107,7 +1330,8 @@ def remove_live_processor_named(
     an add, whose new processor's id no reading holds yet. Strict."""
     with _connection(address, controller) as c:
         processor_id = c.audio_graph.get_processor_id(name)
-        _wait(c.audio_graph.delete_processor_from_track(processor_id, track_id), strict=True)
+        _wait(c.audio_graph.delete_processor_from_track(processor_id, track_id), strict=True,
+              applied=lambda: _negate(_on_track(c, track_id, processor_id=processor_id)))
 
 
 def remove_live_processor(
@@ -1117,7 +1341,8 @@ def remove_live_processor(
     """Delete the processor with `processor_id` from the track with `track_id`.
     Strict, as `add_live_processor`."""
     with _connection(address, controller) as c:
-        _wait(c.audio_graph.delete_processor_from_track(processor_id, track_id), strict=True)
+        _wait(c.audio_graph.delete_processor_from_track(processor_id, track_id), strict=True,
+              applied=lambda: _negate(_on_track(c, track_id, processor_id=processor_id)))
 
 
 def remove_live_track(track: str, address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> None:
@@ -1140,8 +1365,10 @@ def remove_live_track(track: str, address: str = DEFAULT_GRPC_ADDRESS, controlle
             raise LiveError(f"there is no track {track!r} to remove (the tracks are {sorted(chains)})")
         track_id = ids[track]
         for name in reversed(chains[track]):
-            _wait(c.audio_graph.delete_processor_from_track(ids[name], track_id), strict=True)
-        _wait(c.audio_graph.delete_track(track_id), strict=True)
+            _wait(c.audio_graph.delete_processor_from_track(ids[name], track_id), strict=True,
+                  applied=lambda gone=ids[name]: _negate(_on_track(c, track_id, processor_id=gone)))
+        _wait(c.audio_graph.delete_track(track_id), strict=True,
+              applied=lambda: all(t.id != track_id for t in c.audio_graph.get_all_tracks()))
 
 
 # --------------------------------------------------------------------------- #
