@@ -264,20 +264,23 @@ def test_every_frozen_rig_is_still_a_rig(name, frozen_root, tmp_path):
 # sha256 of every file of the frozen set, as each was at c494625 (the sound
 # references: below, where each came from). A frozen
 # file is changed on purpose or not at all: with the code that reads it, in
-# the same commit, and with its line here.
+# the same commit, and with its line here. The eleven rigs/ files differ from
+# c494625 by one line each, `  version: '1.0'` (`"1.0"` in guitar_vocal's)
+# under `meta:`, taken out when the format dropped the field (#143,
+# 2026-11-26, rigfile.RETIRED_META); every other byte as frozen.
 CHECKSUMS = {
     "machines/sonny-dewfall-XPS-9320.yaml": "f90c8f537dae347caf32ff648d2b3ac1f72a7d3fd4d15f1113a1bc431631f82a",
-    "rigs/accustomed.yaml": "f7bedabee55a8775483d97b690e0007b69c5efdd19f7c15f3244663088e1632b",
-    "rigs/electric-chorus-2.yaml": "663ffb98cdbe1359985b9450e5e811218cd8674066d693454ce14dc957e08f46",
-    "rigs/electric-chorus-hall.yaml": "835c903ecbf7c22b0fbec7a47c47d3a3b312da398ea4bc5b68ed165cd037609a",
-    "rigs/electric-chorus.yaml": "8f85343d9fa44de945f69a3e9e660b3b2b156798084cb6eed059995ba2611d6f",
-    "rigs/electric-clean.yaml": "278c70c0b9681fee5b23b1980a7ab93df48b013aec942bd87d1792e5af75f990",
-    "rigs/electric-delay.yaml": "f7585ad8496a36e235b759aa7aca28a838ef890f7a679ec83a0fe9051bbfacdd",
-    "rigs/electric-octave-up.yaml": "00d6d49fa31cc9da6303a0d1c7b61c05760b47f6d3cdc50d515438ac6ea6e99c",
-    "rigs/electric-spacey-delay.yaml": "7f166b6b2d6ee8b5aa4905cb64e6ffa7d20427eb550372618eaef6d44d0269a0",
-    "rigs/electric_board.yaml": "aabdec2cf0c0a355e15807767aa8f620be5290ea2249b9387f51d1abaed2e934",
-    "rigs/guitar_vocal.yaml": "547be75454da3f20320b069cfa7253541b6d813cda9a0b4604d86f407fdd9add",
-    "rigs/hard-feelings.yaml": "3164fc95cebc3694b93d5232d57dd0fa31cf8acde0f3e80e6a9d42dbf89443dc",
+    "rigs/accustomed.yaml": "5a861c692c874d0cda2a7dbd770577303c54bf9b2d900235a8ae2de300fb3d13",
+    "rigs/electric-chorus-2.yaml": "b717955b7c456769a64c9e9f28dc620f280fac0dea0bbfe34484326026d359f5",
+    "rigs/electric-chorus-hall.yaml": "a70ae1ed34edc1fd444ce3f16375ead31b2d84847cd5c6808fa9c49d6a52bfdd",
+    "rigs/electric-chorus.yaml": "1a737348f268e7ba6de96e06c40ee740ce0bee08d5d58bccd37d1113419a4dec",
+    "rigs/electric-clean.yaml": "e1e45505dd9fc5ef29af7c54d40c0a52bad349070c6033f6452767754f5cdafa",
+    "rigs/electric-delay.yaml": "a4faa9fa7cf519e9c5f24805b95e9d5c59c4585778f6a57aa637da24ffe21eba",
+    "rigs/electric-octave-up.yaml": "d635d353c57b4dfcc57ebee1a4e17aeb0c6b03eb759aadd2185badbcd9f20359",
+    "rigs/electric-spacey-delay.yaml": "cdc0404ed60ab44646dc3fbff7d2b81b7ec0f23d2956047461725306f13b7145",
+    "rigs/electric_board.yaml": "610b98be202576e5a7c028d7cf86fa38c77b1b95d263a887bcf9560489b88649",
+    "rigs/guitar_vocal.yaml": "0d8db23decbfe8fd8f095e8922f98417dad7497c045dacd6eb2f695e4dcde9c9",
+    "rigs/hard-feelings.yaml": "957ee2044549ed9a4dd04d740f0d662eedb665100293113529f35205e2e9a5df",
     "v1/accustomed.json": "cd6c2d93ff324ad95bc9933165ea7ce46ec9c2bce39507e10c30ab9e271b2a21",
     "v1/electric-chorus-2.json": "274f10cf0067c4457b06f7f2b7dc458e2d5868c400bc80e6ceb9d9a757670ac6",
     "v1/electric-chorus-hall.json": "d159fa3e4b1e751c8ce9e6ec7705f81c09bcc4d9b26dbe3365388e1e4ddcf354",
