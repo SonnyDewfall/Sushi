@@ -179,7 +179,7 @@ def lifecycle_request(command: str, args: Any) -> tuple[str, dict[str, Any]]:
     agent is the `up --no-amp` the CLI would run itself."""
     if command == "up":
         body: dict[str, Any] = {
-            "config_name": args.config_name, "rig": args.rig,
+            "config_name": args.config_name,
             "tuner": args.tuner, "amp": args.amp,
         }
         if args.amp_model is not None:

@@ -233,7 +233,7 @@ def test_a_reverts_answer_says_how_the_rig_was_made_to_play_it(blank):
 @pytest.mark.parametrize("rig, said", [
     ({"running": False}, "No rig is running: start a rig of channels from the picker to add a channel or change an input, or use New rig…"),
     ({"running": True, "config_name": "guitar_vocal", "rig": None},
-     "guitar_vocal is a v1 config (started with `sushi-rig up` without `--rig`), which has no rig file to edit: "
+     "guitar_vocal was started from a v1 config by an older sushi-rig, which has no rig file to edit: "
      "start it from the picker, or make a rig with New rig…"),
 ])
 def test_the_inputs_say_why_they_cannot_be_edited(blank, rig, said):
@@ -666,7 +666,7 @@ def test_the_inputs_say_why_for_a_v1_run_and_new_rig_is_there(browser):
         page = Page(browser, served.url + "/#rack")
         p = page.page
         expect(p.locator(".inputs-why")).to_have_attribute(
-            "title", "guitar_vocal is a v1 config (started with `sushi-rig up` without `--rig`), which has no rig file to edit: "
+            "title", "guitar_vocal was started from a v1 config by an older sushi-rig, which has no rig file to edit: "
             "start it from the picker, or make a rig with New rig…")
         expect(p.get_by_role("link", name="New rig…")).to_be_visible()
         page.close()

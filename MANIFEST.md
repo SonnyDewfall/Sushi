@@ -7506,3 +7506,30 @@ panel's: it is the CLI acting with no agent (#29), and stays. Tests that
 existed only for the panel and the listener went with them; the record bar's
 session tests now drive `TakeSession` as the recorder does. Not run on the
 rig. *(2026-11-26)*
+
+**The v1 path is retired, and every rig is a rig of channels (#218).** With
+the panel gone, nothing needed the v1 configs, and retiring the panel was the
+decision #218 waited for on making `--rig` the default: it is now what `up`
+always does. `sushi-rig up <name>` runs `config/rigs/<name>.yaml`
+(`prepare_launch` always compiles through `prepare_rig`, and every run gets
+the recorder); `--rig` is taken and changes nothing, and `"rig": false` in
+`POST /rig/up` is refused. `restart_arguments`, `parse_lifecycle` and the
+agent's switch steps carry no `rig`; a state file an older `up` wrote for a v1
+config is brought back as the rig of channels of its name (`switching_from`,
+`fallback_arguments`), and until then a save and a take refuse it (`409 v1`,
+reworded). `sushi-rig save` writes only a rig file (`save_config` and its
+archive are gone; a rig.yaml of tracks is refused). `verify --all`, `plugins`
+and `doctor` read every rig of `config/rigs/`, compiled as nulltest renders it
+(`verify.config_to_check`, no MIDI map, so the CI container needs no machine
+file); `nulltest --all` still holds a v1 config left in `config/`, of which
+there are none. The ten v1 configs, their three `config/src/` sources and
+their `.v1-mono` references were moved, not deleted, to `config/retired/v1/`
+(all but electric_board and guitar_vocal were tones saved from the panel);
+`config/archive/` is left as it was. Tests that read them as a convenience
+read the frozen copies (`tests/fixtures/v1/`) or the rigs; tests of
+`save_config` went with it. For the tests, `verify.configs_to_check` of the
+real checkout is the frozen rigs unless a test is marked `committed_rigs`
+(conftest.py), since a refusal's `plugins add` advice is now worked out over
+the rigs. `emit`, `push`, `probes`, `patchbay generate` and `convert` still
+read a rig.yaml of tracks or a v1 config by path. Not run on the rig.
+*(2026-11-26)*

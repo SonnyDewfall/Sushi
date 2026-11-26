@@ -25,11 +25,6 @@ def write_json(path: Path, payload) -> None:
 
 
 _SUSHI_HELP = "Sushi binary [default: ./sushi in the rig checkout, the one `up` runs]"
-_OUT_DIR_HELP = "where configs are written [default: config/ in the rig checkout]"
-_ARCHIVE_DIR_HELP = (
-    "where the previous version of a re-saved config is kept "
-    "[default: config/archive/ in the rig checkout]"
-)
 
 
 def _sushi_bin(args: argparse.Namespace) -> str:
@@ -44,20 +39,6 @@ def _sushi_bin(args: argparse.Namespace) -> str:
     from .paths import checkout_root
 
     return args.sushi or str(checkout_root() / "sushi")
-
-
-def _config_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
-    """`--out-dir` and `--archive-dir`, defaulting to the checkout's `config/`.
-
-    These used to default to `../config`, which was right only from `tool/` and
-    wrote into a stray directory next to the checkout from anywhere else.
-    `rig.py` passes both explicitly (`--out-dir config`, run from the root), so
-    `up` is unaffected.
-    """
-    from .paths import checkout_root
-
-    out_dir = args.out_dir or checkout_root() / "config"
-    return out_dir, args.archive_dir or out_dir / "archive"
 
 
 _FROM_HELP = (
@@ -76,7 +57,8 @@ def _plugins(args: argparse.Namespace) -> int:
     from .plugins import (
         PluginsError, add, assemble, check, config_uris, default_sources, read_manifest,
     )
-    from .verify import configs_to_check
+    from .rigfile import RigFileError
+    from .verify import config_to_check, configs_to_check
 
     root = checkout_root()
     manifest_path = args.manifest or root / "plugin-manifest.txt"
@@ -86,12 +68,18 @@ def _plugins(args: argparse.Namespace) -> int:
         sys.exit(f"cannot read the plugin manifest: {exc}")
 
     used: set[str] = set()
-    configs = (
-        sorted(args.config_dir.glob("*.json")) if args.config_dir
-        else configs_to_check(root)
-    )
-    for config in configs:
-        used |= config_uris(json.loads(config.read_text()), str(config))
+    if args.config_dir:
+        for config in sorted(args.config_dir.glob("*.json")):
+            used |= config_uris(json.loads(config.read_text()), str(config))
+    else:
+        # Every rig of channels, compiled as Sushi loads it (the v1 configs,
+        # config/*.json, until they were retired, #218).
+        for path in configs_to_check(root):
+            try:
+                used |= config_uris(config_to_check(path), str(path))
+            except RigFileError as exc:
+                sys.exit(f"{path.name} does not compile, so what it needs cannot be said:\n  "
+                         + "\n  ".join(exc.problems))
 
     waived = set(args.waive)
     try:
@@ -466,7 +454,8 @@ def _nulltest(args: argparse.Namespace) -> int:
     Three kinds of target, each with its own references (`--all` takes all
     three):
 
-    - a v1 config, `config/*.json`, rendered whole when Sushi's offline
+    - a v1 config, `config/*.json` (none since they were retired to
+      `config/retired/v1/`, #218), rendered whole when Sushi's offline
       frontend can host it and one channel at a time when it cannot
       (`render.channels_of`), under `config/sound/<name>.v1-mono.yaml`;
     - a frozen rig, `tool/tests/fixtures/rigs/*.yaml`, through its master one
@@ -501,11 +490,12 @@ def _nulltest(args: argparse.Namespace) -> int:
         reference_path, rig_channels, rig_file_hash, rigs_to_check, v1_reference_path,
     )
     from .rigfile import RigFileError
-    from .verify import configs_to_check
 
     root = checkout_root()
     if args.check_all:
-        targets = ([(path, "v1") for path in configs_to_check(root)]
+        # A v1 config left in config/ is still held to its reference; none is
+        # since they were retired to config/retired/v1/ (#218).
+        targets = ([(path, "v1") for path in sorted((root / "config").glob("*.json"))]
                    + [(path, "rig") for path in rigs_to_check(root)]
                    + [(path, "frozen") for path in frozen_rigs_to_check(root)])
     elif args.config:
@@ -1013,11 +1003,13 @@ def _main(argv: list[str] | None = None) -> int:
         "instead of probing — for machines without lilv, and for fixtures",
     )
 
-    p = sub.add_parser("save", help="capture live state and write it as a named config")
-    p.add_argument("name", help="config name — becomes config/<name>.json")
-    p.add_argument("--rig", type=Path, required=True, help="rig.yaml this config is built from")
-    p.add_argument("--out-dir", type=Path, help=_OUT_DIR_HELP)
-    p.add_argument("--archive-dir", type=Path, help=_ARCHIVE_DIR_HELP)
+    p = sub.add_parser(
+        "save",
+        help="capture the running Sushi into a rig file of channels, in place with its comments "
+        "(the web UI's Save, without the agent's log)",
+    )
+    p.add_argument("name", help="the rig's name: its own to save in place, another for a new rig file beside it")
+    p.add_argument("--rig", type=Path, required=True, help="the rig file it runs from, config/rigs/<name>.yaml")
     p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS)
 
     p = sub.add_parser(
@@ -1029,15 +1021,13 @@ def _main(argv: list[str] | None = None) -> int:
         "config_name",
         nargs="?",
         default=DEFAULT_CONFIG_NAME,
-        help=f"names config/<name>.json [default: {DEFAULT_CONFIG_NAME}]",
+        help="names a rig of channels, config/rigs/<name>.yaml, compiled at start with a "
+        f"patchbay generated from it and the machine file [default: {DEFAULT_CONFIG_NAME}]",
     )
-    p.add_argument(
-        "--rig",
-        action="store_true",
-        help="the name is a rig of channels, config/rigs/<name>.yaml (#30): compiled "
-        "at start, with a patchbay generated from it and the machine file rather "
-        "than the committed one, so each channel's input reaches its own chain",
-    )
+    # Every start is a rig of channels since the v1 configs were retired
+    # (#218): `--rig` is taken, so a command written before still runs, and
+    # changes nothing.
+    p.add_argument("--rig", action="store_true", help=argparse.SUPPRESS)
     # Every run is headless since the Open Stage Control panel was retired
     # (#139): the flag is taken, so a command written before still runs, and
     # changes nothing.
@@ -1067,7 +1057,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--machine", type=Path,
-        help="with --rig, the machine file to compile and wire against [default: "
+        help="the machine file to compile and wire against [default: "
         "machines/<this hostname>.yaml]; with --direct only, since the agent takes no path from "
         "a request (its restart and switch carry the one the run started with)",
     )
@@ -1106,8 +1096,8 @@ def _main(argv: list[str] | None = None) -> int:
     p.add_argument("config", type=Path, nargs="?", help="config to check")
     p.add_argument(
         "--all", action="store_true", dest="check_all",
-        help="every v1 config in config/ (skipping retired ones), every rig in "
-        "config/rigs/, and every frozen rig in tool/tests/fixtures/rigs/",
+        help="every rig in config/rigs/, every frozen rig in tool/tests/fixtures/rigs/, and any "
+        "v1 config left in config/ (none since #218)",
     )
     p.add_argument(
         "--calibrate", action="store_true",
@@ -1509,15 +1499,16 @@ def _main(argv: list[str] | None = None) -> int:
         from .save import SaveError, save_any
 
         try:
-            out_path = save_any(
-                args.name, args.rig, *_config_dirs(args), args.address
-            )
+            out_path = save_any(args.name, args.rig, args.address)
         except SaveError as exc:
             sys.exit(str(exc))
         print(f"saved {out_path}")
     elif args.command == "verify":
+        import tempfile
+
         from .paths import checkout_root
-        from .verify import VerifyError, configs_to_check, verify
+        from .rigfile import RigFileError
+        from .verify import VerifyError, config_to_check, configs_to_check, verify
 
         if args.check_all:
             targets = configs_to_check(checkout_root())
@@ -1530,9 +1521,22 @@ def _main(argv: list[str] | None = None) -> int:
         sushi = _sushi_bin(args)
 
         failed = 0
+        scratch = tempfile.TemporaryDirectory(prefix="sushi-rig-verify-")
         for target in targets:
             try:
-                problems = verify(target, sushi, args.quick)
+                if args.check_all:
+                    # Each rig of channels compiled as nulltest renders it
+                    # (`config_to_check`): with no machine file to hand, as
+                    # in the CI container, a rig's MIDI map cannot be.
+                    try:
+                        compiled = config_to_check(target)
+                    except RigFileError as exc:
+                        raise VerifyError("it does not compile: " + "; ".join(exc.problems)) from exc
+                    checked = Path(scratch.name) / f"{target.stem}.json"
+                    checked.write_text(json.dumps(compiled, indent=2) + "\n")
+                    problems = verify(checked, sushi, args.quick)
+                else:
+                    problems = verify(target, sushi, args.quick)
             except VerifyError as exc:
                 print(f"{target.name}: CANNOT CHECK — {exc}", file=sys.stderr)
                 failed += 1
@@ -1544,6 +1548,7 @@ def _main(argv: list[str] | None = None) -> int:
                     print(f"   {problem}")
             else:
                 print(f"{target.name}: ok")
+        scratch.cleanup()
         if failed:
             print(f"\n{failed} of {len(targets)} config(s) have problems", file=sys.stderr)
         return 1 if failed else 0
@@ -1624,7 +1629,7 @@ def _main(argv: list[str] | None = None) -> int:
                 return up(
                     args.config_name,
                     tuner=args.tuner, amp=args.amp,
-                    amp_model=args.amp_model, rig=args.rig, visualiser_tap=args.visualiser_tap,
+                    amp_model=args.amp_model, visualiser_tap=args.visualiser_tap,
                     machine=str(args.machine.resolve()) if args.machine is not None else None,
                 )
             if args.command == "down":

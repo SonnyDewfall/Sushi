@@ -501,7 +501,7 @@ SOUND_DIR = "sound"
 # A v1 config's references carry this after the channel's name, and a rig of
 # channels' (config/rigs/) the name alone. Decided 2026-11-02, when the rig
 # compiler began putting a mono plugin's output on both channels (stereo.py)
-# and the v1 configs, which `up` without `--rig` still runs, did not: the two
+# and the v1 configs (`up` without `--rig` ran them, until #218) did not: the two
 # stopped sounding alike, and a v1 config's render is, for every channel that
 # starts with a mono plugin, the left channel alone. So it is named for that.
 V1_REFERENCE_SUFFIX = ".v1-mono"

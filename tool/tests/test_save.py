@@ -1,9 +1,8 @@
-import json
 import textwrap
 
 import pytest
 
-from sushi_rig.save import SaveError, save_config, validate_name
+from sushi_rig.save import SaveError, validate_name
 
 RIG_YAML = textwrap.dedent(
     """\
@@ -49,7 +48,7 @@ def rig_path(tmp_path):
 
 @pytest.fixture(autouse=True)
 def fake_capture(monkeypatch):
-    """save_config must never need a live Sushi to be tested — this is the
+    """A save must never need a live Sushi to be tested — this is the
     boundary the offline modules are supposed to stay inside (brief §3.1)."""
     calls = []
 
@@ -92,163 +91,6 @@ def test_validate_name_rejects_hostile_or_malformed_names(name):
         validate_name(name)
 
 
-def test_save_config_rejects_invalid_name_before_touching_capture_or_disk(
-    tmp_path, rig_path, fake_capture
-):
-    """The name is validated before any live call or filesystem write — a
-    hostile name (this is the actual attack surface, since it arrives over
-    unauthenticated UDP via the OSC listener) must fail fast, not partway
-    through."""
-    out_dir = tmp_path / "config"
-    with pytest.raises(SaveError):
-        save_config("../escape", rig_path, out_dir, tmp_path / "archive")
-    assert fake_capture == []  # capture() never called
-    assert not out_dir.exists()
-
-
-def test_save_config_raises_when_rig_source_missing(tmp_path):
-    with pytest.raises(SaveError):
-        save_config("newname", tmp_path / "missing.yaml", tmp_path / "config", tmp_path / "archive")
-
-
-# --- new config: version, meta, structure -------------------------------
-
-
-def test_save_config_writes_a_loadable_looking_config(tmp_path, rig_path):
-    out_dir = tmp_path / "config"
-    out_path = save_config("bright", rig_path, out_dir, tmp_path / "archive")
-
-    assert out_path == out_dir / "bright.json"
-    config = json.loads(out_path.read_text())
-    assert config["host_config"] == {"samplerate": 48000}
-    assert config["tracks"][0]["plugins"][0]["name"] == "comp"
-    assert config["initial_state"] == [
-        {"processor": "fx_track", "parameters": {"gain": 0.8}},
-        {"processor": "comp", "parameters": {"Ratio": 0.27}},
-    ]
-
-
-def test_save_config_new_name_gets_version_1_0(tmp_path, rig_path):
-    out_path = save_config("bright", rig_path, tmp_path / "config", tmp_path / "archive")
-    config = json.loads(out_path.read_text())
-    assert config["_meta"]["version"] == "1.0"
-
-
-def test_save_config_sets_name_and_source_in_meta(tmp_path, rig_path):
-    out_path = save_config("bright", rig_path, tmp_path / "config", tmp_path / "archive")
-    config = json.loads(out_path.read_text())
-    assert config["_meta"]["name"] == "bright"
-    assert config["_meta"]["source"] == rig_path.as_posix()
-
-
-def test_save_config_carries_through_description_and_status_from_source(tmp_path, rig_path):
-    """Variants share the originating yaml rather than each getting their
-    own source file — description/status ride along from it, only name,
-    version and source are overridden."""
-    out_path = save_config("bright", rig_path, tmp_path / "config", tmp_path / "archive")
-    config = json.loads(out_path.read_text())
-    assert config["_meta"]["description"] == "A test rig"
-    assert config["_meta"]["status"] == "wip"
-
-
-# --- re-saving over an existing name: version and archiving -------------
-
-
-def test_save_config_existing_name_leaves_version_untouched(tmp_path, rig_path):
-    """Version bumps are a deliberate act (the project's versioning
-    convention) — a save button firing automatically must not invent one."""
-    out_dir = tmp_path / "config"
-    first = save_config("bright", rig_path, out_dir, tmp_path / "archive")
-    first_config = json.loads(first.read_text())
-    assert first_config["_meta"]["version"] == "1.0"
-
-    second = save_config("bright", rig_path, out_dir, tmp_path / "archive")
-    second_config = json.loads(second.read_text())
-    assert second_config["_meta"]["version"] == "1.0"  # untouched, not bumped
-
-
-def test_save_config_archives_the_previous_file_before_overwriting(tmp_path, rig_path):
-    out_dir = tmp_path / "config"
-    archive_dir = tmp_path / "archive"
-
-    save_config("bright", rig_path, out_dir, archive_dir)
-    archived_before = list((archive_dir / "bright").glob("*.json")) if (
-        archive_dir / "bright"
-    ).exists() else []
-    assert archived_before == []  # nothing to archive on the first save
-
-    save_config("bright", rig_path, out_dir, archive_dir)
-    archived_after = list((archive_dir / "bright").glob("*.json"))
-    assert len(archived_after) == 1
-    assert archived_after[0].name == "v1.0.json"
-
-
-def test_save_config_archived_copy_carries_archived_at(tmp_path, rig_path):
-    out_dir = tmp_path / "config"
-    archive_dir = tmp_path / "archive"
-    save_config("bright", rig_path, out_dir, archive_dir)
-    save_config("bright", rig_path, out_dir, archive_dir)
-
-    archived = json.loads((archive_dir / "bright" / "v1.0.json").read_text())
-    assert "archived_at" in archived["_meta"]
-
-
-def test_save_config_nothing_is_lost_when_re_saving_repeatedly(tmp_path, rig_path):
-    """The version never bumps automatically (see the test above), so a
-    third save would try to archive to the same v1.0.json path a second
-    time — that must not silently clobber the first archive."""
-    out_dir = tmp_path / "config"
-    archive_dir = tmp_path / "archive"
-
-    save_config("bright", rig_path, out_dir, archive_dir)  # nothing archived yet
-    save_config("bright", rig_path, out_dir, archive_dir)  # archives save #1 as v1.0.json
-    save_config("bright", rig_path, out_dir, archive_dir)  # must not overwrite that archive
-
-    archived = list((archive_dir / "bright").glob("*.json"))
-    assert len(archived) == 2  # both saves' prior states preserved
-    names = {p.name for p in archived}
-    assert "v1.0.json" in names
-    assert any(n != "v1.0.json" for n in names)  # the collision got a distinct name
-
-
-def test_saves_of_one_name_inside_one_second_each_keep_their_archive(
-        tmp_path, rig_path, monkeypatch):
-    """The collision fallback stamped the archive with the second and nothing
-    more, so a double-pressed save button made the same file name twice and
-    the second archive replaced the first."""
-    import datetime as real
-
-    class Frozen(real.datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return cls(2026, 10, 31, 12, 0, 0, tzinfo=tz)
-
-    monkeypatch.setattr("sushi_rig.save.datetime", Frozen)
-    out_dir, archive_dir = tmp_path / "config", tmp_path / "archive"
-    for n in range(1, 5):
-        rig_path.write_text(RIG_YAML.replace("A test rig", f"state {n}"))
-        save_config("bright", rig_path, out_dir, archive_dir)
-
-    archived = sorted((archive_dir / "bright").glob("*.json"))
-    assert [p.name for p in archived] == [
-        "v1.0-2026-10-31T12-00-00-2.json", "v1.0-2026-10-31T12-00-00.json", "v1.0.json",
-    ]
-    held = {json.loads(p.read_text())["_meta"]["description"] for p in archived}
-    assert held == {"state 1", "state 2", "state 3"}, "every earlier save is still there"
-
-
-def test_save_config_different_names_do_not_interact(tmp_path, rig_path):
-    out_dir = tmp_path / "config"
-    archive_dir = tmp_path / "archive"
-    save_config("bright", rig_path, out_dir, archive_dir)
-    save_config("dark", rig_path, out_dir, archive_dir)
-
-    assert (out_dir / "bright.json").exists()
-    assert (out_dir / "dark.json").exists()
-    assert not (archive_dir / "bright").exists()
-    assert not (archive_dir / "dark").exists()
-
-
 def test_unused_path_claims_what_it_returns_and_never_replaces_anything(tmp_path):
     """Claiming is the check: `exists()` then write let two saves in the same
     second (the CLI and the listener's button) both be told a name was free."""
@@ -267,35 +109,6 @@ def test_unused_path_can_claim_a_directory(tmp_path):
     (tmp_path / "2026").mkdir()
     got = unused_path(tmp_path / "2026", directory=True)
     assert got.name == "2026-2" and got.is_dir()
-
-
-def test_captured_properties_are_checked_not_written(tmp_path, monkeypatch):
-    """Which of a plugin's properties may be set at load is not known from the
-    listing; a value read back as "" would be baked into the saved config."""
-    import textwrap
-
-    from sushi_rig import save as save_module
-    from sushi_rig.save import save_config
-
-    rig = tmp_path / "rig.yaml"
-    rig.write_text(textwrap.dedent("""\
-        meta: {name: t, version: "1"}
-        host: {samplerate: 48000}
-        tracks:
-          - name: board
-            channels: 2
-            inputs: [{engine_bus: 0, track_bus: 0}]
-            outputs: [{engine_bus: 0, track_bus: 0}]
-            plugins:
-              - {name: ir, type: lv2, uri: "urn:ir"}
-        """))
-    monkeypatch.setattr(save_module, "capture", lambda address: {
-        "processors": {"ir": {"parameters": {"gain": 0.5}, "properties": {"file": ""}}},
-        "tracks": {"board": ["ir"]},
-    })
-    out = save_config("riff", rig, tmp_path / "out", tmp_path / "archive")
-    (entry,) = __import__("json").loads(out.read_text())["initial_state"]
-    assert entry == {"processor": "ir", "parameters": {"gain": 0.5}}
 
 
 # --- save_rig: a rig of channels (#30's last slice) --------------------------
@@ -371,13 +184,44 @@ def test_a_run_without_the_amp_leaves_the_files_amp_alone(rigs):
     assert "model: amp/models/Other.nam" in text and "Output Lvl: 2.0" in text
 
 
-def test_save_any_chooses_by_the_files_kind(rigs, rig_path, tmp_path, monkeypatch):
-    assert save_any("riff", rigs / "riff.yaml", tmp_path / "out", tmp_path / "archive") == rigs / "riff.yaml"
-    monkeypatch.setattr("sushi_rig.save.capture", lambda address: FAKE_STATE)  # the v1 rig's own capture
-    out = save_any("bright", rig_path, tmp_path / "out", tmp_path / "archive")
-    assert out == tmp_path / "out" / "bright.json"
+def test_save_any_saves_a_rig_of_channels_and_refuses_a_rig_yaml_of_tracks(rigs, rig_path, tmp_path,
+                                                                          fake_capture):
+    """`sushi-rig save`: a rig of channels is saved into its own file; a
+    rig.yaml of tracks once saved a v1 config, config/<name>.json, and v1
+    configs are retired (#218), so it is refused, with nothing captured or
+    written."""
+    assert save_any("riff", rigs / "riff.yaml") == rigs / "riff.yaml"
+    before = sorted(tmp_path.rglob("*"))
+    with pytest.raises(SaveError, match="a rig.yaml of tracks.* v1 configs are retired"):
+        save_any("bright", rig_path)
+    assert fake_capture == [] and sorted(tmp_path.rglob("*")) == before
     with pytest.raises(SaveError, match="rig source not found"):
-        save_any("x", tmp_path / "nope.yaml", tmp_path / "out", tmp_path / "archive")
+        save_any("x", tmp_path / "nope.yaml")
+
+
+def test_a_hostile_name_is_refused_before_capture_or_disk(tmp_path, fake_capture):
+    """The name of a new rig file is validated before any live call or file
+    write (it once arrived over unauthenticated UDP from the panel's
+    listener, and is still the security boundary: NAME_PATTERN), so it fails
+    fast, not partway through."""
+    rigs = tmp_path / "config" / "rigs"
+    rigs.mkdir(parents=True)
+    (rigs / "riff.yaml").write_text(RIG_OF_CHANNELS)
+    with pytest.raises(SaveError):
+        save_rig("../escape", rigs / "riff.yaml")
+    assert fake_capture == []  # capture() never called
+    assert sorted(p.name for p in rigs.iterdir()) == ["riff.yaml"]
+
+
+def test_captured_properties_are_checked_not_written(rigs, monkeypatch):
+    """Which of a plugin's properties may be set at load is not known from the
+    listing; a value read back as "" would be baked into the saved file."""
+    monkeypatch.setattr("sushi_rig.save.capture", lambda address: {
+        "processors": {"eq": {"parameters": {"Low": 0.5}, "properties": {"file": ""}}},
+        "tracks": {"board": ["eq", "board_send"], "master": ["master_return"]},
+    })
+    text = save_rig("riff", rigs / "riff.yaml").read_text()
+    assert "Low: 0.5" in text and "properties" not in text and "file:" not in text
 
 
 def test_save_rig_takes_a_capture_already_made_and_does_not_capture_again(rigs, monkeypatch):

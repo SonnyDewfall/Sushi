@@ -73,9 +73,10 @@ workflows because no single runner has everything:
   machine's plugins do under Sushi.
 - The same job runs `nulltest --all`, so **a change in the code or a plugin
   that alters the sound fails the build**. References are calibrated in that
-  container, for every v1 config (`config/sound/<name>.v1-mono.yaml`), every
-  frozen rig (`tool/tests/fixtures/sound/<name>.yaml`) and every rig of
-  channels in `config/rigs/` (`config/sound/<name>.yaml`), a rig rendered
+  container, for every frozen rig (`tool/tests/fixtures/sound/<name>.yaml`) and every rig of
+  channels in `config/rigs/` (`config/sound/<name>.yaml`), and a v1 config
+  left in `config/` (`config/sound/<name>.v1-mono.yaml`; none since they were
+  retired to `config/retired/v1/`, #218), a rig rendered
   through the master one channel at a time. A reference records each
   channel's level as well as the whole render's, so a channel lost is a
   finding of its own; a silent right channel used to read as only 3 dB down.
@@ -144,8 +145,9 @@ workflows because no single runner has everything:
   catching a hot input; every render there must be finite, two-sided and
   balanced. Its fast half, and the agent's refusals, are `tests/test_limiter.py`
   and `tests/test_ui_limiter.py`.
-- **One config does not render the same twice**: the v1 config
-  `electric_board.json`, the only one that still runs gx_detune_ unbypassed
+- **One config did not render the same twice**: the v1 config
+  `electric_board.json` (retired to `config/retired/v1/`, #218), the only one
+  that still runs gx_detune_ unbypassed
   (no rig in `config/rigs/` has it since #152; electric-octave-up, which had
   the other, is retired). The plugin plans its FFTs by timing them
   (`FFTW_MEASURE`), so each Sushi rounds a little differently; inside that

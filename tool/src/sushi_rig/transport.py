@@ -93,9 +93,10 @@ with nothing in them. It had been written down as unknown since 2026-11-02 --
 client sees through `pw-jack`". They are not.
 
 A rig.yaml of tracks (v1) gets no plan. Its outputs are whatever its routing
-says, and the routing that ships sums every track into the monitor bus
+says, and the routing that shipped summed every track into the monitor bus
 (`take.py`, "No two stems from one port"), so there is no stem of one track to
-tap. `sushi-rig up --rig <name>` runs the rig of channels, which has them.
+tap. `sushi-rig up <name>` runs a rig of channels, which has them, and is
+all it runs since the v1 configs were retired (#218).
 
 The rate is the compiled config's `host_config.samplerate`, and it must be
 `rig.RATE`: `up` runs PipeWire at that rate whatever the config says, so a
@@ -684,8 +685,8 @@ def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
     if not isinstance(rig, Rig):
         raise PlanError([
             f"{rig_path} is a rig.yaml of tracks, and takes are planned only for a "
-            f"rig of channels, where each channel has an output of its own to record; "
-            f"run it with `sushi-rig up --rig <name>`"
+            f"rig of channels, where each channel has an output of its own to record: "
+            f"run a rig of config/rigs/ with `sushi-rig up <name>`"
         ])
     if config_path is None:
         raise PlanError([

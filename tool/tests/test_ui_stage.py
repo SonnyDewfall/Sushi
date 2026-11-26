@@ -575,11 +575,11 @@ def test_from_the_stage_a_down_rig_is_chosen_and_started_and_stop_still_asks(bro
         p.get_by_role("button", name="Start electric_board").click()
         expect(p.locator(".notice")).to_contain_text("Started electric_board", timeout=8000)
         expect(p.locator(".notice")).to_have_attribute("title", "Started electric_board.")
-        assert served.lifecycle.calls == [["up", "electric_board", "--rig"]]
+        assert served.lifecycle.calls == [["up", "electric_board"]]
         expect(rig).to_have_value("electric_board")
         p.get_by_role("button", name="Stop electric_board").click()
         expect(p.locator(".stage-rigs .confirm")).to_have_text("Stop?YesNo")
-        assert served.lifecycle.calls == [["up", "electric_board", "--rig"]], "one tap stops nothing"
+        assert served.lifecycle.calls == [["up", "electric_board"]], "one tap stops nothing"
         p.locator(".stage-rigs .confirm").get_by_role("button", name="Yes").click()
         expect(p.locator(".stage-head .rig-name")).to_have_text("Rig down")
         assert served.lifecycle.calls[-1] == ["down"]

@@ -16,19 +16,19 @@ on the web UI instead ([user guides](../guide/README.md)).
 | `profile` | component profiles: how one plugin is presented, checked against `probe` | the `plugin-profile` skill under `.claude/skills/` |
 | `verify` | check a config loads, names things that exist, and applies what it says | below |
 | `nulltest` | render a config offline and check its sound against its reference | [Tests and CI](testing.md) |
-| `emit`, `convert` | compile a rig file to a Sushi config; write a v1 config as a rig of channels | [The rig file](rig-file.md) |
+| `emit`, `convert` | compile a rig file to a Sushi config; write a v1 config (a retired one, `config/retired/v1/`) as a rig of channels | [The rig file](rig-file.md) |
 | `machine check`, `patchbay check`, `patchbay generate` | the machine file and the patchbay made from it | [The machine file](machine-file.md) |
 | `take check`, `take repair` | check a take's folder, or mend one cut off by a crash | [Takes](takes.md) |
 | `probes` | where selftest would inject and listen for a rig | [Environment](environment.md#selftest-and-its-probes) |
-| `save`, `push`, `capture` | the v1 loop: capture a running Sushi and write a config (`panel` and `listen`, the Open Stage Control panel's, are retired) | [The v1 workflow](v1-workflow.md) |
+| `save` | capture the running Sushi into a rig file of channels, without the agent | [The v1 workflow](v1-workflow.md#saving) |
+| `push`, `capture` | build a rig.yaml in a running Sushi; read its parameter state (`panel` and `listen`, the Open Stage Control panel's, are retired, and so are the v1 configs) | [The v1 workflow](v1-workflow.md) |
 | `recorder` | the process a rig of channels starts so the web UI can record; not run by hand | [The agent](agent.md#recording-from-the-web-ui) |
 
 ## Running the rig
 
 ```bash
-sushi-rig up --rig electric-clean  # a rig of channels, config/rigs/<name>.yaml: what the web UI starts
-sushi-rig up                # v1: tuner, patchbay, Sushi and the amp, from config/electric_board.json
-sushi-rig up electric-clean # any config/<name>.json; defaults to electric_board
+sushi-rig up electric-clean # a rig of channels, config/rigs/<name>.yaml: what the web UI starts
+sushi-rig up                # the same, for config/rigs/electric_board.yaml
 sushi-rig status            # what is running, and where its logs are
 sushi-rig top               # live CPU load per component, and whether xruns are climbing
 sushi-rig restart           # stop and bring the same rig straight back
@@ -51,8 +51,7 @@ its pid a few minutes after the last page let it go (at once on an xrun
 trip), when the agent stops, or with the group on `down`. "The rig's output"
 is Sushi's master: the master track's outputs, engine bus 0, after the master
 chain, the master limiter (#137) and the master volume, which is what the
-monitors are sent; for a v1 config, which has no master track or limiter, it
-is engine bus 0. Its two nodes are followers in Sushi's cycle while it runs,
+monitors are sent. Its two nodes are followers in Sushi's cycle while it runs,
 and the cycle waits for them; even with a realtime thread it was "too slow",
 a cycle not finished in time, from once in 20 s to five times in 15 s when
 measured in a container, which is why it runs only while a visualiser
@@ -61,21 +60,23 @@ realtime thread is refused. `restart` and a switch keep the choice, from the
 state file's `visualiser_tap_requested`; through the agent it is
 `"visualiser_tap": false` on `POST /rig/up`.
 
-`up --rig <name>` runs a rig of channels, `config/rigs/<name>.yaml` (#30): the
+`up <name>` runs a rig of channels, `config/rigs/<name>.yaml` (#30): the
 rig is compiled at start into the runtime directory, never into `config/`, and
 its patchbay is generated from the rig and the machine file rather than loaded
 from `Patchbay/rig.qpwgraph`. The committed patchbay describes the v1 layout,
 and on `guitar_vocal` it would feed the guitar into input 1, the vocal channel
 under v2, and wire the microphone to inputs the rig does not read, with the rig
-looking healthy throughout; a v2 rig therefore always brings its own. On the
-command line `--rig` is opt-in while a v1 config of the same name exists; the
-web UI always starts rigs of channels. The monitor path was heard to be the
+looking healthy throughout; a v2 rig therefore always brings its own. It took
+`--rig` while v1 configs, `config/<name>.json`, ran too; they are retired
+(#218, `config/retired/v1/`), so a rig of channels is all `up` runs, and
+`--rig` is still taken and changes nothing. The monitor path was heard to be the
 same on 2026-11-01 (two rigs, amp included), and a two-channel rig
 (`guitar_vocal`) was measured through a loopback on 2026-11-12, each input
 reaching both sides equally
 (`tool/spikes/live_rig/RESULTS-loopback-2026-11-12.md`). `restart` brings a v2
-rig back as one, and `status` names the rig file. After any `up`, v1 or v2, the
-supervisor checks that every link in the patchbay it loaded was actually made,
+rig back as one, and `status` names the rig file. A state file an older `up`
+wrote for a v1 config is brought back as the rig of channels of its name.
+After any `up`, the supervisor checks that every link in the patchbay it loaded was actually made,
 and warns naming the pairs that were not: a channel whose source never reached
 it is silent while everything looks healthy, and that is said rather than
 discovered.
@@ -118,15 +119,18 @@ Both times the cause was one key in `initial_state` silently overriding another,
 and both times it looked like a save bug rather than a load bug.
 
 ```bash
-sushi-rig verify config/electric-clean.json   # loads, names exist, and it applies
-sushi-rig verify config/rigs/electric-chorus-2.yaml  # a rig file: compiled as `up --rig` compiles it, then checked
-sushi-rig verify --all                        # every config, about six seconds each
+sushi-rig verify config/rigs/electric-chorus-2.yaml  # a rig file: compiled as `up` compiles it, then checked
+sushi-rig verify config/retired/v1/electric-clean.json  # any Sushi config .json, a retired v1 one included
+sushi-rig verify --all                        # every rig of config/rigs/, about six seconds each
 sushi-rig verify --quick                      # skip the check that starts Sushi
 ```
 
 Sushi loads a compiled config, never the YAML, so a rig file from `config/rigs/`
-is compiled first, for this machine and the way `up --rig <name>` compiles it,
-and that is what is checked; the compiled file's path is printed. A YAML file
+is compiled first, for this machine and the way `up <name>` compiles it,
+and that is what is checked; the compiled file's path is printed. `--all`
+compiles each rig as `nulltest` renders it, with no MIDI map (which needs
+this machine's file), so it checks the same on any machine; until the v1
+configs were retired (#218) it checked `config/*.json`. A YAML file
 from anywhere else, or a file that is not JSON, is refused with a sentence
 saying what to pass, not a traceback. A compiled rig is also held to ending
 with the master's limiter at the compiler's settings (#137,

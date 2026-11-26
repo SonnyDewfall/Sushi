@@ -152,12 +152,13 @@ def test_source_and_sink_are_optional_so_existing_rigs_load_unchanged(tmp_path):
     assert rig.validate() == []
 
 
-def test_every_committed_rig_source_still_loads_and_validates():
-    """There are live configs built from these; none may need touching to take
-    the new fields."""
-    from sushi_rig.paths import checkout_root
+def test_every_rig_source_still_loads_and_validates():
+    """Configs were built from these; none may need touching to take the new
+    fields. The frozen copies (rig_fixtures.py), since config/src/ was
+    retired to config/retired/v1/src/ with the v1 configs (#218)."""
+    from rig_fixtures import FROZEN_SRC
 
-    sources = sorted((checkout_root() / "config" / "src").glob("*.yaml"))
+    sources = sorted(FROZEN_SRC.glob("*.yaml"))
     assert sources, "found nothing to check"
     for path in sources:
         assert RigSpec.load(path).validate() == [], path.name

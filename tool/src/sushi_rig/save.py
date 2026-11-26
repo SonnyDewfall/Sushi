@@ -1,4 +1,4 @@
-"""Capture the current live sound and write it as a named, versioned config.
+"""Capture the current live sound and write it into a rig file.
 
 This is the core the brief for issue #10 asks for: a deterministic bridge from
 "the sound is right now" to "a config file on disk", callable from anywhere —
@@ -10,25 +10,22 @@ the Open Stage Control panel's OSC listener, its first caller, is retired
 (#139, #218).
 
 Composes existing pieces rather than reimplementing them: `live.capture()` for
-the live state, `spec.RigSpec.load()` for the rig structure, `emit.emit()` for
-the config. This module's own job is just the file-naming, versioning and
-archiving policy around that.
+the live state, `rigfile.fold_state` and `write_rig` for the rig file. This
+module's own job is the naming policy around that. It once also wrote v1
+configs, `config/<name>.json`, archiving the one replaced under
+`config/archive/`; v1 configs are retired (#218), and `config/archive/` is
+kept as it was left.
 """
 
 from __future__ import annotations
 
 import copy
-import json
 import re
-import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .amp import CONFIG_KEY as AMP_KEY, write_amp
-from .emit import EmitError, emit
 from .live import DEFAULT_GRPC_ADDRESS, capture
-from .spec import RigSpec
 
 # The name becomes a filename, and arrives from a request (the agent's save
 # as, a channel's name). This is the actual security boundary: it blocks `../`,
@@ -56,82 +53,15 @@ def validate_name(name: str) -> str:
     return name
 
 
-def save_config(
-    name: str,
-    rig_path: Path,
-    out_dir: Path,
-    archive_dir: Path,
-    address: str = DEFAULT_GRPC_ADDRESS,
-    amp_model: str | None = None,
-    amp_parameters: dict[str, float] | None = None,
-) -> Path:
-    """Capture the running Sushi's state and write it as `<out_dir>/<name>.json`.
-
-    If a config already exists under that name, it's archived first (see
-    `_archive_existing`) rather than overwritten in place.
-    """
-    validate_name(name)
-
-    rig_path = Path(rig_path)
-    if not rig_path.is_file():
-        raise SaveError(f"rig source not found: {rig_path}")
-
-    try:
-        rig = RigSpec.load(rig_path)
-    except ValueError as exc:
-        # A rig of channels (rigfile.py): RigSpec.load refuses it by name, and
-        # `save_rig` is what saves it; `save_any` chooses between the two.
-        raise SaveError(f"cannot save from {rig_path}: {exc}") from exc
-    state = capture(address)
-    # Captured properties are for checking a rig, not for writing one: which
-    # of a plugin's properties may be set at load is not known from the
-    # listing, and a value read back as "" would be baked into the config.
-    for values in state.get("processors", {}).values():
-        values.pop("properties", None)
-    try:
-        config = emit(rig, state)
-    except EmitError as exc:
-        raise SaveError(str(exc)) from exc
-
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{name}.json"
-
-    if out_path.exists():
-        version = _archive_existing(out_path, Path(archive_dir), name)
-    else:
-        version = "1.0"
-
-    # The amp rides in the same file as the rig it belongs to, so one config
-    # describes the whole sound. It cannot be captured the way Sushi's state is
-    # — Carla cannot be asked what it currently holds — so these are the values
-    # the listener last sent. See amp.py.
-    write_amp(config, amp_model, amp_parameters or {})
-
-    meta = dict(config.get("_meta", {}))
-    meta["name"] = name
-    meta["version"] = version
-    meta["source"] = rig_path.as_posix()
-    config["_meta"] = meta
-
-    out_path.write_text(json.dumps(config, indent=2) + "\n")
-    return out_path
-
-
 def save_any(
     name: str,
     rig_path: Path,
-    out_dir: Path,
-    archive_dir: Path,
     address: str = DEFAULT_GRPC_ADDRESS,
-    amp_model: str | None = None,
-    amp_parameters: dict[str, float] | None = None,
 ) -> Path:
-    """Save the running rig from whichever kind of source `rig_path` is: a
-    rig of channels is written back into its own file beside the source
-    (`save_rig`); a rig.yaml of tracks becomes `<out_dir>/<name>.json`
-    (`save_config`). One decision for the CLI and the listener, read once
-    from the file's `kind`."""
+    """Save the running rig into the rig of channels at `rig_path`
+    (`save_rig`): what `sushi-rig save` runs. A rig.yaml of tracks, from
+    which a save once wrote a v1 config, `config/<name>.json`, is refused:
+    v1 configs are retired (#218). Read once, for the file's `kind`."""
     import yaml
 
     from .spec import looks_like_rig_file
@@ -143,11 +73,13 @@ def save_any(
         raw = yaml.safe_load(rig_path.read_text())
     except (OSError, yaml.YAMLError) as exc:
         raise SaveError(f"cannot read {rig_path}: {exc}") from exc
-    if looks_like_rig_file(raw):
-        return save_rig(name, rig_path, address, amp_model=amp_model,
-                        amp_parameters=amp_parameters, raw=raw)
-    return save_config(name, rig_path, out_dir, archive_dir, address,
-                       amp_model=amp_model, amp_parameters=amp_parameters)
+    if not looks_like_rig_file(raw):
+        raise SaveError(
+            f"{rig_path} is a rig.yaml of tracks, and a save from one wrote a v1 config, "
+            "config/<name>.json; v1 configs are retired. Save the rig of channels it runs as, "
+            "config/rigs/<name>.yaml"
+        )
+    return save_rig(name, rig_path, address, raw=raw)
 
 
 def save_rig(
@@ -172,9 +104,7 @@ def save_rig(
     compiles the file at every start.
 
     A run without the amp (`--no-amp`, or an amp that failed to start) says
-    nothing about the amp, so the file's `amp` is left as it is; `save_config`
-    removes it from a config, which a config's archive can give back and a
-    rig file's cannot. A parameter `amp_parameters` lacks is written as the
+    nothing about the amp, so the file's `amp` is left as it is. A parameter `amp_parameters` lacks is written as the
     plugin's default (`amp.write_amp`), as the listener's SAVE always has.
 
     `state` is a capture already made, which the agent passes (`POST
@@ -213,7 +143,7 @@ def save_rig(
         except yaml.YAMLError as exc:
             raise SaveError(f"cannot read {rig_path}: {exc}") from exc
     if not looks_like_rig_file(raw):
-        raise SaveError(f"{rig_path} is not a rig of channels; save_config saves a v1 rig")
+        raise SaveError(f"{rig_path} is not a rig of channels")
 
     if out_path != rig_path and out_path.exists():
         raise SaveError(
@@ -222,8 +152,10 @@ def save_rig(
         )
 
     state = capture(address) if state is None else copy.deepcopy(state)
-    # Captured properties are for checking a rig, not for writing one (see
-    # save_config and rigfile.merged_state).
+    # Captured properties are for checking a rig, not for writing one: which
+    # of a plugin's properties may be set at load is not known from the
+    # listing, and a value read back as "" would be baked into the file
+    # (rigfile.merged_state).
     for values in state.get("processors", {}).values():
         values.pop("properties", None)
     try:
@@ -321,37 +253,3 @@ def unused_path(base: Path, suffix: str = "", *, directory: bool = False) -> Pat
             return _claim(path, directory=directory)
         except FileExistsError:
             path, n = base.with_name(f"{base.name}-{n}{suffix}"), n + 1
-
-
-def _archive_existing(existing_path: Path, archive_dir: Path, name: str) -> str:
-    """Snapshot the config currently at `existing_path` before it's replaced.
-
-    Returns the version string to carry forward into the new save — re-saving
-    over an existing name never bumps the version automatically (bumps are a
-    deliberate act, per the versioning convention), so the new config inherits
-    whatever version was already there.
-
-    Archiving to `v<version>.json` could collide with an *earlier* archive of
-    the same version, since the version isn't bumped on every save. Rather
-    than silently overwrite a previous archive, append a timestamp — nothing
-    saved is ever lost, without inventing an automatic version bump.
-    """
-    existing: dict[str, Any] = json.loads(existing_path.read_text())
-    existing_meta = dict(existing.get("_meta", {}))
-    version = existing_meta.get("version", "1.0")
-
-    existing_meta["archived_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    existing["_meta"] = existing_meta
-
-    target_dir = archive_dir / name
-    target_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        archive_path = _claim(target_dir / f"v{version}.json")
-    except FileExistsError:
-        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
-        archive_path = unused_path(target_dir / f"v{version}-{stamp}", ".json")
-
-    archive_path.write_text(json.dumps(existing, indent=2) + "\n")
-    existing_path.unlink()
-    print(f"archived previous {name!r} ({version}) -> {archive_path}", file=sys.stderr)
-    return version

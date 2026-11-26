@@ -1,15 +1,13 @@
-# The v1 workflow
+# The v1 workflow (retired)
 
-This is the older way of working: a hand-written rig.yaml of tracks, compiled
-to `config/<name>.json`, run with `sushi-rig up <name>` (without `--rig`),
-tweaked, and saved back with `sushi-rig save`. The rig is now played and
-shaped from the web UI instead ([user guides](../guide/README.md)), from rigs
-of channels in `config/rigs/` ([the rig file](rig-file.md)).
-
-The Open Stage Control panel that this loop was built around, and the OSC
-listener behind its SAVE, reorder, amp and record buttons, are retired (#139,
-#218): `up` starts no panel and no listener, and every run is what was called
-headless. What each of the panel's jobs is now is [below](#the-open-stage-control-panel-retired).
+This was the older way of working: a hand-written rig.yaml of tracks, compiled
+to `config/<name>.json`, run with `sushi-rig up <name>`, tweaked on the Open
+Stage Control panel, and saved back from the panel's SAVE. It is retired
+(#139, #218): the rig is played and shaped from the web UI
+([user guides](../guide/README.md)), from rigs of channels in `config/rigs/`
+([the rig file](rig-file.md)), and `sushi-rig up <name>` runs
+`config/rigs/<name>.yaml`. This page says what each part became, and is kept
+as the record of how it worked.
 
 ```
 rig.yaml ──emit──> rig.json ──verify──> names confirmed against Sushi
@@ -23,36 +21,37 @@ rig.yaml ──emit──> rig.json ──verify──> names confirmed against 
 rig.yaml + state.json ──emit──> rig.json  (now carrying initial_state)
 ```
 
-Hand-authored: `rig.yaml` (or, for the v2 rigs, `config/rigs/*.yaml`), the
-per-machine `machines/<hostname>.yaml` that names physical ports, and any
-component profile under `tool/examples/profiles/`. Everything below the rig file
-in the diagram is generated.
-[`tool/examples/rig.example.yaml`](../../tool/examples/rig.example.yaml) is an
-annotated rig.yaml of this kind.
+## The v1 configs (retired)
 
-## Saving
+`config/*.json` were the v1 configs, one tone each, built from the rig.yaml
+sources in `config/src/` and saved over by the panel's SAVE (each earlier
+version archived under `config/archive/<name>/`). Every one was converted to a
+rig of channels of the same name (#30, `sushi-rig convert`), and the web UI ran
+only those. With the panel gone, nothing needed the v1 path, and `--rig`, which
+chose a rig of channels, became what `up` always does. Each part, now:
 
-`sushi-rig save <name> --rig <rig.yaml>` captures the running Sushi and writes
-`config/<name>.json` with the current sound baked in (issue #10), archiving
-the one it replaces under `config/archive/<name>/`. Given a rig of channels
-(`--rig config/rigs/<name>.yaml`), it folds the capture back into that file
-instead, in place and keeping its comments, and never writes a compiled config
-into `config/`: what the web UI's Save does, without the agent's log. A value
-the save did not change keeps the form the file wrote it in, so `1.0` stays
-`1.0` and one knob turned is one line in `git diff`. A capture that names
-processors the source does not have is refused: it is a capture of a
-different rig. `sushi-rig save` refuses a plugin added or removed live: only
-the agent's save has the log that explains one.
+| The v1 path did | Now |
+|---|---|
+| `up <name>` ran `config/<name>.json` | `up <name>` runs `config/rigs/<name>.yaml`; `--rig` is still taken and changes nothing; `"rig": false` in `POST /rig/up` is refused |
+| `restart` brought a v1 run back as one | A run is a rig of channels; a state file an older `up` wrote for a v1 config is brought back as the rig of channels of its name |
+| `sushi-rig save <name> --rig <rig.yaml>` wrote `config/<name>.json` and archived the one before | `sushi-rig save <name> --rig config/rigs/<name>.yaml` folds the capture into the rig file, in place with its comments; a rig.yaml of tracks is refused |
+| `verify --all`, `plugins check`, `doctor` read `config/*.json` | They read every rig of `config/rigs/`, compiled as Sushi loads it (`verify.config_to_check`) |
+| `nulltest --all` held each v1 config to `config/sound/<name>.v1-mono.yaml` | It holds the rigs and the frozen rigs; a v1 config left in `config/` would still be held to its reference |
 
-A captured session overrides the yaml in two ways, not one: parameter **values**
-(via `initial_state`) and plugin **order**. Pedal order is a tonal decision, so
-a save keeps the order it finds. The consequence worth knowing: the yaml's
-plugin order and a saved config's order can drift apart, exactly as their
-values already do. The yaml declares where a rig starts; a capture records
-where it got to.
+The ten v1 configs, their three sources and their sound references were moved,
+not deleted, to `config/retired/v1/` ([its README](../../config/retired/README.md)).
+`sushi-rig verify` still takes one by its path, `convert` still turns one into
+a rig of channels, and `emit`, `push`, `probes` and `patchbay generate` still
+read a rig.yaml of tracks (the annotated
+[`tool/examples/rig.example.yaml`](../../tool/examples/rig.example.yaml) is one).
+`config/archive/` is left as the panel's saves left it. A run an older `up`
+started from a v1 config, still playing at the upgrade, is refused a save and
+a take (`409 v1`) until it is restarted.
 
-The two cheap checks of [`verify`](commands.md#checking-a-config-verify) run
-automatically after `emit`.
+A captured session overrode the yaml in two ways, not one: parameter **values**
+(via `initial_state`) and plugin **order**, since pedal order is a tonal
+decision. The same holds for a rig of channels: a save writes the values,
+bypasses and order it finds.
 
 ## The Open Stage Control panel (retired)
 
@@ -79,3 +78,14 @@ missing". Each of its jobs, now:
 that commands written before keep working, and change nothing;
 `"headless": false` is refused. A state file written by an older `up` with
 `"mode": "panel"` is read as any other: nothing refuses for it.
+
+## Saving
+
+`sushi-rig save <name> --rig config/rigs/<name>.yaml` captures the running
+Sushi and folds the capture into that rig file, in place and keeping its
+comments (a new name writes a new rig file beside it): what the web UI's Save
+does, without the agent's log. A value the save did not change keeps the form
+the file wrote it in, so `1.0` stays `1.0` and one knob turned is one line in
+`git diff`. A capture that names processors the file does not have is refused:
+it is a capture of a different rig. `sushi-rig save` refuses a plugin added or
+removed live: only the agent's save has the log that explains one.

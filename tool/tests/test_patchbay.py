@@ -1181,7 +1181,8 @@ def test_the_committed_patchbay_is_what_generate_produces(monkeypatch, capsys):
     root = checkout_root()
     monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: CAPTURED)
     assert cli.main([
-        "patchbay", "generate", str(root / "config" / "src" / "guitar_vocal.yaml"),
+        # guitar_vocal's v1 source, retired with the v1 configs (#218).
+        "patchbay", "generate", str(root / "config" / "retired" / "v1" / "src" / "guitar_vocal.yaml"),
         "--machine", str(root / "machines" / "sonny-dewfall-XPS-9320.yaml"),
     ]) == 0
     assert capsys.readouterr().out == COMMITTED.read_text()

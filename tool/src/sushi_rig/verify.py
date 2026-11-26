@@ -484,10 +484,26 @@ def verify(config: Path, sushi_bin: str = "sushi", quick: bool = False) -> list[
 
 
 def configs_to_check(root: Path) -> list[Path]:
-    """Every config worth verifying: `config/*.json`, and nothing retired.
+    """Every rig worth verifying: the rigs of channels, `config/rigs/*.yaml`,
+    each read as `config_to_check` compiles it. What `verify --all`,
+    `plugins` and `doctor` take.
 
+    It was `config/*.json`, the v1 configs, until they were retired (#218).
     `config/retired/` is kept for recovery only and deliberately references
-    plugins the rig no longer has, so checking it would report failures that are
-    the whole point of retiring it.
+    plugins the rig no longer has, so checking it would report failures that
+    are the whole point of retiring it.
     """
-    return sorted((root / "config").glob("*.json"))
+    return sorted((root / "config" / "rigs").glob("*.yaml"))
+
+
+def config_to_check(path: Path) -> dict[str, Any]:
+    """The config the rig file at `path` compiles to, as Sushi loads it (the
+    copies to stereo, the limiter) but with no MIDI map, which needs a
+    machine file's controller: what `nulltest` renders a rig as
+    (`render.rig_channels`), so `verify --all` and the plugin checks read a
+    rig the same way on any machine, the CI container's included. Raises
+    `rigfile.RigFileError` for a rig that does not compile."""
+    from .rigfile import compile_rig, emit_compiled, load_rig
+
+    rig = load_rig(Path(path))
+    return emit_compiled(rig, *compile_rig(rig))

@@ -161,12 +161,11 @@ def parse_lifecycle(args: Sequence[str]) -> tuple[str, dict[str, Any]]:
         if not rest or rest[0].startswith("-"):
             raise ValueError("'up' needs a config name first")
         options: dict[str, Any] = {
-            "config_name": rest[0], "rig": False,
+            "config_name": rest[0],
             "tuner": True, "amp": True, "amp_model": None, "machine": None,
             "visualiser_tap": True,
         }
         flags = {
-            "--rig": ("rig", True),
             "--no-tuner": ("tuner", False), "--no-amp": ("amp", False),
             "--no-visualiser-tap": ("visualiser_tap", False),
         }
@@ -617,7 +616,7 @@ class Supervisor:
     # --------------------------------------------------------------------- up
 
     async def up(
-        self, config_name: str, *, rig: bool = False,
+        self, config_name: str, *,
         tuner: bool = True, amp: bool = True, amp_model: str | None = None,
         machine: str | None = None, visualiser_tap: bool = True,
     ) -> Outcome:
@@ -634,7 +633,7 @@ class Supervisor:
         try:
             launch = await asyncio.to_thread(
                 self.world.prepare, config_name, tuner=tuner, amp=amp,
-                amp_model=amp_model, rig=rig, warn=warnings.append,
+                amp_model=amp_model, warn=warnings.append,
                 visualiser_tap=visualiser_tap, **({"machine": machine} if machine else {}),
             )
         except Exception as exc:

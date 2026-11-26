@@ -246,8 +246,9 @@ keeps the file's comments; the amp is what the agent last sent Carla
 `name` it is "save as": a new `config/rigs/<name>.yaml` beside the running
 rig's file (another rig's name is refused, `taken`), which then becomes the
 running rig, recorded in the state file as a live switch records one, so
-`restart`, the next save, /health and /rigs follow it. Refused for a v1 run
-(`v1`: `sushi-rig save` saves a config).
+`restart`, the next save, /health and /rigs follow it. Refused for a run an
+older `up` started from a v1 config (`v1`: it has no rig file to save into;
+v1 configs are retired, #218, and a restart runs the rig of its name).
 
 The file is written and NOT committed: committing in the player's checkout
 is the player's call. The answer and the log entry (`op: "save"`, with the
@@ -870,16 +871,19 @@ def lifecycle_arguments(
         # 2026-11-01). `down` and `restart` act on a rig that exists; `up`
         # makes one, so it must be told which.
         if "config_name" not in body:
-            raise AgentError("config_name is required: the name of a file in config/")
+            raise AgentError("config_name is required: the name of a rig in config/rigs/")
         name = body["config_name"]
         if not isinstance(name, str) or not CONFIG_NAME.fullmatch(name) or ".." in name:
             raise AgentError(f"invalid config name {name!r}: letters, digits, '_', '-' and '.'")
         args = ["up", name]
-        if flag("rig", False):
-            # A rig of channels, config/rigs/<name>.yaml, compiled at start
-            # with its own patchbay (#30, #96). The same name check applies:
-            # it names a file in config/rigs/, never a path.
-            args.append("--rig")
+        # A rig of channels, config/rigs/<name>.yaml, compiled at start with
+        # its own patchbay (#30, #96): the only kind since the v1 configs were
+        # retired (#218). The name names a file in config/rigs/, never a
+        # path. `"rig": true`, which the page and `--rig` sent, is what every
+        # start is; false asks for a v1 config there is no longer any of.
+        if not flag("rig", True):
+            raise AgentError("'rig': false asks for a v1 config, config/<name>.json, and those are retired: "
+                             "every start is a rig of channels, config/rigs/<name>.yaml")
         if not flag("headless", True):
             # Every run is headless since the Open Stage Control panel was
             # retired (#139): `"headless": true`, which the page sent for a
@@ -6374,8 +6378,8 @@ class Agent:
 
         - 400: a name `save.validate_name` refuses, or a body with anything
           but `name` in it.
-        - 409 `busy`: a lifecycle command is running; `no_rig`; `v1`: a config not started with `--rig`,
-          which the CLI's `sushi-rig save` saves; `taken`: the name is
+        - 409 `busy`: a lifecycle command is running; `no_rig`; `v1`: a run an older `up` started from a v1 config,
+          which has no rig file to save into; `taken`: the name is
           another rig's file; `changed`: the running rig changed while this
           waited; `not_saved`: `save_rig` refused (a capture naming a
           plugin the file lacks and the log did not add, or lacking one the
@@ -9187,7 +9191,7 @@ def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     _, options = restart_arguments(state)
     machine = options.get("machine") or state.get("machine")
     up = lifecycle_arguments("up", {
-        "config_name": rig, "rig": True, "tuner": options["tuner"],
+        "config_name": rig, "tuner": options["tuner"],
         "amp": options["amp"] or not keeps_no_amp(state, rig),
         "visualiser_tap": options["visualiser_tap"],
     }, machine=_absolute_machine(machine))
@@ -9269,7 +9273,7 @@ def switch_request(body: Any) -> str:
     body = _object(body) if body is not None else {}
     if "config_name" not in body:
         raise AgentError("config_name is required: the name of a rig in config/rigs/")
-    return lifecycle_arguments("up", {"config_name": body["config_name"], "rig": True})[1]
+    return lifecycle_arguments("up", {"config_name": body["config_name"]})[1]
 
 
 def state_blockers(state: dict[str, Any]) -> list[rigfile.RestartReason]:
@@ -9322,8 +9326,9 @@ def amp_blockers(
 
 
 def switching_from(state: dict[str, Any], described: dict[str, Any]) -> str | None:
-    """The name of the rig a switch leaves: a rig of channels by its file,
-    a v1 config by its name."""
+    """The name of the rig a switch leaves: by its file, or, for a state
+    file an older `up` wrote for a v1 config, by the name it ran under,
+    which is the name of the rig of channels a restart brings back."""
     rig = state.get("rig") or described.get("rig")
     if isinstance(rig, str) and rig:
         return Path(rig).stem
@@ -9331,15 +9336,15 @@ def switching_from(state: dict[str, Any], described: dict[str, Any]) -> str | No
 
 
 def fallback_arguments(state: dict[str, Any]) -> list[str] | None:
-    """The `up` that brings the running rig back if a switch's `up` fails:
-    a rig of channels as the MIDI switch has always brought it back
-    (`switch_steps`), a v1 config as `restart` would. Pure."""
-    rig = state.get("rig")
-    if isinstance(rig, str) and rig:
-        return switch_steps(state, Path(rig).stem)[1]
-    name, options = restart_arguments(state)
+    """The `up` that brings the running rig back if a switch's `up` fails,
+    as the MIDI switch has always brought it back (`switch_steps`): the rig
+    of channels it runs from, or for a state file an older `up` wrote for a
+    v1 config, the rig of channels of its name, as `restart` would. Pure."""
+    name = switching_from(state, {})
+    if not name:
+        return None
     try:
-        return lifecycle_arguments("up", {"config_name": name, **options})
+        return switch_steps(state, name)[1]
     except AgentError:
         return None
 
@@ -9760,11 +9765,12 @@ def save_refusal(state: dict[str, Any], described: dict[str, Any]) -> tuple[str,
         return (f"no rig is running to save ({described.get('message') or 'nothing is up'})", "no_rig")
     rig = state.get("rig")
     if not isinstance(rig, str) or not rig:
+        # Only a state file an older `up` wrote, for a v1 config: every run is
+        # a rig of channels since those were retired (#218).
         name = state.get("config_name") or described.get("config_name") or "the running config"
-        return (f"{name} is a v1 config (config/{name}.json), not a rig of channels started with --rig: "
-                "a save from here writes a rig file in place, keeping its comments, and a v1 config is "
-                "saved as a new config/<name>.json from the rig.yaml it was built from, with the old one "
-                f"archived. Save it on the rig with `sushi-rig save <name> --rig <its rig.yaml>`", "v1")
+        return (f"{name} was started from a v1 config, config/{name}.json, by a sushi-rig from before v1 "
+                "configs were retired, and has no rig file to save into: restart it, which runs "
+                f"config/rigs/{name}.yaml, and save that", "v1")
     return None
 
 
@@ -9851,16 +9857,17 @@ def record_request(body: Any) -> str | None:
 def record_refusal(state: dict[str, Any], described: dict[str, Any]) -> tuple[str, str] | None:
     """`(reason, code)` for a run the agent does not record, or None. Pure
     over the state file and `describe_rig`'s answer, in the order a player
-    would fix them: no rig, then a v1 run."""
+    would fix them: no rig, then a run an older `up` started from a v1
+    config, whose state file names no rig file."""
     if not described.get("running"):
         return (f"no rig is running to record ({described.get('message') or 'nothing is up'})", "no_rig")
     rig = state.get("rig")
     if not isinstance(rig, str) or not rig:
         name = state.get("config_name") or described.get("config_name") or "the running config"
-        return (f"{name} is a v1 config, not a rig of channels started with --rig: a take records each "
-                "channel's own output beside its dry input, and only a rig of channels gives each channel "
-                "an output of its own (a v1 rig sums its tracks into the monitor bus). Start it as a rig of "
-                "channels (up --rig) to record", "v1")
+        return (f"{name} was started from a v1 config by a sushi-rig from before v1 configs were retired: a "
+                "take records each channel's own output beside its dry input, and only a rig of channels "
+                f"gives each channel an output of its own. Restart it, which runs config/rigs/{name}.yaml, "
+                "to record", "v1")
     return None
 
 

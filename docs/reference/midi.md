@@ -201,7 +201,7 @@ all. On the FBV that is A and B.
   refused, in `/health` (`agent.midi.last_error`, and `last` says so) and on the
   agent's stderr.
 - **It counts only from a rig of `config/rigs/`.** A rig running from any other
-  file (a v1 config, or `config/src/electric_board.yaml`) is not in the order,
+  file (a v1 config an older `up` started, or a retired rig.yaml) is not in the order,
   even where a file of `config/rigs/` has the same name, and a step from it is
   refused and said the same way.
 - **It switches by `POST /rig/switch`'s path**: live where it can be, otherwise a
@@ -592,7 +592,7 @@ volumes itself.
 
 A switch, by Program Change or step, is
 [`POST /rig/switch`'s](agent.md#switching-rigs-live): live where it can be,
-otherwise `down` then `up --rig` with the mode, tuner and amp choices `restart`
+otherwise `down` then `up` with the tuner, amp and visualiser tap choices `restart`
 would keep (not an `--amp-model` override, which belonged to the rig being
 left), about five seconds of silence. Switched by Program Change, the next rig
 switches on only if its own map says `programs: rigs`; the rig-stepping switches

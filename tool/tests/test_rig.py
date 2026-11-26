@@ -164,7 +164,7 @@ def test_up_hands_the_supervisor_the_machine_file_the_rig_was_compiled_against(u
         return 4242, ready_r
 
     monkeypatch.setattr(rig, "_fork_supervisor", fork)
-    assert rig.up("x", amp=False, rig=True) == 0
+    assert rig.up("x", amp=False) == 0
     assert seen[0].machine_file == MACHINE
 
 
@@ -198,7 +198,7 @@ def test_up_on_a_v2_rig_uses_its_compiled_config_and_patchbay(up_world, monkeypa
 
     monkeypatch.setattr(rig, "plan_children", plan)
     up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
-    assert rig.up("x", amp=False, rig=True) == 0
+    assert rig.up("x", amp=False) == 0
     assert seen == {"config": compiled, "patchbay": wired}
 
 
@@ -233,7 +233,7 @@ def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up
 
     monkeypatch.setattr(rig, "plan_children", plan)
     up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
-    assert rig.up("x", amp=True, rig=True) == 0
+    assert rig.up("x", amp=True) == 0
     assert seen == {"base": wired, "patchbay": rewired}
 
 
@@ -341,13 +341,16 @@ def test_a_running_tuner_the_patchbay_never_taps_is_said(tmp_path, monkeypatch):
     assert rig._unmade_link_problems(patchbay, {"sushi", "qpwgraph"}) == []
 
 
-def test_restart_brings_back_a_v2_rig_as_a_v2_rig():
+def test_restart_brings_back_a_rig_of_channels_whatever_the_state_file_says():
+    """Every `up` is a rig of channels since the v1 configs were retired
+    (#218): a state file an older `up` wrote for a v1 config of the same
+    name (no `rig`) is brought back as the rig of its name, as one with a
+    rig file is."""
     from sushi_rig.rig import restart_arguments
 
-    _, options = restart_arguments({"config_name": "x", "rig": "config/rigs/x.yaml"})
-    assert options["rig"] is True
-    _, options = restart_arguments({"config_name": "x", "rig": None})
-    assert options["rig"] is False
+    rig_run = restart_arguments({"config_name": "x", "rig": "config/rigs/x.yaml"})
+    v1_run = restart_arguments({"config_name": "x", "rig": None})
+    assert rig_run == v1_run and rig_run[0] == "x" and "rig" not in rig_run[1]
 
 
 def test_status_names_the_rig_file_a_v2_run_came_from(world, capsys):
@@ -646,7 +649,7 @@ def test_restart_brings_back_the_same_rig():
     })
     assert name == "electric-chorus-2"
     assert options == {
-        "tuner": True, "amp": True, "amp_model": None, "rig": False, "machine": None,
+        "tuner": True, "amp": True, "amp_model": None, "machine": None,
         "visualiser_tap": True,
     }
 
@@ -661,7 +664,7 @@ def test_restart_preserves_the_choices_the_rig_was_started_with():
         "children": {"sushi": 1},
     })
     assert options == {
-        "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None,
+        "tuner": False, "amp": False, "amp_model": None, "machine": None,
         "visualiser_tap": False,
     }
 
@@ -691,10 +694,9 @@ def test_restart_brings_a_rig_of_channels_back_on_the_machine_file_it_was_starte
 
     _, options = restart_arguments({"config_name": "board", "rig": "config/rigs/board.yaml",
                                     "machine": "/m/stage.yaml", "children": {"sushi": 1}})
-    assert options["rig"] is True and options["machine"] == "/m/stage.yaml"
-    _, v1 = restart_arguments({"config_name": "board", "machine": "/m/stage.yaml",
-                               "children": {"sushi": 1}})
-    assert v1["machine"] is None, "a v1 config is not compiled against one"
+    assert options["machine"] == "/m/stage.yaml"
+    _, v1 = restart_arguments({"config_name": "board", "children": {"sushi": 1}})
+    assert v1["machine"] is None, "a state file an older `up` wrote for a v1 config names none"
 
 
 def test_restart_carries_the_amp_model_override():
@@ -1207,7 +1209,7 @@ def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch
     assert rig.restart() == 0
     assert calls == [("electric_board", {
         "tuner": True, "amp": True,
-        "amp_model": "amp/models/Other.nam", "rig": False, "machine": None, "visualiser_tap": False,
+        "amp_model": "amp/models/Other.nam", "machine": None, "visualiser_tap": False,
     })]
 
 
@@ -1230,6 +1232,40 @@ def whole_plugins(tmp_path, monkeypatch):
     check."""
     folder = stand_in_plugins(tmp_path / "plugins")
     monkeypatch.setattr(rig, "plugins_folder", lambda root: folder)
+    stand_in_rigs(monkeypatch, tmp_path)
+
+
+def frozen_config(name: str) -> dict:
+    """The config frozen rig `name` compiles to (rig_fixtures.py): what
+    `up` runs for it, the MIDI map aside, which no test here plays."""
+    from rig_fixtures import compiled_to_render, frozen
+
+    return compiled_to_render(frozen(name))
+
+
+def stand_in_rigs(monkeypatch, tmp_path):
+    """`prepare_rig` and `compile_named_rig` over the frozen rigs, with no
+    live graph or machine file: every `up` is a rig of channels since the v1
+    configs were retired (#218), and these tests are about what `up` does
+    with one, not how it is wired (`prepare_rig`'s own tests above). A name
+    the frozen set lacks is refused as `prepare_rig` refuses it."""
+    from rig_fixtures import FROZEN
+
+    def compile_named(name, root, machine_file=None):
+        if not (FROZEN / f"{name}.yaml").is_file():
+            raise rig.RigError(f"no such rig: {root / 'config' / 'rigs' / f'{name}.yaml'}")
+        return frozen_config(name)
+
+    def prepare(name, root, runtime, **kw):
+        compiled = compile_named(name, root)
+        out = tmp_path / "compiled" / f"{name}.json"
+        out.parent.mkdir(exist_ok=True)
+        out.write_text(json.dumps(compiled))
+        return {"config": out, "patchbay": None, "source": f"config/rigs/{name}.yaml", "warnings": [],
+                "machine": MACHINE}
+
+    monkeypatch.setattr(rig, "prepare_rig", prepare)
+    monkeypatch.setattr(rig, "compile_named_rig", compile_named)
 
 
 @pytest.fixture
@@ -1240,6 +1276,7 @@ def up_world(runtime, monkeypatch, tmp_path):
     before a start sets `.plugins` to one with a plugin left out."""
     seen = SimpleNamespace(killed=[], forked=0, supervise_kwargs=[], plugins=stand_in_plugins(tmp_path / "plugins"))
     monkeypatch.setattr(rig, "plugins_folder", lambda root: seen.plugins)
+    stand_in_rigs(monkeypatch, tmp_path)
     monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
     monkeypatch.setattr(rig, "pgid_alive", lambda pgid: False)
     monkeypatch.setattr(rig, "port_is_open", lambda host, port, *a, **k: False)
@@ -1321,9 +1358,9 @@ def test_up_refuses_when_something_already_holds_the_grpc_port(up_world, monkeyp
     assert up_world.forked == 0
 
 
-def test_up_refuses_an_unknown_config(up_world):
+def test_up_refuses_an_unknown_rig(up_world):
     up_world.say("READY")
-    with pytest.raises(rig.RigError, match="no such config"):
+    with pytest.raises(rig.RigError, match="no such rig"):
         rig.up("no_such_config_anywhere")
     assert up_world.forked == 0
 
@@ -1338,7 +1375,7 @@ def test_up_refuses_a_rig_whose_plugins_are_not_all_in_plugins_naming_them_and_t
     from sushi_rig.cli import main
     from sushi_rig.plugins import config_uris
 
-    config = json.loads((ROOT / "config" / f"{rig.DEFAULT_CONFIG_NAME}.json").read_text())
+    config = frozen_config(rig.DEFAULT_CONFIG_NAME)
     missing = sorted(config_uris(config))[0]
     up_world.plugins = stand_in_plugins(tmp_path / "partial", leave_out=(missing,))
     multiarch = fake_lv2_system(tmp_path, monkeypatch)
@@ -1377,7 +1414,8 @@ def test_restart_whose_rig_up_would_refuse_refuses_before_down_and_the_rig_plays
     nothing is stopped, and the message says so."""
     from sushi_rig.plugins import config_uris
 
-    config = json.loads((ROOT / "config" / f"{rig.DEFAULT_CONFIG_NAME}.json").read_text())
+    stand_in_rigs(monkeypatch, tmp_path)
+    config = frozen_config(rig.DEFAULT_CONFIG_NAME)
     missing = sorted(config_uris(config))[0]
     partial = stand_in_plugins(tmp_path / "partial", leave_out=(missing,))
     monkeypatch.setattr(rig, "plugins_folder", lambda root: partial)

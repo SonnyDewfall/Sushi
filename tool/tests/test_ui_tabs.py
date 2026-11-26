@@ -1019,7 +1019,7 @@ def test_a_v1_run_has_a_tab_per_track_and_no_master(browser):
         expect(shown(p)).to_have_text(["overdrive", "octave", "delay"])
         expect(unit(p, "octave")).to_have_class(MINIMISED)
         expect(p.locator(".amp-card")).to_contain_text("no amp")  # no file to place it by: the first track's tab
-        expect(p.locator(".inputs-why")).to_contain_text("guitar_vocal is a v1 config")
+        expect(p.locator(".inputs-why")).to_have_attribute("title", re.compile("^guitar_vocal was started from a v1 config"))
         expect(p.locator("nav.channels .strip")).to_have_count(0)
         page.close()
 

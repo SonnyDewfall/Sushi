@@ -822,8 +822,9 @@ of committed rigs: an add, a remove and a move saved into
 `config/rigs/accustomed.yaml` change exactly those entries. A save in place
 writes the file the rig runs from whatever it is called (`Guitar.Vocal.yaml`
 compiles, so it saves); only a name chosen for a new file is checked. Refused
-for a v1 run (`409
-v1`: `sushi-rig save` saves a config), and while a lifecycle command runs
+for a run an older `up` started from a v1 config (`409
+v1`: it has no rig file to save into; a restart runs the rig of its name,
+since the v1 configs were retired, #218), and while a lifecycle command runs
 (`409 busy`). **The file is written, never committed**: committing in your
 checkout is your call, and the answer gives the commit it sits on, what git
 says of the file itself (untracked, changed, unchanged) and whether other

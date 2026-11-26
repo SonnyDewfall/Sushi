@@ -109,11 +109,11 @@ def world(runtime, tmp_path, monkeypatch):
 
     state = {"launch": launch}
 
-    def prepare(config_name, *, tuner, amp, amp_model, rig, warn, visualiser_tap):
+    def prepare(config_name, *, tuner, amp, amp_model, warn, visualiser_tap):
         # The tap asked for is recorded as asked for; whether it is planned is
         # the test's (a plan of its own, through `launch(children=...)`).
         asked.append(dict(config_name=config_name, tuner=tuner, amp=amp,
-                          amp_model=amp_model, rig=rig, visualiser_tap=visualiser_tap))
+                          amp_model=amp_model, visualiser_tap=visualiser_tap))
         return state["launch"](config_name, tuner=tuner,
                                visualiser_tap_requested=visualiser_tap)
 
@@ -155,6 +155,23 @@ async def settle_until(condition, seconds: float = 5.0) -> None:
         await asyncio.sleep(0.02)
 
 
+def as_rig_of_channels(monkeypatch, world):
+    """`prepare_rig` and `compile_named_rig` give back `world.root`'s
+    config/t.json as rig t's compiled config, with no live graph or machine
+    file: every `up` is a rig of channels since the v1 configs were retired
+    (#218), and these tests are about the plugin check and the refusals of
+    `prepare_launch`, not the wiring (test_rig.py's)."""
+    import json
+
+    def compile_named(name, root, machine_file=None):
+        return json.loads((root / "config" / f"{name}.json").read_text())
+
+    monkeypatch.setattr(rig, "compile_named_rig", compile_named)
+    monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
+        "config": root / "config" / f"{name}.json", "patchbay": None, "source": f"config/rigs/{name}.yaml",
+        "warnings": [], "machine": None})
+
+
 # --------------------------------------------------------------------------- #
 # The decisions, pure
 # --------------------------------------------------------------------------- #
@@ -179,7 +196,7 @@ def test_the_steps_the_agent_plans_are_read_back_as_they_were_meant(body, comman
     if command == "up":
         body = body or {}
         assert options == {
-            "config_name": body["config_name"], "rig": body.get("rig", False),
+            "config_name": body["config_name"],
             "tuner": body.get("tuner", True),
             "amp": body.get("amp", True), "amp_model": body.get("amp_model"), "machine": None,
             "visualiser_tap": body.get("visualiser_tap", True),
@@ -195,8 +212,8 @@ def test_a_machine_file_the_agent_carries_is_read_back_as_up_s_machine():
     which only the agent supplies, never a request; it reaches `up` intact."""
     agent = pytest.importorskip("sushi_rig.agent")
     args = agent.lifecycle_arguments("up", {"config_name": "x", "rig": True}, machine="/m/stage.yaml")
-    assert args == ["up", "x", "--rig", "--machine", "/m/stage.yaml"]
-    assert parse_lifecycle(args) == ("up", {"config_name": "x", "rig": True, "tuner": True,
+    assert args == ["up", "x", "--machine", "/m/stage.yaml"]
+    assert parse_lifecycle(args) == ("up", {"config_name": "x", "tuner": True,
                                             "amp": True, "amp_model": None, "machine": "/m/stage.yaml",
                                             "visualiser_tap": True})
     with pytest.raises(agent.AgentError, match="an absolute path"):
@@ -206,7 +223,8 @@ def test_a_machine_file_the_agent_carries_is_read_back_as_up_s_machine():
 
 
 @pytest.mark.parametrize("args", [
-    [], ["shell"], ["up"], ["up", "--headless"], ["up", "x", "--headless"], ["up", "x", "--force"], ["up", "x", "--amp-model"],
+    [], ["shell"], ["up"], ["up", "--headless"], ["up", "x", "--headless"], ["up", "x", "--rig"], ["up", "x", "--force"],
+    ["up", "x", "--amp-model"],
     ["down", "--headless"], ["restart", "now"], ["restart", "--amp", "--amp"], ["restart", "--no-amp"],
 ])
 def test_anything_else_is_not_a_lifecycle_step(args):
@@ -250,7 +268,7 @@ def test_up_starts_what_plan_children_plans_in_one_group_the_agent_holds(world, 
     assert world.spawner.commands() == [sys.executable, *planned], "the holder, then the plan, in order"
     assert "Rig up: t\n" in outcome.stdout
     assert world.asked == [dict(config_name="t", tuner=True, amp=True,
-                                amp_model=None, rig=False, visualiser_tap=True)]
+                                amp_model=None, visualiser_tap=True)]
 
 
 def test_the_state_file_the_agent_writes_round_trips_through_status(world, capsys):
@@ -281,7 +299,7 @@ def test_the_state_file_the_agent_writes_round_trips_through_status(world, capsy
     assert "(DEAD)" not in printed
     assert recorded["visualiser_tap_requested"] is True, "what was asked for, as the tuner's is"
     assert rig.restart_arguments(recorded) == ("t", {
-        "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None,
+        "tuner": False, "amp": False, "amp_model": None, "machine": None,
         "visualiser_tap": True})
 
 
@@ -290,6 +308,7 @@ def test_a_second_up_is_refused_by_the_state_file_the_agent_wrote(world, monkeyp
     and the agent's rig is a rig like any other to it."""
     world.world = dataclasses.replace(world.world, prepare=rig.prepare_launch)
     monkeypatch.setattr(rig, "checkout_root", lambda: world.root)
+    as_rig_of_channels(monkeypatch, world)
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
@@ -327,6 +346,7 @@ def test_an_up_through_the_agent_whose_plugins_are_not_all_in_plugins_is_refused
     declaring(multiarch, "calf", calf)
     world.world = dataclasses.replace(world.world, prepare=rig.prepare_launch)
     monkeypatch.setattr(rig, "checkout_root", lambda: world.root)
+    as_rig_of_channels(monkeypatch, world)
     agent = Agent(supervisor=Supervisor(world.world, say=lambda m: None))
 
     async def go():
@@ -552,7 +572,7 @@ def test_restart_brings_back_what_was_asked_for_in_a_new_group(world):
     assert outcome.stdout.startswith("Restarting t...\nStopping t...\nRig offline.\n")
     assert "Rig up: t\n" in outcome.stdout
     assert world.asked[0] == world.asked[1] == dict(
-        config_name="t", tuner=False, amp=False, amp_model=None, rig=False, visualiser_tap=True)
+        config_name="t", tuner=False, amp=False, amp_model=None, visualiser_tap=True)
 
 
 def test_restart_with_the_amp_on_brings_the_amp_to_a_run_started_without_it(world):
@@ -571,7 +591,7 @@ def test_restart_with_the_amp_on_brings_the_amp_to_a_run_started_without_it(worl
     assert outcome.ok, outcome
     assert [a["amp"] for a in world.asked] == [False, False, True]
     assert world.asked[2] == dict(
-        config_name="t", tuner=False, amp=True, amp_model=None, rig=False, visualiser_tap=True)
+        config_name="t", tuner=False, amp=True, amp_model=None, visualiser_tap=True)
 
 
 def test_a_restart_whose_up_would_refuse_is_refused_before_down_and_the_rig_plays_on(world, monkeypatch, tmp_path):
@@ -590,6 +610,7 @@ def test_a_restart_whose_up_would_refuse_is_refused_before_down_and_the_rig_play
     bundle = declaring(world.root / "plugins", "calf", calf)
     fake_lv2_system(tmp_path, monkeypatch)
     monkeypatch.setattr(rig, "checkout_root", lambda: world.root)
+    as_rig_of_channels(monkeypatch, world)
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():

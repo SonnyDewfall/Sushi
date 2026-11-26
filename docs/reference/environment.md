@@ -120,8 +120,8 @@ actually results is a measurement, and belongs with `selftest` (issue #49).
 where to capture is too, and can be read before anything is linked:
 
 ```bash
-sushi-rig probes config/src/guitar_vocal.yaml         # every port each probe links
-sushi-rig probes config/src/guitar_vocal.yaml --amp   # as run with an amp model
+sushi-rig probes config/rigs/guitar_vocal.yaml        # every port each probe links
+sushi-rig probes config/rigs/guitar_vocal.yaml --amp  # as run with an amp model
 ```
 
 Every half of every track's output is its own probe, so a chain that comes out

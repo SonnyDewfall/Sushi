@@ -771,14 +771,17 @@ def test_guitar_vocal_cannot_be_rendered_offline_and_says_why():
     assert problem and "'vocal'" in problem and "engine bus 1" in problem
 
 
-def test_guitar_vocal_is_the_only_config_in_the_repository_that_cannot_be():
+def test_guitar_vocal_is_the_only_frozen_v1_config_that_cannot_be():
     """Pinned as a set, not by one example each way: a regression that wrongly
     flagged electric-delay would otherwise pass, and quietly drop its
-    protection."""
+    protection. Over the frozen v1 configs (rig_fixtures.py), since the
+    repository's own were retired to config/retired/v1/ (#218)."""
     import json
 
+    from rig_fixtures import FROZEN_V1
+
     unrenderable = {
-        c.name for c in (ROOT / "config").glob("*.json")
+        c.name for c in FROZEN_V1.glob("*.json")
         if render.offline_problem(json.loads(c.read_text())) is not None
     }
     assert unrenderable == {"guitar_vocal.json"}
@@ -985,17 +988,20 @@ def test_a_track_name_that_cannot_name_a_file_is_refused():
         render.channels_of({"tracks": [{"name": "A B", "inputs": [{"engine_bus": 1}]}, {"name": "c"}]}, Path("x.json"))
 
 
-def test_every_channel_of_every_config_in_the_repository_renders():
+def test_every_channel_of_every_frozen_v1_config_renders():
     """The property that matters now, and the one guitar_vocal used to fail.
 
     No head-count is written down here: a literal number made adding a config
     fail a test that was not about how many configs there are. What is pinned
     is that every channel of every config is accepted, and that none is lost or
-    named twice on the way.
+    named twice on the way. Over the frozen v1 configs (rig_fixtures.py),
+    since the repository's own were retired to config/retired/v1/ (#218).
     """
     import json
 
-    configs = sorted((ROOT / "config").glob("*.json"))
+    from rig_fixtures import FROZEN_V1
+
+    configs = sorted(FROZEN_V1.glob("*.json"))
     assert configs, "found no configs; the glob is looking in the wrong place"
     every = [
         channel

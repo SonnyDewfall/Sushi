@@ -32,6 +32,30 @@ Its successor is `config/rigs/electric-octave.yaml` (2026-11-17, #164): the
 same board, with the octave up on Rubber Band 4.0's Live shifter, on a channel
 of its own (`docs/reference/plugins.md`).
 
+## The v1 configs (2026-11-26, #218)
+
+Retired with the v1 path: `sushi-rig up` runs only rigs of channels from
+`config/rigs/` now, and nothing reads `config/<name>.json`. Moved here, not
+deleted, since all but `electric_board` and `guitar_vocal` were tones saved
+from the panel. Each has a rig of channels of the same name in `config/rigs/`
+it was converted to (#30, `sushi-rig convert`). What is here:
+
+- `v1/*.json`, the ten v1 configs, from `config/`: accustomed,
+  electric-chorus, electric-chorus-2, electric-chorus-hall, electric-clean,
+  electric-delay, electric-spacey-delay, electric_board, guitar_vocal and
+  hard-feelings
+- `v1/src/*.yaml`, the three rig.yaml sources they were built from, from
+  `config/src/`: electric_board, electric_stereo and guitar_vocal
+- `v1/sound/*.v1-mono.yaml`, their sound references, from `config/sound/`:
+  `nulltest --all` takes only the rigs of channels now, and would call these
+  orphans
+
+They still load as they are: `sushi-rig verify config/retired/v1/<name>.json`
+takes one by its path, and `sushi-rig convert` turns one into a rig of
+channels. `nulltest` looks for a v1 config's reference in `config/sound/`, so
+to null-test one, put its reference back there first. `config/archive/`,
+the earlier versions their saves archived, is left where it was.
+
 Note this directory is distinct from `config/archive/`, which `sushi-rig
 save` (and, until it was retired, the panel's listener) writes to snapshot
 previous versions of a config when you re-save over its name. Nothing writes here; it is hand-curated.

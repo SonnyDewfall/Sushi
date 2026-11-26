@@ -240,8 +240,8 @@ def test_what_cannot_be_recorded_from_here_is_refused_with_a_code_and_why(root):
         "the panel is retired: no refusal for it"
     no_rig = {k: v for k, v in world.state.items() if k != "rig"}
     reason, code = record_refusal(no_rig, world.described())
-    assert code == "v1" and reason.startswith("duo is a v1 config, not a rig of channels started with --rig")
-    assert "up --rig" in reason
+    assert code == "v1" and reason.startswith("duo was started from a v1 config by a sushi-rig from before")
+    assert "Restart it, which runs config/rigs/duo.yaml" in reason
     world.running = False
     assert record_refusal(world.state, world.described())[1] == "no_rig"
 
@@ -518,7 +518,7 @@ def test_a_bad_name_is_400_and_nothing_is_asked(root):
 
 @pytest.mark.parametrize("change, code, said", [
     (lambda w: setattr(w, "running", False), "no_rig", "no rig is running to record"),
-    (lambda w: w.state.pop("rig"), "v1", "is a v1 config, not a rig of channels"),
+    (lambda w: w.state.pop("rig"), "v1", "was started from a v1 config"),
 ])
 def test_what_cannot_be_recorded_from_here_is_refused_and_said_as_unavailable(root, change, code, said):
     world = World(root)

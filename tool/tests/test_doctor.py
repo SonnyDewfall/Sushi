@@ -430,6 +430,7 @@ def test_an_appimage_is_recognised_by_its_magic_not_its_name(tmp_path):
     assert doctor._is_appimage(extracted) is False
 
 
+@pytest.mark.committed_rigs  # doctor reads every rig of config/rigs/ (#218)
 def test_gathering_the_environment_runs_and_answers_in_the_right_types():
     """The effect, exercised. What it finds depends on the machine, so only the
     shape is asserted — the decisions above are where the meaning is tested."""
@@ -450,6 +451,7 @@ def test_the_captured_fixture_is_still_a_dump_of_nodes_and_ports():
     assert {"sushi", "Carla", "NAM"} <= names
 
 
+@pytest.mark.committed_rigs  # doctor reads every rig of config/rigs/ (#218)
 def test_the_command_runs_end_to_end_and_names_every_check(capsys):
     """The anti-rot guarantee #48 asks for. What it *finds* depends on the
     machine — this container has no PipeWire, the rig machine has all of it — so
@@ -486,6 +488,7 @@ def test_the_command_runs_end_to_end_and_names_every_check(capsys):
     assert len(verdicts) == 1, f"expected one patchbay verdict, got {verdicts}"
 
 
+@pytest.mark.committed_rigs  # doctor reads every rig of config/rigs/ (#218)
 def test_a_pw_dump_that_is_not_json_does_not_abort_the_command(monkeypatch, capsys):
     """`pw-dump` exiting 0 with output that is not JSON raises from the *parse*,
     not the read. That escaped as a traceback, while the identical exception
@@ -529,10 +532,11 @@ def test_a_fault_never_rounds_itself_up_past_the_threshold():
     assert "1.0" not in short.message
 
 
-def test_the_stem_count_comes_from_the_largest_rig_not_a_guess():
+def test_the_stem_count_comes_from_the_largest_rig_not_a_guess(frozen_root):
     """Rigs will have one, two or more channels. guitar_vocal has two, each
-    recorded dry and processed."""
-    assert doctor._largest_rig(ROOT) == (4, "guitar_vocal")
+    recorded dry and processed. Read off the rigs of channels, the frozen
+    ones here (rig_fixtures.py), since the v1 configs were retired (#218)."""
+    assert doctor._largest_rig(frozen_root) == (4, "guitar_vocal")
     eight = doctor.check_disk(environment(take_stems=8, takes_free_bytes=ONE_HOUR))
     assert eight.state == FAULT, "twice the stems, half the time"
     assert "8-stem take of guitar_vocal" in eight.message
@@ -559,6 +563,7 @@ def test_a_takes_folder_linked_to_an_unplugged_drive_is_a_fault(tmp_path):
     assert check.state == FAULT and "connect the drive" in check.remedy
 
 
+@pytest.mark.committed_rigs
 def test_the_committed_amp_models_are_trained_at_the_rigs_rate():
     """Real files: both Neve models declare 48 kHz. A superset, so committing a
     third good model does not break the test of the property it shares."""
@@ -568,17 +573,21 @@ def test_the_committed_amp_models_are_trained_at_the_rigs_rate():
 
 
 def test_a_model_a_config_plays_is_checked_wherever_it_lives(tmp_path):
-    """A config's _amp.model can point outside amp/models. Checking the library
-    alone passed a config whose model was never looked at."""
+    """A rig's amp model can point outside amp/models. Checking the library
+    alone passed a config whose model was never looked at. A rig of channels,
+    since the v1 configs, where this was first found, were retired (#218)."""
     import json
 
-    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "rigs").mkdir(parents=True)
     elsewhere = tmp_path / "elsewhere" / "vintage.nam"
     elsewhere.parent.mkdir()
     elsewhere.write_text(json.dumps({"architecture": "WaveNet", "sample_rate": 44100}))
-    (tmp_path / "config" / "tone.json").write_text(json.dumps(
-        {"tracks": [], "_amp": {"plugin": "nam", "model": str(elsewhere)}}
-    ))
+    (tmp_path / "config" / "rigs" / "tone.yaml").write_text(
+        "kind: rig\nschema_version: 1\nname: tone\n"
+        f"amp: {{plugin: nam, model: {elsewhere}}}\n"
+        "channels:\n- {name: guitar, input: guitar-in, width: mono, chain: []}\n"
+        "master: {output: monitor-out, chain: []}\n"
+    )
     models = doctor._models(tmp_path)
     assert models == (doctor.ModelInfo("vintage.nam", 44100, "", ("tone",)),)
     check = doctor.check_models(environment(models=models))
@@ -625,16 +634,20 @@ def test_no_models_at_all_cannot_mismatch():
 
 
 @pytest.mark.parametrize("body", [
-    {"tracks": None}, {"tracks": 5}, {"tracks": {"a": 1}}, ["tracks"], None,
+    "kind: rig\nchannels: null\n", "kind: rig\nchannels: 5\n", "kind: rig\nchannels: {a: 1}\n",
+    "[channels]\n", "", "{not yaml\n",
 ])
 def test_one_odd_config_does_not_take_the_doctor_down(tmp_path, body):
-    """`"tracks": null` parses, and raised TypeError out of the comprehension
-    with nothing above `gather_environment` to catch it."""
-    import json
-
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "odd.json").write_text(json.dumps(body))
-    (tmp_path / "config" / "tone.json").write_text(json.dumps({"tracks": [{}, {}, {}]}))
+    """`"tracks": null` parsed, and raised TypeError out of the comprehension
+    with nothing above `gather_environment` to catch it. The rigs of channels
+    now (the v1 configs were retired, #218): an odd rig file is passed over."""
+    (tmp_path / "config" / "rigs").mkdir(parents=True)
+    (tmp_path / "config" / "rigs" / "odd.yaml").write_text(body)
+    channel = "- {{name: {}, input: guitar-in, width: mono, chain: []}}\n"
+    (tmp_path / "config" / "rigs" / "tone.yaml").write_text(
+        "kind: rig\nschema_version: 1\nname: tone\nchannels:\n"
+        + "".join(channel.format(n) for n in ("a", "b", "c"))
+        + "master: {output: monitor-out, chain: []}\n")
     assert doctor._largest_rig(tmp_path) == (3 * doctor.STEMS_PER_CHANNEL, "tone")
     assert doctor._models(tmp_path) == ()
 
@@ -739,7 +752,7 @@ def test_the_record_check_plans_the_running_rig_from_its_state_file(tmp_path):
 
 @pytest.mark.parametrize("case, said", [
     ("down", "no rig is running"),
-    ("v1", "is a v1 config"),
+    ("v1", "was started from a v1 config"),
 ])
 def test_the_record_check_is_unchecked_where_there_is_nothing_to_ask(tmp_path, case, said):
     state, described = running_rig(tmp_path)
@@ -812,6 +825,7 @@ def test_an_unexpected_error_planning_the_take_is_that_checks_fault_not_doctors_
     assert check.state == FAULT and "failed unexpectedly: KeyError: 'tracks'" in check.message
 
 
+@pytest.mark.committed_rigs  # doctor reads every rig of config/rigs/ (#218)
 def test_run_reports_the_recorders_ports(tmp_path, monkeypatch):
     """The whole examination, with the graph, the rig and JACK stood in: the
     check is there, between the patchbay and the machine around it."""
@@ -1113,6 +1127,7 @@ def test_whether_realtime_can_be_had_is_read_from_the_agents_limit_and_rtkit(mon
     assert doctor._realtime_grant(99) == (True, "rtkit-daemon is running")
 
 
+@pytest.mark.committed_rigs  # doctor reads every rig of config/rigs/ (#218)
 def test_the_examination_reads_the_agents_tap_and_its_threads_by_pid(tmp_path, monkeypatch):
     from sushi_rig import patchbay, rig as rig_module, state as state_module
 

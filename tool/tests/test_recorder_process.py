@@ -327,7 +327,7 @@ def test_a_rig_of_channels_plans_a_recorder_under_pw_jack(tmp_path):
         tmp_path, tmp_path / "run" / "duo.json", tuner=False)]
 
 
-def test_up_plans_a_recorder_for_a_rig_of_channels_only(monkeypatch, tmp_path, runtime):
+def test_up_plans_a_recorder_for_every_rig(monkeypatch, tmp_path, runtime):
     from sushi_rig import rig
 
     seen = []
@@ -339,14 +339,8 @@ def test_up_plans_a_recorder_for_a_rig_of_channels_only(monkeypatch, tmp_path, r
     monkeypatch.setattr(rig, "prepare_rig", lambda *a, **k: {
         "config": tmp_path / "c.json", "patchbay": None, "source": "config/rigs/x.yaml", "warnings": [],
         "machine": None})
-    rig.prepare_launch("x", rig=True, amp=False, tuner=False)
-    # A v1 config, config/<name>.json: no take is planned for it, so no recorder.
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "x.json").write_text('{"tracks": []}')
-    monkeypatch.setattr(rig, "checkout_root", lambda: tmp_path)
-    monkeypatch.setattr(rig, "check_plugins", lambda *a, **k: None)
-    rig.prepare_launch("x", rig=False, amp=False, tuner=False)
-    assert seen == [runtime / "recorder.sock", None]
+    rig.prepare_launch("x", amp=False, tuner=False)
+    assert seen == [runtime / "recorder.sock"], "every run is a rig of channels since #218, and has one"
 
 
 # --------------------------------------------------------------------------- #
@@ -556,7 +550,7 @@ def test_the_planned_recorder_crashing_is_a_crash_in_health_and_is_not_restarted
     supervisor = Supervisor(world, say=said.append)
 
     async def go():
-        assert (await supervisor.up("t", rig=True)).ok
+        assert (await supervisor.up("t")).ok
         deadline = asyncio.get_running_loop().time() + 5
         while not supervisor.crashed:
             assert asyncio.get_running_loop().time() < deadline, "no crash seen"

@@ -182,11 +182,10 @@ guessing would be the silent right channel again, or a stereo plugin folded.
 
 What this does not do:
 
-- **The v1 configs still lose the right channel.** `config/*.json`, which
-  `sushi-rig up <name>` without `--rig` runs, are left as they were; their
-  null-test references are `config/sound/<name>.v1-mono.yaml`, named for
-  what they are. `up --rig`, the agent's switches and the web UI run rigs of
-  channels, and are stereo.
+- **The v1 configs lose the right channel.** They were left as they were,
+  their null-test references named `<name>.v1-mono.yaml` for what they are,
+  and are retired to `config/retired/v1/` (#218): `up`, the agent's switches
+  and the web UI run only rigs of channels, which are stereo.
 - On a **stereo** channel a mono plugin hears the left input alone, and its
   copy puts that on both sides. No committed rig has a stereo channel.
 - A plugin with no audio output would silence everything after it, and is
@@ -196,9 +195,8 @@ What this does not do:
   plugin's image folded. If the second fails, the first is undone; if that
   fails too, the agent says what the chain holds, and a copy left with no
   plugin before it may then be moved or removed, which is the repair.
-- The patchbay and SAVE's check of which rig file describes the running rig
-  compile for routing only, without the copies, and need no
-  `plugin-ports.txt`; everything whose chains Sushi loads (`up --rig`,
+- The patchbay compiles for routing only, without the copies, and needs no
+  `plugin-ports.txt`; everything whose chains Sushi loads (`up`,
   `emit`, the renders, the probes) has the copies and refuses a plugin the
   table lacks.
 - **Measured on the rig, not judged by ear.** Offline renders in CI's container
@@ -245,13 +243,14 @@ before #208 (`# From channel preset …`) is replaced the same way.
 
 ## Rigs converted from v1 configs
 
-Every tone in `config/*.json` has a rig of the same name, first written by
+Every tone of the v1 configs, `config/*.json` until they were retired to
+`config/retired/v1/` (#218), has a rig of the same name, first written by
 `convert`, which refuses to write one that does not compile back to every
 plugin and setting the config held:
 
 ```bash
-sushi-rig convert config/electric-clean.json            # -> config/rigs/electric-clean.yaml
-sushi-rig convert config/x.json --input vocal=vocal-in:mono   # more than one track
+sushi-rig convert config/retired/v1/electric-clean.json -o /tmp/electric-clean.yaml   # its rig exists already
+sushi-rig convert x.json --input vocal=vocal-in:mono   # more than one track
 ```
 
 The rig in `config/rigs/` is the one to edit, and is no longer compared with
@@ -264,7 +263,7 @@ plugin's output on both channels and the v1 config does not (see
 [A mono plugin on a stereo channel](#a-mono-plugin-on-a-stereo-channel)), so
 each has a sound reference of its own, the rig's `config/sound/<name>.yaml`
 (`<name>.<channel>.yaml` for a rig of more than one channel) and the v1
-config's `<name>.v1-mono.yaml`. A rig's reference records the rig file it was
+config's `<name>.v1-mono.yaml` (with it in `config/retired/v1/sound/`). A rig's reference records the rig file it was
 made from (`made_from`, a hash of the part of the file the render is made
 from: the channels, the master and `host`, not the amp, the MIDI map or the
 description), so a rig saved with a setting changed is reported stale, with
@@ -276,14 +275,15 @@ the file in place (comments, blank lines and key order stay), and `convert
 
 Each input is linked once, the master's outputs go to the monitors, and the
 stems are linked to nothing. The probes follow each channel through its stem
-and, through its send, out of the master. This is what `up --rig` and the web
+and, through its send, out of the master. This is what `up` and the web
 UI run.
 
 ## v1: a rig.yaml of tracks
 
-The older form, `config/src/*.yaml`, which `emit` also reads and the v1
-configs in `config/*.json` are built from
-([the v1 workflow](v1-workflow.md)). There a channel is a role, a chain and an engine bus. `config/src/guitar_vocal.yaml`
+The older form, which `emit`, `push`, `probes` and `patchbay generate` still
+read, and the retired v1 configs were built from
+([the v1 workflow](v1-workflow.md); the sources are in
+`config/retired/v1/src/` since #218). There a channel is a role, a chain and an engine bus. `guitar_vocal.yaml`
 is the first rig with two: a guitar on bus 0 and a vocal on bus 1, summing into
 one monitor pair.
 

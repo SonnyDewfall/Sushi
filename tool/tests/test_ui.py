@@ -805,8 +805,8 @@ def test_save_is_offered_whenever_a_rig_saveable_from_here_is_up(blank):
     assert v["save"]["disabled"] and v["saveAs"]["disabled"] and v["note"] == "No rig is running to save."
     v = view({**up, "rig": None, "config_name": "guitar_vocal"})
     assert v["save"]["disabled"] and v["saveAs"]["disabled"]
-    assert v["note"] == ("guitar_vocal is a v1 config, not a rig of channels started with --rig, so it is not saved "
-                         "from here. Save it on the rig with: sushi-rig save <name> --rig <its rig.yaml>")
+    assert v["note"] == ("guitar_vocal was started from a v1 config by an older sushi-rig, so it has no rig file to "
+                         "save into. Restart it, which runs config/rigs/guitar_vocal.yaml, and save that.")
     for mode in ("panel", "headless"):
         v = view({**up, "mode": mode})
         assert not v["save"]["disabled"] and not v["saveAs"]["disabled"]
@@ -1700,7 +1700,7 @@ def test_a_rig_is_started_from_the_picker_and_busy_is_shown_meanwhile(browser):
         expect(p.get_by_role("button", name="Start electric_board")).to_be_disabled()
         expect(p.locator(".rig-name")).to_have_text("electric_board")  # the agent's busy line meanwhile
         expect(p.locator(".notice")).to_have_attribute("title", re.compile(re.escape("Started electric_board.")), timeout=8000)
-        assert world.calls == [["up", "electric_board", "--rig"]]
+        assert world.calls == [["up", "electric_board"]]
         expect(p.locator(".rig.up")).to_have_text("electric_boardup now")
         expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"])
         expect(p.locator(".unit")).to_have_count(3)
@@ -1722,7 +1722,7 @@ def test_a_refused_start_shows_the_agents_reason_and_nothing_starts(browser):
         expect(alert).to_contain_text("Not started: electric-delay")
         expect(alert).to_have_attribute("title", re.compile(re.escape("error: no machine file for this host (test)")))
         expect(p.locator(".rig-name")).to_have_text("Rig down")
-        assert world.calls == [["up", "electric-delay", "--rig"]]
+        assert world.calls == [["up", "electric-delay"]]
         page.close()
 
 
@@ -3337,7 +3337,7 @@ def test_text_the_browser_enlarges_past_its_computed_size_is_measured_as_it_is_d
 
 
 @pytest.mark.parametrize("change, said", [
-    (lambda s: s.save.state.update(rig=None), "is a v1 config, not a rig of channels"),
+    (lambda s: s.save.state.update(rig=None), "was started from a v1 config"),
     (lambda s: setattr(s.recorder.link, "down", "no recorder is listening (test)"), "the recorder is not answering"),
 ])
 def test_why_recording_is_off_is_said_on_the_bar(browser, record_served, change, said):

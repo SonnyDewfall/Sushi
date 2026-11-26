@@ -201,7 +201,8 @@ def test_what_cannot_be_saved_from_here_is_refused_with_a_code_and_the_way_that_
     assert save_refusal(world.state, world.described()) is None, "the panel is retired: no refusal for it"
     world = World(root, rig=None)
     reason, code = save_refusal(world.state, world.described())
-    assert code == "v1" and "sushi-rig save <name> --rig" in reason and "not a rig of channels" in reason
+    assert code == "v1" and "was started from a v1 config" in reason
+    assert "restart it, which runs config/rigs/electric_board.yaml" in reason
 
 
 def test_a_save_as_renames_the_run_and_keeps_everything_else(root):
@@ -384,7 +385,7 @@ def test_a_save_as_is_a_new_file_beside_the_rig_and_becomes_the_running_rig(root
     assert health["rig"]["config_name"] == "board-two" and health["rig"]["rig"] == "config/rigs/board-two.yaml"
     assert rigs["rigs"] == ["board-two", "electric_board"]
     from sushi_rig.rig import restart_arguments
-    assert restart_arguments(world.state)[0] == "board-two" and restart_arguments(world.state)[1]["rig"]
+    assert restart_arguments(world.state)[0] == "board-two"
     # And the next plain save writes there.
     rig.info["overdrive"]["Drive"]["value"] = 0.9
     status, again = call(agent, "POST", "/rig/save")

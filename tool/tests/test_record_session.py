@@ -423,8 +423,8 @@ def test_a_v1_rig_of_tracks_has_no_stems_to_record(tmp_path):
     assert said == (
         f"recording is not available: no take can be planned for this run: {v1} is a "
         "rig.yaml of tracks, and takes are planned only for a rig of channels, where "
-        "each channel has an output of its own to record; run it with "
-        "`sushi-rig up --rig <name>`"
+        "each channel has an output of its own to record: run a rig of config/rigs/ "
+        "with `sushi-rig up <name>`"
     )
 
 

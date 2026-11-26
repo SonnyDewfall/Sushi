@@ -754,9 +754,9 @@ def test_a_switch_by_restart_carries_the_runs_machine_file(root):
     and not into another, #246.)"""
     state = World(root).state
     steps = switch_steps(state, "two-guitars")
-    assert steps == [["down"], ["up", "two-guitars", "--rig", "--no-tuner",
+    assert steps == [["down"], ["up", "two-guitars", "--no-tuner",
                                 "--machine", state["machine"]]]
-    assert switch_steps(state, "guitar_vocal")[1] == ["up", "guitar_vocal", "--rig", "--no-tuner",
+    assert switch_steps(state, "guitar_vocal")[1] == ["up", "guitar_vocal", "--no-tuner",
                                                       "--no-amp", "--machine", state["machine"]]
     v1 = {"config_name": "x", "children": {"sushi": 1}}
     assert "--machine" not in switch_steps(v1, "two-guitars")[1]

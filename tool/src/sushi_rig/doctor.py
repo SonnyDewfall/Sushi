@@ -46,7 +46,6 @@ changing one field, and says which field.
 from __future__ import annotations
 
 import ctypes
-import json
 import math
 import re
 import shutil
@@ -608,12 +607,13 @@ def record_check(root: Path, rig: dict, state: dict | None, *,
     if not rig.get("running") or not state:
         return Check("record-ports", UNCHECKED,
                      "no rig is running, so there is no take to plan and no port to look for",
-                     "run `sushi-rig up --rig <name>` and check again")
+                     "run `sushi-rig up <name>` and check again")
     if not (isinstance(state.get("rig"), str) and state["rig"]):
         return Check("record-ports", UNCHECKED,
-                     f"{state.get('config_name') or 'the running config'} is a v1 config, and takes are "
-                     "planned only for a rig of channels, so recording is off for this run",
-                     "start a rig of channels (`sushi-rig up --rig <name>`) to record")
+                     f"{state.get('config_name') or 'the running config'} was started from a v1 config by an "
+                     "older sushi-rig, and takes are planned only for a rig of channels, so recording is off "
+                     "for this run",
+                     "restart it (`sushi-rig restart`), which runs the rig of channels of its name, to record")
 
     def absolute(value: Any) -> Path | None:
         if not isinstance(value, str) or not value:
@@ -1278,18 +1278,18 @@ def _free_bytes(path: Path) -> tuple[int | None, str]:
 
 
 def _largest_rig(root: Path) -> tuple[int, str]:
-    """The stems a take of the largest rig in config/ records, and its name."""
+    """The stems a take of the largest rig in config/rigs/ records, and its name."""
+    from .rigfile import load_rig
     from .verify import configs_to_check
 
     stems, name = STEMS_PER_CHANNEL, ""
     for config in configs_to_check(root):
         try:
-            tracks = json.loads(config.read_text()).get("tracks", [])
-            # Inside the try: `"tracks": null` or a number parses, and is a
-            # TypeError only once something iterates it. An unreadable config is
-            # skipped, as one that is not JSON is.
-            count = STEMS_PER_CHANNEL * len([t for t in tracks if isinstance(t, dict)])
-        except (OSError, ValueError, AttributeError, TypeError):
+            # Its channels, as the file has them: each is recorded dry and
+            # processed. A file that is not a rig is skipped:
+            # test_rig_fixtures.py says which.
+            count = STEMS_PER_CHANNEL * len(load_rig(config).channels)
+        except Exception:  # noqa: BLE001 -- one bad rig must not cost doctor its answer
             continue
         if count > stems:
             stems, name = count, config.stem
@@ -1310,16 +1310,16 @@ def _describe(path: Path, used_by: tuple[str, ...]) -> ModelInfo:
 
 
 def _models(root: Path) -> tuple[ModelInfo, ...]:
-    """Every model the rig can play: the library, and what each config points at."""
+    """Every model the rig can play: the library, and what each rig points at."""
     from .amp import CONFIG_KEY, AmpError, model_library, resolve_model
-    from .verify import configs_to_check
+    from .verify import config_to_check, configs_to_check
 
     users: dict[Path, list[str]] = {}
     missing: list[ModelInfo] = []
     for config in configs_to_check(root):
         try:
-            amp = json.loads(config.read_text()).get(CONFIG_KEY)
-        except (OSError, ValueError, AttributeError):
+            amp = config_to_check(config).get(CONFIG_KEY)
+        except Exception:  # noqa: BLE001 -- a rig that does not compile is test_rig_fixtures.py's to name
             continue
         model = amp.get("model") if isinstance(amp, dict) else None
         if not isinstance(model, str):

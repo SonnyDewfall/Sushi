@@ -49,11 +49,12 @@ HEALTH = {"ok": True, "agent": {"supervisor": {"holds": None, "crashed": [], "no
 
 def test_each_command_becomes_the_route_and_body_the_cli_would_have_run():
     assert agent_client.lifecycle_request("up", namespace()) == ("/rig/up", {
-        "config_name": "guitar_vocal", "rig": False, "tuner": True, "amp": True})
+        "config_name": "guitar_vocal", "tuner": True, "amp": True})
     assert agent_client.lifecycle_request(
         "up", namespace(rig=True, headless=True, tuner=False, amp=False, amp_model="M.nam"),
-    ) == ("/rig/up", {"config_name": "guitar_vocal", "rig": True,
-                      "tuner": False, "amp": False, "amp_model": "M.nam"}), "every run is headless: not sent"
+    ) == ("/rig/up", {"config_name": "guitar_vocal",
+                      "tuner": False, "amp": False, "amp_model": "M.nam"}), \
+        "every run is headless and a rig of channels: neither is sent"
     assert agent_client.lifecycle_request("down", namespace(force=True)) == ("/rig/down", {"force": True})
     assert agent_client.lifecycle_request("restart", namespace()) == ("/rig/restart", {})
     assert agent_client.lifecycle_request("restart", namespace(amp_on=True)) == ("/rig/restart", {"amp": True}), \
@@ -75,8 +76,8 @@ def test_no_visualiser_tap_reaches_the_agent_as_up_takes_it_and_comes_back_as_th
 
 def test_up_no_visualiser_tap_on_the_command_line_reaches_up(direct, monkeypatch):
     monkeypatch.setattr(agent_client, "probe", nothing_listening)
-    assert cli._main(["up", "board", "--rig", "--no-visualiser-tap"]) == 0
-    assert cli._main(["up", "board", "--rig"]) == 0
+    assert cli._main(["up", "board", "--no-visualiser-tap"]) == 0
+    assert cli._main(["up", "board"]) == 0
     assert [call[2]["visualiser_tap"] for call in direct] == [False, True]
 
 
@@ -159,7 +160,7 @@ def test_with_no_agent_running_each_command_acts_directly_and_says_so(direct, mo
     assert cli._main(["restart"]) == 0
     assert cli._main(["status"]) == 0
     assert direct == [
-        ("up", "guitar_vocal", {"tuner": True, "amp": False, "amp_model": None, "rig": False,
+        ("up", "guitar_vocal", {"tuner": True, "amp": False, "amp_model": None,
                                 "machine": None, "visualiser_tap": True}),
         ("down", True), ("restart",), ("status",),
     ]
@@ -179,13 +180,13 @@ def test_with_the_agent_running_each_command_asks_it_and_says_so(direct, monkeyp
 
     monkeypatch.setattr(agent_client, "probe", lambda base, timeout=None: HEALTH)
     monkeypatch.setattr(agent_client, "ask", ask)
-    assert cli._main(["up", "guitar_vocal", "--rig", "--no-tuner"]) == 0
+    assert cli._main(["up", "guitar_vocal", "--no-tuner"]) == 0
     assert cli._main(["down"]) == 0
     assert cli._main(["restart"]) == 0
     assert cli._main(["status"]) == 0
     assert direct == [], "nothing was done directly"
     assert asked == [
-        ("POST", "/rig/up", {"config_name": "guitar_vocal", "rig": True,
+        ("POST", "/rig/up", {"config_name": "guitar_vocal",
                              "tuner": False, "amp": True}),
         ("POST", "/rig/down", {"force": False}),
         ("POST", "/rig/restart", {}),
@@ -425,9 +426,9 @@ def test_up_takes_a_machine_file_directly_and_never_through_the_agent(direct, mo
     unless `--direct`, with nothing done; directly, it reaches `up` absolute."""
     monkeypatch.setattr(agent_client, "probe", lambda *a, **k: pytest.fail("asked the agent"))
     with pytest.raises(SystemExit) as refused:
-        cli._main(["up", "board", "--rig", "--machine", str(tmp_path / "m.yaml")])
+        cli._main(["up", "board", "--machine", str(tmp_path / "m.yaml")])
     assert "--machine is taken with --direct only" in str(refused.value.code) and direct == []
     monkeypatch.chdir(tmp_path)
-    assert cli._main(["up", "board", "--rig", "--machine", "m.yaml", "--direct"]) == 0
+    assert cli._main(["up", "board", "--machine", "m.yaml", "--direct"]) == 0
     assert direct == [("up", "board", {"tuner": True, "amp": True, "amp_model": None,
-                                       "rig": True, "machine": str(tmp_path / "m.yaml"), "visualiser_tap": True})]
+                                       "machine": str(tmp_path / "m.yaml"), "visualiser_tap": True})]

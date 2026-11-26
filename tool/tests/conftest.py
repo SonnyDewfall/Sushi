@@ -45,6 +45,34 @@ def _config_rigs_is_read_only_on_purpose(request):
         pytest.fail(rig_fixtures.said(stray), pytrace=False)
 
 
+@pytest.fixture(autouse=True)
+def _the_checkouts_rigs_to_check_are_the_frozen_ones(request, monkeypatch):
+    """`verify.configs_to_check` lists config/rigs/: what `verify --all`,
+    `plugins` and `doctor` take, and what a refusal's `plugins add` advice is
+    worked out over (`plugins._add_requires`), since the v1 configs it once
+    listed were retired (#218). For the real checkout, a test not marked
+    `committed_rigs` gets the frozen rigs (rig_fixtures.py) instead, so that
+    what it is told does not change with the owner's saves and no read of
+    config/rigs/ is made that it did not mean. Another root, a test's own
+    checkout, is listed as it is."""
+    if request.node.get_closest_marker(rig_fixtures.MARKER):
+        yield
+        return
+    from sushi_rig import verify
+    from sushi_rig.paths import checkout_root
+
+    real = verify.configs_to_check
+    here = checkout_root().resolve()
+
+    def listed(root):
+        if Path(root).resolve() == here:
+            return sorted(rig_fixtures.FROZEN.glob("*.yaml"))
+        return real(root)
+
+    monkeypatch.setattr(verify, "configs_to_check", listed)
+    yield
+
+
 @pytest.fixture
 def real_dump() -> dict:
     """The real `--dump-plugins` output captured from Sushi 1.3.0.

@@ -1107,7 +1107,7 @@ class UiLifecycle:
         else:
             _, why = how
             self.started = datetime.now(timezone.utc).replace(microsecond=0)
-            answer.update(how="restart", why=why, command=["up", name, "--rig"], output="")
+            answer.update(how="restart", why=why, command=["up", name], output="")
             entry = self.agent._record("rig", {"rig": name, "how": "restart", "why": [w["code"] for w in why]}, previous)
         self.rig = name
         if self.on_switch:

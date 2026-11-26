@@ -1702,7 +1702,7 @@ export const RETIRED_KEYS = ["sushi-rig.binned"];
 // ---------------------------------------------------------------- saving (S4)
 // POST /rig/save: the running rig into its own file of config/rigs, or "save
 // as" a new one, which then is the running rig. The agent decides what can be
-// saved and says why not (v1, taken, a chain changed live...); these
+// saved and says why not (a run from a v1 config, taken, a chain changed live...); these
 // only say what the page offers and what an answer means.
 
 // A rig's name, as save.validate_name checks it (save.NAME_PATTERN): it
@@ -1754,7 +1754,8 @@ export function seenSince(health, logAnswer) {
 // what the agent saw (not pedals mapped in Sushi, nor anything before the
 // agent started, nor an amp change while GET /amp failed), so an empty list
 // is no proof the file holds what is playing. Not offered, with why and how
-// to save instead, for a v1 run (`rig.rig` null), which the agent refuses.
+// to save instead, for a run an older `up` started from a v1 config (`rig.rig`
+// null), which the agent refuses (v1 configs are retired, #218).
 // `fmt` writes a time.
 export function saveView(health, unsaved, pending, logAnswer = null, fmt = (iso) => iso) {
   const agentUp = !!(health && health.ok);
@@ -1767,8 +1768,8 @@ export function saveView(health, unsaved, pending, logAnswer = null, fmt = (iso)
   let blocked = null;
   if (!running) blocked = "No rig is running to save.";
   else if (!file) {
-    blocked = `${running} is a v1 config, not a rig of channels started with --rig, so it is not saved from here. `
-      + "Save it on the rig with: sushi-rig save <name> --rig <its rig.yaml>";
+    blocked = `${running} was started from a v1 config by an older sushi-rig, so it has no rig file to save into. `
+      + `Restart it, which runs config/rigs/${running}.yaml, and save that.`;
   }
   const since = seenSince(health, logAnswer);
   const off = !!blocked || !idle;
@@ -2786,7 +2787,7 @@ export function wiringView(health, channelsAnswer, unsaved) {
   }
   if (!rig.rig) {
     const name = rig.config_name || "The running config";
-    return { blocked: `${name} is a v1 config (started with \`sushi-rig up\` without \`--rig\`), which has no rig file to edit: `
+    return { blocked: `${name} was started from a v1 config by an older sushi-rig, which has no rig file to edit: `
       + "start it from the picker, or make a rig with New rig…" };
   }
   const name = rig.config_name;

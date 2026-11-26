@@ -187,11 +187,8 @@ def restart_plugins_refusal(
     crashed too, and only one that plays "plays on" (review of PR #198)."""
     root = root if root is not None else checkout_root()
     try:
-        if options.get("rig"):
-            machine = options.get("machine")
-            config = compile_named_rig(config_name, root, Path(machine) if machine else None)
-        else:
-            config = json.loads((root / "config" / f"{config_name}.json").read_text())
+        machine = options.get("machine")
+        config = compile_named_rig(config_name, root, Path(machine) if machine else None)
     except Exception:  # noqa: BLE001 -- the restart's `up` refuses it in its own words
         return None
     if not isinstance(config, dict):
@@ -608,11 +605,11 @@ def state_record(
         # choice: restoring that would pin today's model for good, and a
         # later edit to the config would be ignored by every restart.
         "amp_model_requested": launch.amp_model_requested,
-        # The rig file a v2 run was compiled from, None for a v1 config.
-        # `restart` brings back the same kind; `status` says which.
+        # The rig file the run was compiled from, `config/rigs/<name>.yaml`.
+        # A state file an older `up` wrote for a v1 config has none.
         "rig": launch.rig_source,
-        # The machine file that run was compiled against, None for a v1
-        # config. A restart, a switch and a take recompile the rig and must
+        # The machine file that run was compiled against. A restart, a
+        # switch and a take recompile the rig and must
         # read the same file, not whatever this host's default is.
         "machine": _machine_record(launch.machine_file),
     }
@@ -817,7 +814,7 @@ def start_children(
     running = {name for name, proc in procs.items() if proc.poll() is None}
     if "qpwgraph" in running:
         step("checking the patchbay's links were made")
-        problems += link_problems(launch.children, root, running, launch.rig_source is not None)
+        problems += link_problems(launch.children, root, running, True)
 
     if launch.amp_model and "amp" in running:
         # Carla starts with the model but with the plugin's own default
@@ -952,8 +949,8 @@ def _unmade_link_problems(
     the tuner's tap, and `up --no-tuner` must not wait the settle and then
     warn about a link that was never going to be made. The advice names the
     file qpwgraph loaded; a rig run adds the machine file, which is where its
-    patchbay's ports come from, and a v1 run does not, since its file is the
-    committed one.
+    patchbay's ports come from (`rig_run`, which every run is since the v1
+    configs were retired, #218; False is the committed patchbay's advice).
     """
     from .patchbay import (
         PatchbayError, TUNER_PORT, _rig_child, live_port_names, parse_patchbay,
@@ -1080,8 +1077,8 @@ class Launch:
     tuner_requested: bool
     amp_requested: bool
     amp_model_requested: str | None
-    rig_source: str | None
-    machine_file: Path | None
+    rig_source: str
+    machine_file: Path
     # Whether the agent may offer the visualiser's tap (`vistap`). False
     # unless said, so a Launch built by hand offers none.
     visualiser_tap_requested: bool = False
@@ -1093,7 +1090,6 @@ def prepare_launch(
     tuner: bool = True,
     amp: bool = True,
     amp_model: str | None = None,
-    rig: bool = False,
     warn: Callable[[str], None] | None = None,
     machine: str | None = None,
     visualiser_tap: bool = True,
@@ -1113,13 +1109,6 @@ def prepare_launch(
             print(f"warning: {message}", file=sys.stderr)
 
     root = checkout_root()
-    rig_source: str | None = None
-    rig_patchbay: Path | None = None
-    rig_machine: Path | None = None
-    config = root / "config" / f"{config_name}.json"
-    if not rig and not config.is_file():
-        raise RigError(f"no such config: {config}")
-
     existing = read_state()
     verdict = liveness(existing, pid_alive, pgid_alive)
     if verdict == "running":
@@ -1167,16 +1156,17 @@ def prepare_launch(
             "file exists."
         )
 
-    if rig:
-        # After the running-rig and port guards, so a refusal compiles nothing.
-        prepared_rig = prepare_rig(config_name, root, runtime_dir(), tuner=tuner,
-                                   machine_file=Path(machine) if machine else None)
-        config = prepared_rig["config"]
-        rig_patchbay = prepared_rig["patchbay"]
-        rig_source = prepared_rig["source"]
-        rig_machine = prepared_rig["machine"]
-        for warning in prepared_rig["warnings"]:
-            warn(warning)
+    # After the running-rig and port guards, so a refusal compiles nothing.
+    # Every run is a rig of channels, `config/rigs/<name>.yaml`, since the v1
+    # configs were retired (#218).
+    prepared_rig = prepare_rig(config_name, root, runtime_dir(), tuner=tuner,
+                               machine_file=Path(machine) if machine else None)
+    config = prepared_rig["config"]
+    rig_patchbay = prepared_rig["patchbay"]
+    rig_source = prepared_rig["source"]
+    rig_machine = prepared_rig["machine"]
+    for warning in prepared_rig["warnings"]:
+        warn(warning)
 
     # Before anything is started, and before the amp is prepared: a chain
     # whose plugins are not all in plugins/ is one Sushi cannot build.
@@ -1203,9 +1193,7 @@ def prepare_launch(
 
     children_plan = plan_children(
         root, config, tuner=tuner, amp_project=amp_project, patchbay=amp_patch,
-        # A take is planned only for a rig of channels (transport.plan_for_run),
-        # so a v1 run gets no recorder, and the agent says why (GET /record).
-        recorder_socket=recorder_socket() if rig else None,
+        recorder_socket=recorder_socket(),
     )
 
     return Launch(
@@ -1222,7 +1210,6 @@ def up(
     tuner: bool = True,
     amp: bool = True,
     amp_model: str | None = None,
-    rig: bool = False,
     machine: str | None = None,
     visualiser_tap: bool = True,
 ) -> int:
@@ -1234,11 +1221,10 @@ def up(
     running; with one, the CLI asks the agent instead (#29), and the agent
     starts the same `Launch` itself (`supervisor.py`).
 
-    `rig` means `config_name` names a rig of channels, `config/rigs/<name>.yaml`,
-    compiled at start with its own patchbay (`prepare_rig`). Opt-in rather than
-    the default while a v1 config of the same name exists: the monitor path was
-    heard to be the same on 2026-11-01, but a two-channel rig has not been, and
-    what `up` starts by default changes only once it has.
+    `config_name` names a rig of channels, `config/rigs/<name>.yaml`,
+    compiled at start with its own patchbay (`prepare_rig`). It was `--rig`'s
+    and opt-in while v1 configs, `config/<name>.json`, ran too; they are
+    retired (#218), and a rig of channels is what `up` runs.
 
     `machine` is the machine file a rig of channels is compiled and wired
     against, this host's (`machine_path`) unless given: `restart` and a
@@ -1249,7 +1235,7 @@ def up(
     either way; the agent starts one while the visualiser listens.
     """
     launch = prepare_launch(
-        config_name, tuner=tuner, amp=amp, amp_model=amp_model, rig=rig,
+        config_name, tuner=tuner, amp=amp, amp_model=amp_model,
         machine=machine, visualiser_tap=visualiser_tap,
     )
     pid, ready_r = _fork_supervisor(lambda ready_w: _supervise(launch, ready_w=ready_w))
@@ -1461,7 +1447,6 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     tuner = state.get("tuner_requested")
     amp = state.get("amp_requested")
     tap = state.get("visualiser_tap_requested")
-    rig = isinstance(state.get("rig"), str) and bool(state.get("rig"))
     machine = state.get("machine")
     return state.get("config_name", DEFAULT_CONFIG_NAME), {
         "tuner": tuner if isinstance(tuner, bool) else "fmit" in children,
@@ -1471,12 +1456,13 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         # so it never declined one, and gets `up`'s default, on.
         "visualiser_tap": tap if isinstance(tap, bool) else True,
         "amp_model": state.get("amp_model_requested") or None,
-        "rig": rig,
         # The machine file the run was compiled and wired against, so the
         # restart is the same rig on the same roles. Before 2026-11-06 it was
         # dropped and `up` read this host's file, which a draft checked
-        # against the run's (the web UI's rig files) need not match.
-        "machine": machine if rig and isinstance(machine, str) and machine else None,
+        # against the run's (the web UI's rig files) need not match. A state
+        # file an older `up` wrote for a v1 config has none: that restart
+        # runs the rig of channels of its name, on this host's file.
+        "machine": machine if isinstance(machine, str) and machine else None,
     }
 
 

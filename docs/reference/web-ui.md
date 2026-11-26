@@ -468,7 +468,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   is offered whenever a rig that can be saved from here is up, since the
   count on it is only what the agent saw (its title says since when, and
   that a count of none is not proof the file holds what is playing); for a
-  v1 run both buttons are off and say how to save instead. Save as… asks for a name, checks it by
+  run an older `up` started from a v1 config (retired, #218) both buttons are
+  off and say to restart it to save. Save as… asks for a name, checks it by
   the rule the agent saves by (lowercase letters, digits, `-` and `_`) before
   sending, and writes a new rig that becomes the running one. The answer says
   what was written, that it is **not committed** (the agent never commits) and
@@ -914,7 +915,7 @@ output are as they were, and no delay is added.
 
 **The rig's output** is the master: the master track's outputs (engine bus 0),
 after the master chain, the master limiter (#137) and the master volume, so
-what the monitors are sent; for a v1 config, engine bus 0, with no limiter.
+what the monitors are sent.
 Chromium lists no monitor sources, so it cannot be captured from the
 interface's sink. The agent offers it **on demand** (`vistap.py`, review of
 PR #200), only while a visualiser listens:

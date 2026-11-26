@@ -131,8 +131,8 @@ quantum on the client it captures with.
 
 Three things to know before that run. The process has to be started under
 `pw-jack`, or JACK-Client finds a libjack that talks to no server; `up` starts
-the listener that way. The listener constructs a `CaptureEngine` for a `--rig`
-run, with the ports `transport.rig_stems` plans from the rig and the machine
+the recorder that way. The recorder constructs a `CaptureEngine` for a rig of
+channels, with the ports `transport.rig_stems` plans from the rig and the machine
 file, and says why it has none otherwise (`transport.record_session`). And the
 JACK dependency is the `[capture]` extra; importing this module never
 imports it.
