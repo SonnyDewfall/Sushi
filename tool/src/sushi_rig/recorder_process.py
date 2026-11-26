@@ -105,7 +105,10 @@ STOP_TIMEOUT = 20.0
 # less its terminating NUL); a longer one is refused with that said, not cut.
 SOCKET_PATH_MAX = 107
 
-OPS = ("status", "start", "stop")
+OPS = ("status", "start", "stop", "levels")
+
+# A stem's sample on disk: `transport.SUBTYPE`, float32 (`signals.WavWriter`).
+SAMPLE_BYTES = 4
 
 
 class RecorderDown(Exception):
@@ -188,7 +191,8 @@ def parse_request(line: bytes) -> dict[str, Any]:
         raise RequestError(f"the request is not JSON: {exc}") from exc
     if not isinstance(request, dict) or request.get("op") not in OPS:
         raise RequestError(f"a request is {{\"op\": one of {', '.join(OPS)}, ...}}, not {request!r}")
-    allowed = {"status": {"op", "run"}, "start": {"op", "name", "run", "amp"}, "stop": {"op", "by"}}[request["op"]]
+    allowed = {"status": {"op", "run"}, "start": {"op", "name", "run", "amp"}, "stop": {"op", "by"},
+               "levels": {"op"}}[request["op"]]
     extra = set(request) - allowed
     if extra:
         raise RequestError(f"{request['op']} does not take {', '.join(sorted(extra))}")
@@ -214,6 +218,13 @@ def refusal(code: str, reason: str) -> dict[str, Any]:
     return {"ok": False, "code": code, "reason": reason}
 
 
+def bytes_per_second(stems, sample_rate: int) -> int:
+    """What a take of these stems writes a second: every channel of every
+    stem, at the take's rate, in float32 (`SAMPLE_BYTES`). The WAV headers
+    are a few dozen bytes a stem, once, and are left out."""
+    return sum(int(channels) for _, channels in stems) * int(sample_rate) * SAMPLE_BYTES
+
+
 def stems_shown(stems) -> list[dict[str, Any]]:
     """A plan's stems as an answer lists them: file, port, channel count."""
     return [{"file": stem.filename, "channel": stem.channel, "tap": stem.tap, "port": stem.port,
@@ -233,6 +244,8 @@ class _Take:
     started: float
     stems: list[dict[str, Any]]
     said: str
+    rate: int | None = None
+    bytes_per_second: int | None = None
 
 
 class RecorderCore:
@@ -281,6 +294,8 @@ class RecorderCore:
                 return self.status(request.get("run"))
             if request["op"] == "start":
                 return self.start(request["name"], request["run"], request.get("amp"))
+            if request["op"] == "levels":
+                return self.levels()
             return self.stop(request.get("by", "request"))
         except Exception as exc:  # noqa: BLE001 -- said, the process lives on
             reason = " ".join(f"{type(exc).__name__}: {exc}".split())
@@ -296,7 +311,8 @@ class RecorderCore:
         if take is not None:
             return {"ok": True, "state": "recording", "name": take.name, "started_at": take.started_at,
                     "elapsed": round(self.clock() - take.started, 3), "stems": take.stems,
-                    "takes_dir": str(take.takes_dir), "said": take.said, "doing": self.doing}
+                    "takes_dir": str(take.takes_dir), "said": take.said, "doing": self.doing,
+                    "rate": take.rate, "bytes_per_second": take.bytes_per_second}
         answer: dict[str, Any] = {"ok": True, "state": "idle", "doing": self.doing}
         if run is not None:
             answer.update(self._available(run))
@@ -332,7 +348,8 @@ class RecorderCore:
                     machine_file=Path(run.machine) if run.machine else None,
                     takes_dir=Path(run.takes_dir) if run.takes_dir else None,
                     root=Path(run.root) if run.root else None)
-                said = {"state": "idle", "stems": stems_shown(plan.stems), "takes_dir": str(plan.takes_dir)}
+                said = {"state": "idle", "stems": stems_shown(plan.stems), "takes_dir": str(plan.takes_dir),
+                        "rate": plan.sample_rate, "bytes_per_second": bytes_per_second(plan.stems, plan.sample_rate)}
             except PlanError as exc:
                 said = {"state": "unavailable",
                         "reason": NoEngine(f"no take can be planned for this run: {exc}").message}
@@ -399,10 +416,33 @@ class RecorderCore:
                 return refusal("failed", f"record failed: {exc}")
             finally:
                 self.doing = None
+            plan = session.plan
             self._take = _Take(name, session, takes_dir, self.now().isoformat(timespec="seconds"),
-                               self.clock(), stems_shown(session.plan.stems), said)
+                               self.clock(), stems_shown(plan.stems), said, rate=plan.sample_rate,
+                               bytes_per_second=bytes_per_second(plan.stems, plan.sample_rate))
             self.say(said)
             return {**self.status(), "said": said, "replaced": replacing}
+
+    def levels(self) -> dict[str, Any]:
+        """The running take's levels (`TakeSession.levels`): each stem's
+        peak per channel in dBFS since the last read, measured in the
+        writer thread only while asked (`recorder.Meter`). Idle when no take
+        runs; never waits for a start or stop. Refused (`no_levels`) by a
+        session that measures none."""
+        take = self._take
+        if take is None:
+            return {"ok": True, "state": "idle"}
+        from .transport import TransportError
+
+        read = getattr(take.session, "levels", None)
+        if read is None:
+            return refusal("no_levels", "this take's recorder measures no levels")
+        try:
+            levels = read()
+        except TransportError:  # stopped between the look and the read
+            return {"ok": True, "state": "idle"}
+        return {"ok": True, "state": "recording", "name": take.name,
+                "elapsed": round(self.clock() - take.started, 3), **levels}
 
     def stop(self, by: str = "request") -> dict[str, Any]:
         """Finish the running take, and say how it came out: `seconds`, and

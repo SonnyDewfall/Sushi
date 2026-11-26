@@ -1250,7 +1250,7 @@ def _fuse2_loads() -> bool:
     return True
 
 
-def _free_bytes(path: Path) -> tuple[int | None, str]:
+def free_bytes(path: Path) -> tuple[int | None, str]:
     """Free space where `path` is, or would be, and a fault when that is a lie.
 
     The takes folder is made by the first take, so before then it is the
@@ -1342,7 +1342,7 @@ def gather_environment(root: Path) -> Environment:
     from .take import default_takes_dir
 
     takes = default_takes_dir()
-    free, problem = _free_bytes(takes)
+    free, problem = free_bytes(takes)
     stems, rig = _largest_rig(root)
     return Environment(
         pw_jack=shutil.which("pw-jack"),

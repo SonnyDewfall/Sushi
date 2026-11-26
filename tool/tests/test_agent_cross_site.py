@@ -460,6 +460,8 @@ GET_ROUTES = {
     "/midi",  # the pedals and the running rig's assignments (#191): reads two files and lists config/rigs/
     "/undo",  # what the one Undo would step back (#209): reads the history and the file or bin entry it names
     "/events",  # the pushed changes (#139): a stream that says what changed; changes nothing, and is cross-site checked
+    "/record/levels",  # the meters (#139): the recorder's peaks since the last read; arms its meter, changes no take
+    "/takes/x/x",  # one file of a take (#139): read-only from the takes folder, and cross-site checked
 }
 
 

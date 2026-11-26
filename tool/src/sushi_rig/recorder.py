@@ -41,6 +41,18 @@ that carried signal in the block before is counted against that column, and
 recorder is the one place every engine's blocks pass through, a native helper
 included.
 
+## The levels a page shows (#139)
+
+The record bar's meters are measured here, in the writer thread, on the
+blocks it drains to disk (`Meter`): never in `push`, which runs in the audio
+callback, so the callback, and the graph cycle it is part of, does exactly
+what it did before the meters existed. Only while asked: a read of the
+levels (`Recorder.levels`) arms the meter for `METER_LEASE_S`, and once no
+page asks, the writer stops measuring and the only cost left is one clock
+read per drained chunk. The peaks are of every frame written in between,
+so a transient between two reads is not missed; frames the ring lost are not
+in them, as they are not in the stems.
+
 ## Realtime safety, as far as Python allows
 
 `push` allocates nothing and never waits. The ring and its gap records are
@@ -52,6 +64,7 @@ needs.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -70,6 +83,12 @@ HEADROOM_S = 2.0
 # How often the writer pushes everything to disk. A killed process loses
 # nothing the writer has written; a power cut loses up to this much.
 SYNC_EVERY_S = 2.0
+
+# How long the writer keeps measuring levels after a read of them
+# (`Meter`): a page reads several times a second while it shows the meters,
+# so two seconds outlasts a few missed reads, and no more than that is spent
+# measuring for a page that has gone. Chosen, not measured.
+METER_LEASE_S = 2.0
 
 # Gap records kept before they too are only counted. Consecutive overflows
 # merge into one record, so this is distinct episodes, not blocks.
@@ -176,6 +195,85 @@ class SilenceWatch:
             for label, count, first in zip(self.labels, self.counts, self._first_frame)
             if count
         }
+
+
+class Meter:
+    """Each column's peak since the last read, measured only while read.
+
+    Fed by the writer thread (`observe`) and read by whoever asks for the
+    levels (`read`), so the two are under a lock; the audio thread never
+    touches it. Disarmed, `observe` is one clock read. A sample that is not
+    finite counts as over full scale, as loud as anything can be: a meter
+    that showed NaN as silence would hide the fault.
+    """
+
+    def __init__(self, width: int, *, lease_s: float = METER_LEASE_S, clock=time.monotonic):
+        np = require_numpy()
+        if width <= 0:
+            raise ValueError(f"a meter needs at least one column, got {width}")
+        self.width = width
+        self.lease_s = lease_s
+        self.clock = clock
+        self._peak = np.zeros(width, dtype=np.float64)
+        self._frames = 0
+        self._until = float("-inf")
+        self._lock = threading.Lock()
+
+    def armed(self) -> bool:
+        return self.clock() < self._until
+
+    def observe(self, block) -> None:
+        """One drained block, `(frames, columns)`: its peaks join the ones
+        held, when armed. Nothing at all otherwise."""
+        if self.clock() >= self._until or not len(block):
+            return
+        np = require_numpy()
+        peaks = column_peaks(block).astype(np.float64)
+        peaks[~np.isfinite(peaks)] = np.inf
+        with self._lock:
+            np.maximum(self._peak, peaks, out=self._peak)
+            self._frames += len(block)
+
+    def read(self) -> tuple[list[float] | None, int]:
+        """`(peaks, frames)`: each column's peak (linear, 1.0 is full scale)
+        over the `frames` measured since the last read, or None when none
+        were; and arm the meter for `lease_s` more. So the first read after
+        a quiet spell has nothing: the meter was not measuring."""
+        with self._lock:
+            frames = self._frames
+            peaks = [float(p) for p in self._peak] if frames else None
+            self._peak[:] = 0.0
+            self._frames = 0
+            self._until = self.clock() + self.lease_s
+        return peaks, frames
+
+
+def column_peaks(block):
+    """Each column's largest magnitude in a `(frames, columns)` block, NaN
+    where a column has one. The same as `abs(block).max(axis=0)`, about five
+    times faster for a writer's chunk of 4096 frames by 8 (16 us against 82
+    on a development machine): numpy reduces a few columns along a long axis
+    one stride at a time, and folding the rows in halves is a handful of
+    contiguous element-wise maxima."""
+    np = require_numpy()
+    rows = np.abs(block)
+    while len(rows) > 1:
+        half = len(rows) // 2
+        folded = np.maximum(rows[:half], rows[half:2 * half])
+        if len(rows) % 2:
+            folded[0] = np.maximum(folded[0], rows[-1])
+        rows = folded
+    return rows[0]
+
+
+def peak_dbfs(peak: float) -> float | None:
+    """A linear peak in dBFS, to a hundredth: None for exact silence, and
+    +99 at most (a sample that is not finite reads as that)."""
+    if not peak > 0:
+        return None
+    if peak == float("inf"):
+        return 99.0
+    return round(min(99.0, 20 * math.log10(peak)), 2)
 
 
 class Ring:
@@ -333,6 +431,7 @@ class Recorder:
         self.ring = Ring(ring_capacity(sample_rate, quantum, headroom_s),
                          sum(channels for _, channels in self.stems))
         self.silence = SilenceWatch(column_labels(self.stems), sample_rate)
+        self.meter = Meter(self.ring.channels)
         self._writers: list[WavWriter] = []
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -372,6 +471,7 @@ class Recorder:
         for writer in self._writers:
             writer.write(block[:, column:column + writer.channels])
             column += writer.channels
+        self.meter.observe(block)
         # If a writer raises part way through, the stems before it already hold
         # this block and those after do not. `stop` cuts them back to the
         # shortest, so a failure costs every stem the same frames, as a dropout
@@ -399,6 +499,19 @@ class Recorder:
             # producer keeps pushing into a ring nobody drains, so the loss is
             # counted as well as reported.
             self._error = f"{type(exc).__name__}: {exc}"
+
+    def levels(self) -> dict[str, Any]:
+        """Each stem's peak per channel in dBFS since the last read
+        (`peaks_dbfs`, None for a channel that was exactly silent), or
+        `peaks_dbfs: None` for every stem when nothing was measured: the
+        first read after none for `METER_LEASE_S`. Arms the meter (`Meter`)."""
+        peaks, frames = self.meter.read()
+        stems, column = [], 0
+        for path, channels in self.stems:
+            shown = None if peaks is None else [peak_dbfs(p) for p in peaks[column:column + channels]]
+            stems.append({"file": path.name, "channels": channels, "peaks_dbfs": shown})
+            column += channels
+        return {"frames": frames, "seconds": round(frames / self.sample_rate, 3), "stems": stems}
 
     def stop(self) -> Recording:
         """Drain what is left, close the files, and say what was captured.

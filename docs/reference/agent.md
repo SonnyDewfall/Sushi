@@ -52,7 +52,9 @@ curl -X POST localhost:8029/rigs/electric_board/revert -d '{"save": "<an id from
 curl localhost:8029/record           # recording, idle, or why recording is off (S7)
 curl -X POST localhost:8029/record/start -d '{"name": "riff-idea"}'   # a take; no name is <rig>-<date>-take-<nn>
 curl -X POST localhost:8029/record/stop                              # finish it: take check's verdict in the answer
+curl localhost:8029/record/levels    # the running take's levels: each stem's peak per channel in dBFS since the last read (#139)
 curl localhost:8029/takes            # the takes, newest first, each with take check's verdict
+curl -O localhost:8029/takes/riff-idea/master.wav   # one file of a take, read-only; ?download=1 to save it (#139)
 curl -X POST localhost:8029/takes/open   # open the takes folder in this machine's file manager; loopback only (#189)
 curl localhost:8029/machine/roles    # the machine file's roles: ports, the widths each can feed, who uses each
 curl localhost:8029/rigs/guitar_vocal/channels                      # a rig file's channels, as the file has them
@@ -1479,7 +1481,48 @@ when it starts: a fader or model change asked for during a start waits for it.
 complete, audio lost, and `take check`'s problems, a take checked again only
 when a file in its folder changes. The page no longer asks for it (#189: the
 rack names the folder instead, and a stop's answer has the take's `folder`
-and verdict); it stays for curl and scripts.
+and verdict); it stays for curl and scripts, and for the record bar's
+**Takes**, which reads it when opened.
+
+**The record bar's room left and meters (#139).** `GET /record`'s idle and
+recording answers carry the recorder's `rate` and `bytes_per_second` (every
+channel of every stem the take records, at its rate, in float32: four bytes a
+sample), and `space`: `free_bytes` of the takes folder's filesystem (the
+nearest folder that exists; a link to a drive not plugged in is `null`, with
+the `problem`, as `doctor`'s disk check says it), that rate, and
+`seconds_left`, the one over the other, rounded down. `GET /record/levels` is
+the meters': each stem's peak per channel in dBFS since the last read (`null`
+for exact silence; `peaks_dbfs: null` for every stem on the first read after
+none), `idle` with no take. The recorder measures them in its writer thread,
+on the blocks it writes to disk, never in the capture callback (`push` is as
+it was), and only for 2 s after a read (`recorder.METER_LEASE_S`): with no page
+asking it measures nothing, and a page reads them only while it shows a take
+running. Nothing is added to the audio graph: no node, no link, no client.
+Measured in a container (four Xeon cores at 2.1 GHz, no GPU), an eight-column
+take of noise pushed at a 256 quantum's pace, 20 s each: the process serving
+the agent and the recorder used 4.5% of a core with no page, 5.0% with a page
+on the rack and 5.1% on the stage before this; after, 4.5 to 4.8% with no
+page, 5.3 to 5.5% on the rack and 6.6 to 6.8% on the stage with the meters
+reading ten times a second. Chromium used 2.3 to 2.7% without the meters and
+9.1 to 9.8% with them, of which about 4.5 points are the ten requests a second
+themselves. In the writer, 21 us per 4096-frame chunk of eight columns
+measuring, 0.2 us not (`column_peaks`), beside a write of about 130 us.
+Not refused for a phone: a read changes nothing, and nothing is remembered
+for `/health` (a page asks ten times a second): `409 no_recorder`, `504
+recorder_timeout`.
+
+**A take's files (#139).** `GET /takes/{take}/{file}` serves one file of one
+take, read-only, for the record bar's **Takes** to play a stem in the
+browser's own audio element (in ranges, as `FileResponse` serves them) or save
+it (`?download=1`). The take must be a plain name directly in the takes
+folder and the file a plain name directly in it (no slash, no `..`, nothing
+starting with `.`, no `_archive`), and both are checked again once resolved,
+so a link that leads out is refused too: anything else is `404`
+(`take_file`). `.wav` is `audio/wav`, the take's text files plain text, any
+other file only a download; every answer is `nosniff` with a sandboxing CSP,
+so nothing in a take runs as the agent's page. Its reads are refused to
+another site's page (`403 cross_site`), as writes are. No rig is needed, and
+the recorder is not asked.
 
 `POST /takes/open {}` (#189) opens the takes folder in this machine's file
 manager: the rack's **Open folder** on the laptop. **Only for a loopback

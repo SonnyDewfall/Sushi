@@ -982,6 +982,47 @@ class Pushing:
         return None
 
 
+class Playing:
+    """A stand-in capture engine that plays on (#139's meters): from `start`
+    until `stop`, a thread pushes a block every quantum's worth of time, as
+    the capture engine's callback would, each column held at the level of
+    the same place in `levels` (dBFS; None for silence; a column past the
+    list's end at the last one). A test changes `levels` while it plays.
+    Nothing here is PipeWire: the blocks are made up, the pace is the
+    thread's sleep."""
+
+    levels: "list[float | None]" = [-12.0]
+
+    def __init__(self, rate, quantum):
+        self.rate = rate
+        self.quantum = quantum
+        self._thread = None
+        self._stop = threading.Event()
+
+    def start(self, stems, push):
+        import numpy as np
+
+        columns = sum(n for _, n in stems)
+        self._stop.clear()
+
+        def play():
+            while not self._stop.is_set():
+                levels = list(Playing.levels) or [None]
+                row = [0.0 if level is None else 10 ** (level / 20)
+                       for level in (levels[min(i, len(levels) - 1)] for i in range(columns))]
+                push(np.tile(np.array(row, dtype=np.float32), (self.quantum, 1)))
+                self._stop.wait(self.quantum / self.rate)
+
+        self._thread = threading.Thread(target=play, name="playing-engine", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(5)
+        return None
+
+
 class CoreLink:
     """The agent's link to a `RecorderCore` in this process: each request
     goes through `recorder_process.parse_request` as the socket's would.
@@ -1024,7 +1065,11 @@ class UiRecorder:
         state["children"] = {**state["children"], "recorder": 4245}
         self.takes = root / "takes"
         self.clock = FakeClock()
-        self.core = RecorderCore(engine=Pushing, clock=self.clock, say=lambda message: None)
+        # The engine a take is made with: `Pushing`, or `Playing` for a take
+        # that plays on (the meters, #139), set before the first take.
+        self.engine = Pushing
+        self.core = RecorderCore(engine=lambda rate, quantum: self.engine(rate, quantum), clock=self.clock,
+                                 say=lambda message: None)
         self.link = CoreLink(self.core)
 
 

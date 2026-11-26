@@ -370,6 +370,14 @@ class TakeSession:
             return f"recording {name} — the earlier {name} is in {ARCHIVE_DIR}/{name}/"
         return f"recording {name}"
 
+    def levels(self) -> dict[str, Any]:
+        """The running take's levels since the last read (`Recorder.levels`):
+        measured in the recorder's writer thread, never the audio one."""
+        recorder = self._recorder
+        if recorder is None:
+            raise TransportError("not recording")
+        return recorder.levels()
+
     def stop(self) -> str:
         if self._recorder is None:
             raise TransportError("not recording")

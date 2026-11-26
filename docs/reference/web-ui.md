@@ -835,9 +835,9 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   said whole there, wrapping on a phone, never cut. A whole take's result,
   like a start's note that an earlier take moved to the archive, goes after
   15 s; a take with problems, a failed stop and a refusal stay until
-  dismissed. **The rack lists no takes, and nothing asks for `GET /takes`
+  dismissed. **The rack lists no takes, and nothing polls `GET /takes`
   (#189)**: the list stayed for ever, and the takes folder is where takes are
-  looked at. Beside Save, one line names the folder (`takesFolder`, from
+  looked at; **Takes** (below) reads it once, when opened. Beside Save, one line names the folder (`takesFolder`, from
   `/health`'s `agent.takes`), and **Open folder** asks the agent to open it
   in the desktop's file manager (`POST /takes/open`) where `/health` says
   this request came from a loopback peer (`can_open`), the one peer that
@@ -848,6 +848,68 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   "nothing here opens a folder" when neither `xdg-open` nor `gio` is
   installed. **Not run on a desktop**: only a stand-in opener is in the
   tests.
+- **The record bar's meters, room left and takes (#139),** as the canvas's
+  Record frame (S7) has them, from the agent ([the agent](agent.md)):
+  - **Meters.** While a take runs, under its name, one meter a stem, labelled
+    by its file (`board`, `board-dry`, `master`): a thin bar of the stem's
+    peak (its loudest channel) on a −60 to 0 dBFS scale, a tick at the
+    highest peak of the last 1.5 s, and the whole meter red at −0.1 dBFS and
+    over, for 3 s, so a clip a glance missed is there for the next
+    (`R.METER`, `meterStep`, `meterView`; chosen, not measured). The bar
+    falls back 24 dB a second between reads. Each channel's level and the
+    hold, in dBFS, are the meter's title. Read from `GET /record/levels`
+    every 100 ms (`METER_MS`), and only while the stage shows a take running
+    and the page is in view (`metersWanted`); drawn in place by transform,
+    so the bar is never rebuilt for them (`drawMeters`). A read that fails
+    fades the meters and says nothing: the bar says what is wrong with the
+    recorder. The recorder measures in its writer thread, never the capture
+    callback, and only for 2 s after a read, so a page that stops showing
+    them stops the measuring. What that costs is in [the agent](agent.md).
+  - **Room left.** At the bar's foot, how long a take of the stems it would
+    record now fits in the free space of the takes folder's disk, rounded
+    down: "41 h left", "50 min left" (`R.spaceView`, `hoursLeft`), from `GET
+    /record`'s `space`; the free space, the folder and the bytes a second in
+    its title. Amber under an hour (doctor's `MIN_RECORDING_HOURS`), red under
+    ten minutes; "Space unknown" with why, for a drive not there. Drawn in
+    place (`drawSpace`), since it moves with every poll while a take writes.
+  - **Takes,** beside it, and on the rack beside **Open folder**: a take
+    chosen from `GET /takes` (read when it opens and by ↻, never polled; the
+    newest chosen, and again after a stop), and each of its stems in the
+    browser's own `<audio controls preload="none">`, from `GET
+    /takes/{take}/{file}`, with **Save** (`?download=1`). Its own element,
+    keyed by what it lists, so a poll never rebuilds a stem that is playing
+    (`playerRegion`, `R.takeChoices`, `takeFileUrl`). A list that cannot be
+    read is said in the activity zone. On a phone too: the files are read-only.
+- **Broken (S9, #139).** The canvas's "Something broke" frame: what is wrong,
+  why, and the one fix. **A state of the stage and the rack, not a screen of
+  its own**: the canvas reached it by a "Health" tab in a bottom bar the
+  page does not have; a page that jumped to a screen of its own would take
+  the player off the one they chose, mid-song, and a tab would have to be
+  found; and a broken rig often still plays (a tuner gone, the amp gone and
+  the rest on), so the master, the record bar and Stop belong in reach. So,
+  on both screens, a red band held at the foot (sticky, over the page and
+  just above the screens' bar where one shows; in the flow only at the
+  page's end, so nothing on the page moves when it comes: a fader under a
+  finger stays put, and the fix is where a thumb is) (`brokenRegion`,
+  `R.brokenView`): what is wrong in a word or two, the worst first and how
+  many more beside it (**Sushi unreachable**, **Sushi exited**, **Start
+  failed**, **Restart failed**, **Amp exited**, **No amp**, **Amp not
+  wired**, **Links not made**, then the children that play on, **Tuner
+  exited**, **Recorder exited**); every fault and the log in its title; the
+  log's path under it (the crash record's, else the run's `log_dir`); and the
+  fix. For a rig up: **Restart** (the agent's restart from the rig's file,
+  refused for unsaved work with "Restart anyway", as every restart is) and
+  **Stop**, each asked first in the activity zone ("Restart?", "Stop?"),
+  since each cuts the sound. Not behind the lock: it keeps a working rig from
+  stray taps, not a broken one from its fix, and S9 offers the fix with the
+  stage locked. For a start that failed, the rig down: **Start again**, the
+  same rig, one tap. The header takes S9's red too (`.is-broken`). Broken is
+  the running rig's state: a child that exited in an earlier run, a rig
+  simply down, an agent not answering (nothing here could act) and a
+  command running are not. The status zone's words stay as they were: the
+  band is the fix, they are the record. Of S9, the measured tone test
+  ("0.00 % THD") and the list "everything else · measured" are not built,
+  since nothing measures the sound (#49), nor is "Play on without the amp".
 - **A child of the rig that exits** (the tuner, the amp, Sushi, qpwgraph, the
   recorder) is on both screens, in the status zone (#245), in the same box and colour as the agent's last
   error, from `agent.supervisor.crashed`: which process, how it ended, what it
@@ -1278,9 +1340,11 @@ was last saved through it, so a change by a MIDI mapping Sushi serves, or a
 `sushi-rig save` since, is not reflected. Of the
 canvas's Save, the commit (with its message), "throw all away" and the rig
 file shown on screen are not built; of its history, Revert is the whole of
-it, by the player's choice (2026-11-06). Of its Record, the
-meters (nothing measures levels yet), the free space and hours of takes left,
-and opening one take are not built; the takes folder opens on the laptop. Broken and Pedals from the canvas are not built
+it, by the player's choice (2026-11-06). Of its Record, the meters show only
+while a take runs, not before one, since only the recorder's take measures
+(a meter before a take would be a new client in the audio graph); and a
+take's "offset carried" is not measured (#57). Of its Broken, the measured
+checks and "Play on without the amp" (above). Pedals from the canvas is not built
 (the rack's **PEDALS** section, #192, is the assignments and their lights, not that frame).
 Of its Library, the drawer (above) is the whole: there is no screen of its own,
 no drag and drop into a chain (#32), and a plugin's profile groups, which
@@ -1316,6 +1380,17 @@ real files in a temporary checkout; no Program Change has been sent from a
 pedal after a delete. The 15 s an outcome and its Undo stay (#189) is passed
 on Playwright's fake clock, paused, and a reload, which offers no Undo, is
 Playwright's reload in one browser context.
+
+Not run on the rig (2026-11-26): Broken, the meters, the room left and a
+take's players (#139). Tested in headless Chromium against the agent over the
+fake rig (`test_ui_broken_meters.py`): a crash, a failed start and Sushi not
+answering as the fake makes them; the meters from `ui_fake.Playing`, a thread
+pushing made-up blocks into the real recorder, its writer and its meter;
+the free space stood in; the stems of real takes played in Chromium's audio
+element and saved. The agent's side without a browser
+(`test_agent_record_levels.py`), path traversal included. No take's levels
+have been read from a live PipeWire, nothing has been played from the page on
+a phone, and the recorder process has not measured on the rig.
 
 Not run on the rig (2026-11-24): the bundled fonts, the home-screen
 install and the pushed changes (#139). Tested in headless Chromium against

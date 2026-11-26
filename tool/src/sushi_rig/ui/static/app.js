@@ -53,6 +53,11 @@ const TAB_KEY = "sushi-rig.tab";
 const MODELS_MS = 30000;
 // The running take's elapsed time is redrawn this often between polls.
 const TICK_MS = 250;
+// The meters (#139): GET /record/levels this long after the last answer,
+// only while the stage shows a take running and the page is in view. The
+// recorder measures only while asked (recorder.METER_LEASE_S), so no page
+// showing them is no measuring.
+const METER_MS = 100;
 // Colours for a unit's swatch, from the mockups; chosen by the plugin, so a
 // plugin keeps its colour wherever it sits. Decoration, nothing more.
 const SWATCHES = ["#D9C04E", "#F08A50", "#B59CF2", "#8FC25A", "#A98BF0", "#6FC6D1", "#E07A73"];
@@ -128,6 +133,15 @@ const state = {
   takeName: "",              // what the player typed in the record bar's name; "" while it shows the agent's default
   recordPending: null,       // "start" or "stop", from this page, in flight
   recordResult: null,        // what the last start or stop from this page said (R.recordOutcome)
+  // The meters (#139): each stem's step (R.meterStep), the read in flight
+  // and its timer, and whether the last read failed (drawn faded, not said:
+  // the record bar says what is wrong with the recorder).
+  meter: { steps: null, timer: null, reading: false, stale: false },
+  // Takes (#139): the player open, GET /takes's answer, the take chosen, a
+  // read in flight. Read when it opens, never polled.
+  player: { open: false, answer: null, chosen: null, pending: false, failed: null },
+  // Broken (S9, #139): the recovery asked ("restart" or "stop"), awaiting its second tap.
+  brokenAsk: null,
   // The New rig screen and the rack's channel edits (the rig files):
   roles: null, rolesAt: 0, rolesFor: null, rolesRun: null,  // GET /machine/roles; read again when the run changes
   rigChannels: {},           // GET /rigs/<rig>/channels, by rig: "start from", and the running rig's inputs
@@ -1619,6 +1633,8 @@ async function recordStop() {
   if (answer.body && answer.body.name) noteRecord(null);
   render();
   kick();
+  // The take just stopped is the newest in Takes.
+  if (state.player.open) { state.player.chosen = null; readTakes(); }
 }
 
 // The running take's elapsed time, redrawn in place between polls.
@@ -2349,6 +2365,10 @@ function rackFrame() {
     changes: h("div", { class: "changes-list" }),
     save: h("section", { class: "save", "aria-label": "Save" }),
     takes: h("section", { class: "takes", "aria-label": "Takes" }),
+    // Takes (#139): the toggle, under the folder's section, its own region.
+    takesPlay: h("div", { class: "takes-acts" }),
+    player: h("section", { class: "take-player", id: "take-player", "aria-label": "Takes", hidden: true }),
+    broken: h("section", { class: "broken", role: "alert", "aria-label": "Broken", hidden: true }),
     drawer: h("div", { class: "drawer", hidden: true }),
   };
   // The header is built once, its parts patched on their own: the master
@@ -2384,7 +2404,7 @@ function rackFrame() {
       h("div", { class: "rack-main" }, regions.tabs, regions.panel),
       h("div", { class: "side files", "aria-label": "Rigs and files" }, regions.rigs,
         h("aside", { class: "changes", "aria-label": "Undo, save and revert" }, regions.changes, regions.save),
-        regions.takes, regions.channels)),
+        regions.takes, regions.takesPlay, regions.channels)),
     // The Library drawer (#130): over the page, not in a column, so opening
     // it moves nothing on the rack, and a chain changing under it moves
     // nothing in it.
@@ -2392,6 +2412,7 @@ function rackFrame() {
     // On a phone, Stage and Help at the foot, as on the stage (#245).
     h("nav", { class: "stage-nav rack-nav", "aria-label": "Screens" }, h("a", { href: "#stage" }, "Stage"),
       h("a", { href: "#rack", class: "here", "aria-current": "page" }, "Rack"), helpAnchor("guide", "help")));
+  regions.frame = frame;
   return { frame, regions };
 }
 
@@ -3396,6 +3417,9 @@ function renderRack(regions, model, unsaved, status) {
   renderChanges(regions.changes);
   saveRegion(regions.save, unsaved);
   takesRegion(regions.takes);
+  patch(regions.takesPlay, JSON.stringify(state.player.open), () => takesButton());
+  playerRegion(regions.player, regions.takesPlay);
+  brokenRegion(regions.broken, regions.frame);
   activityRegion(regions);
 }
 
@@ -3682,6 +3706,8 @@ function recordRegion(el) {
       recording
         ? h("div", { class: "take-now" }, h("span", { class: "k" }, "Take name"), h("span", { class: "v" }, view.name))
         : view.state === "idle" ? nameField(view) : null,
+      // The meters (#139): one a stem, drawn in place (`drawMeters`).
+      recording ? h("div", { class: "meters", role: "group", "aria-label": "Levels" }) : null,
       view.state === "idle" ? h("p", { class: "take-whole", "aria-hidden": "true" }) : null,
       // The ruler a name is measured on (`nameCut`): never seen, and no part of the layout.
       view.state === "idle" ? h("span", { class: "take-rule", "aria-hidden": "true" }, h("span", {})) : null,
@@ -3692,8 +3718,13 @@ function recordRegion(el) {
       h("div", { class: "record-acts" },
         h("button", { class: "record-act rec", disabled: view.record.disabled, onclick: recordStart }, view.record.label),
         h("button", { class: "record-act stop", disabled: view.stop.disabled, onclick: recordStop }, view.stop.label)),
+      // How long a take fits in the space left (#139), drawn in place
+      // (`drawSpace`), and Takes, to play or save one.
+      h("div", { class: "record-foot" }, h("span", { class: "record-space", hidden: true }), takesButton()),
     ];
   });
+  drawSpace(el);
+  if (rebuilt) drawMeters();
   // A stop names the take, its folder and `take check`'s verdict (#189), a
   // take with problems in the refusal colour and as an alert, with the
   // stop's own reason too when it failed: in the activity zone (#245).
@@ -3722,6 +3753,23 @@ function recordRegion(el) {
   }
   drawNameCheck(el);
   tickElapsed();
+}
+
+// The free space and the hours of takes it holds (R.spaceView), from GET
+// /record's `space`: in place, as it moves with every poll while a take
+// writes, so the bar is not rebuilt for it. And whether Takes is open.
+function drawSpace(el) {
+  const body = state.record && state.record.ok ? state.record.body : null;
+  const view = body && (body.state === "idle" || body.state === "recording") ? R.spaceView(body.space) : null;
+  const span = el.querySelector(".record-space");
+  if (span) {
+    span.hidden = !view;
+    span.textContent = view ? view.text : "";
+    span.title = view ? view.title : "";
+    span.className = `record-space${view && view.tone ? " tone-" + view.tone : ""}`;
+  }
+  const open = el.querySelector(".takes-open");
+  if (open) open.setAttribute("aria-expanded", String(state.player.open));
 }
 
 function drawNameCheck(el) {
@@ -3894,6 +3942,211 @@ async function openTakesFolder() {
   render();
 }
 
+// ---------------------------------------------------------------- Broken (S9, #139)
+// A band at the foot of the stage and the rack alike, held there over the
+// page (sticky, just above the screens' bar where there is one), with the
+// header turned red: what is wrong in a word or two (R.brokenView), the
+// whole of it in its title, the log's path, and the one thing that recovers
+// it. At the foot, not the top, so nothing on the page moves when the rig
+// breaks (a fader under a finger stays where it is), and the fix is where a
+// thumb is. Restart and Stop each ask
+// first, in the activity zone, since each cuts the sound; neither is behind
+// the lock, which keeps a working rig from stray taps, not a broken one from
+// its fix. Start again is one tap: there is no sound to cut.
+// `el` in the page after `anchor` while it is shown, and out of it while it
+// is not: a band or a panel that is not there adds nothing to the page's
+// order, its layout or a screen reader's walk through it.
+function placeShown(el, shown, anchor) {
+  if (!shown) { el.remove(); return; }
+  if (el.previousElementSibling !== anchor) anchor.after(el);
+}
+
+function brokenRegion(el, frame) {
+  const view = R.brokenView(state.health, state.live);
+  frame.classList.toggle("is-broken", !!view);
+  const nav = frame.querySelector(":scope > .stage-nav");
+  if (!view) el.remove();
+  else {
+    if (el.nextElementSibling !== nav) nav.before(el);
+    // Over the screens' bar where it is shown (a phone's, and the stage's).
+    const above = `${nav.offsetHeight}px`;
+    if (el.style.bottom !== above) el.style.bottom = above;
+  }
+  if (!view) state.brokenAsk = null;
+  const busy = !!state.pending;
+  patch(el, JSON.stringify([view, busy]), () => {
+    el.hidden = !view;
+    if (!view) return [];
+    return [
+      h("span", { class: "broken-dot", "aria-hidden": "true" }),
+      h("div", { class: "broken-what" },
+        h("strong", { class: "broken-word", title: view.title }, view.word,
+          view.more ? h("span", { class: "broken-more", title: view.title }, ` +${view.more}`) : null),
+        view.log ? h("code", { class: "broken-log", title: view.log }, view.log) : null),
+      view.actions.length ? h("div", { class: "broken-acts" }, view.actions.map((a) => h("button", {
+        class: `broken-act ${a.op}${a.primary ? " primary" : ""}`, disabled: busy,
+        onclick: () => {
+          if (a.op === "start") { lifecycle("start", a.name); return; }
+          state.brokenAsk = { op: a.op, name: a.name };
+          render();
+        },
+      }, a.label))) : null,
+    ];
+  });
+  const ask = state.brokenAsk;
+  if (view && ask) {
+    const restart = ask.op === "restart";
+    actAsk({ key: `broken-${ask.op}`, q: restart ? "Restart?" : "Stop?", cls: "broken-confirm", sig: ask.name,
+      detail: restart ? `Restart ${ask.name || "the rig"} from its file: the sound stops while it comes back.`
+        : `Stop ${ask.name || "the rig"}: the sound stops.`,
+      yes: () => { state.brokenAsk = null; lifecycle(ask.op, ask.name); },
+      no: () => { state.brokenAsk = null; render(); } });
+  }
+}
+
+// ---------------------------------------------------------------- the meters (#139)
+// Each stem a take records, its peak and hold as a bar, red at a clip. Read
+// from GET /record/levels every METER_MS while the stage shows a take
+// running and the page is in view, and drawn in place: nothing else of the
+// record bar is rebuilt for them.
+function metersWanted() {
+  const body = state.record && state.record.ok ? state.record.body : null;
+  return state.screen === "stage" && document.visibilityState !== "hidden" && !!body && body.state === "recording";
+}
+
+function meterTick() {
+  const m = state.meter;
+  clearTimeout(m.timer);
+  m.timer = null;
+  if (!metersWanted()) { m.steps = null; m.stale = false; return; }
+  if (m.reading) return;
+  m.reading = true;
+  request("GET", "/record/levels").then((answer) => {
+    m.reading = false;
+    const body = answer.ok ? answer.body : null;
+    if (body && body.state === "recording") {
+      m.steps = R.meterStep(m.steps, body.stems, performance.now());
+      m.stale = false;
+    } else {
+      m.stale = true;
+    }
+    drawMeters();
+    if (metersWanted()) m.timer = setTimeout(meterTick, METER_MS);
+    else m.steps = null;
+  });
+}
+
+// Start the reads when they are wanted and none is due; called on each draw.
+function metersFollow() {
+  const m = state.meter;
+  if (metersWanted() && !m.timer && !m.reading) meterTick();
+  if (!metersWanted()) { clearTimeout(m.timer); m.timer = null; m.steps = null; }
+}
+
+function drawMeters() {
+  const box = document.querySelector(".record-bar .meters");
+  if (!box) return;
+  const now = performance.now();
+  const views = (state.meter.steps || []).map((step) => R.meterView(step, now));
+  box.classList.toggle("stale", state.meter.stale);
+  // One meter a stem, made when the stems change, then moved in place.
+  const key = views.map((v) => v.label).join("\u0000");
+  if (box.dataset.key !== key) {
+    box.dataset.key = key;
+    box.replaceChildren(...views.map((v) => h("div", { class: "meter", role: "meter", "aria-label": v.label,
+      "aria-valuemin": String(R.METER.floorDb), "aria-valuemax": "0" },
+    h("span", { class: "meter-track" }, h("span", { class: "meter-fill" }), h("span", { class: "meter-hold" })),
+    h("span", { class: "meter-label" }, v.label))));
+  }
+  // Moved by transform and only where something changed, ten times a
+  // second: no layout, and nothing repainted for a meter that stands still.
+  const set = (el, name, value) => { if (el.getAttribute(name) !== value) el.setAttribute(name, value); };
+  views.forEach((v, i) => {
+    const el = box.children[i];
+    el.classList.toggle("clip", v.clip);
+    const step = state.meter.steps[i];
+    set(el, "title", v.title);
+    set(el, "aria-valuenow", String(Number.isFinite(step.db) ? Math.round(step.db * 10) / 10 : R.METER.floorDb));
+    set(el, "aria-valuetext", v.title);
+    set(el.querySelector(".meter-fill"), "style", `transform: scaleX(${v.fill / 100})`);
+    set(el.querySelector(".meter-hold"), "style", `transform: translateX(${v.hold}%)`);
+  });
+}
+document.addEventListener("visibilitychange", () => metersFollow());
+
+// ---------------------------------------------------------------- takes (#139)
+// Takes, on the stage's record bar and beside the rack's takes folder: a
+// take chosen from GET /takes (newest first, read when it opens and not
+// polled), and each of its stems in the browser's own audio element, played
+// from the agent (GET /takes/{take}/{file}), with Save beside it. Its own
+// element, keyed by what it lists, so a poll never rebuilds a stem that is
+// playing.
+async function readTakes() {
+  const ui = state.player;
+  if (ui.pending) return;
+  ui.pending = true;
+  render();
+  let answer;
+  try {
+    answer = await request("GET", "/takes");
+  } finally {
+    ui.pending = false;
+  }
+  if (answer.ok) {
+    ui.answer = answer;
+    ui.failed = null;
+    const names = R.takeChoices(answer).map((t) => t.name);
+    if (!names.includes(ui.chosen)) ui.chosen = names[0] || null;
+  } else {
+    ui.failed = { ok: false, title: "Takes not read", reason: answer.reason };
+  }
+  render();
+}
+
+function toggleTakes() {
+  const ui = state.player;
+  ui.open = !ui.open;
+  if (ui.open) readTakes();
+  render();
+}
+
+function takesButton() {
+  const ui = state.player;
+  return h("button", { type: "button", class: "rig-act takes-open", "aria-expanded": String(ui.open),
+    "aria-controls": "take-player", title: "Play or save a take's stems", onclick: toggleTakes }, "Takes");
+}
+
+function playerRegion(el, anchor) {
+  const ui = state.player;
+  placeShown(el, ui.open, anchor);
+  const body = state.record && state.record.ok ? state.record.body : null;
+  const recording = body && body.state === "recording" ? body.name : null;
+  const takes = ui.open ? R.takeChoices(ui.answer, recording) : [];
+  const take = takes.find((t) => t.name === ui.chosen) || null;
+  patch(el, JSON.stringify([ui.open, ui.pending, takes, ui.chosen]), () => {
+    el.hidden = !ui.open;
+    if (!ui.open) return [];
+    return [
+      h("div", { class: "player-head" },
+        takes.length ? h("select", { name: "take", "aria-label": "Take", class: "take-pick", title: take ? take.title : null,
+          onchange: (event) => { ui.chosen = event.target.value; render(); } },
+        takes.map((t) => h("option", { value: t.name, selected: t.name === ui.chosen }, t.text)))
+          : h("span", { class: "player-none" }, ui.pending ? "Reading…" : "No takes"),
+        h("button", { type: "button", class: "rig-act player-reread", title: "Read the takes again", disabled: ui.pending,
+          onclick: readTakes }, "↻")),
+      take ? h("ul", { class: "stems" }, take.stems.map((s) => h("li", { class: "stem", "data-file": s.file },
+        h("span", { class: "stem-label", title: s.file }, s.label),
+        h("audio", { controls: "", preload: "none", src: s.src, "aria-label": `${take.name}: ${s.label}` }),
+        h("a", { class: "stem-save", href: s.save, download: s.file, title: `Save ${s.file}` }, "Save")))) : null,
+    ];
+  });
+  if (ui.failed) {
+    actResult({ id: actId(ui.failed, "t"), cls: "problem refused", ok: false, title: ui.failed.title,
+      said: R.shortSaid(ui.failed.reason, 40), detail: ui.failed.reason,
+      dismiss: () => { ui.failed = null; render(); } });
+  }
+}
+
 // ---------------------------------------------------------------- the stage (S5)
 
 function stageFrame() {
@@ -3902,6 +4155,8 @@ function stageFrame() {
     detail: h("div", { class: "detail-line" }),
     problems: h("div", { class: "problems", "aria-live": "polite" }),
     record: h("section", { class: "record-bar", "aria-label": "Record" }),
+    player: h("section", { class: "take-player", id: "take-player", "aria-label": "Takes", hidden: true }),
+    broken: h("section", { class: "broken", role: "alert", "aria-label": "Broken", hidden: true }),
     levels: h("div", { class: "levels" }),
     amp: h("section", { class: "stage-amp", "aria-label": "Amp" }),
     cards: h("main", { class: "cards" }),
@@ -3924,9 +4179,13 @@ function stageFrame() {
   regions.header = h("header", { class: "stage-head" }, regions.row, regions.detail, masterFader("stage"), regions.tiles,
     regions.problems, regions.rigs);
   Object.assign(regions, activityFrame(regions.undo));
-  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.activity, regions.record, regions.levels, regions.amp, regions.cards,
+  // Takes (#139) after the record bar, put in only while shown
+  // (`placeShown`); Broken before the bar at the foot, only while broken.
+  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.activity, regions.record,
+    regions.levels, regions.amp, regions.cards,
     h("nav", { class: "stage-nav" }, h("a", { href: "#stage", class: "here", "aria-current": "page" }, "Stage"), h("a", { href: "#rack" }, "Rack"),
       helpAnchor("stage", "help")));
+  regions.frame = frame;
   return { frame, regions };
 }
 
@@ -3955,7 +4214,10 @@ function renderStage(regions, model, status) {
   patch(regions.detail, status.detail, () => status.detail);
   tilesRegion(regions.tiles);
   problemsRegion(regions.problems);
+  brokenRegion(regions.broken, regions.frame);
   recordRegion(regions.record);  // not behind the lock: recording is a stage action
+  playerRegion(regions.player, regions.record);
+  metersFollow();
   const live = liveBody();
   // Each channel's level, editable as the rack's send knob is (a text
   // field and the wheel): keyed by the channels, never by their values.
