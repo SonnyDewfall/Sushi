@@ -2597,6 +2597,186 @@ export function openFolderOutcome(answer) {
   return { ok: true, title: "Opened the takes folder", text: body.said || null };
 }
 
+// ---------------------------------------------------------------- the record bar's space, meters and takes (#139)
+
+// Seconds of takes left as a word or two: "41 h", or under two hours
+// "52 min", rounded down as doctor's disk check is, so the bar never says
+// more room than there is.
+export function hoursLeft(seconds) {
+  if (!isNumber(seconds) || seconds < 0) return null;
+  if (seconds >= 7200) return `${Math.floor(seconds / 3600)} h`;
+  return `${Math.floor(seconds / 60)} min`;
+}
+
+const gigabytes = (bytes) => `${(bytes / 1e9).toFixed(bytes >= 1e11 ? 0 : 1)} GB`;
+
+// GET /record's `space` (the agent's): how much free space the takes
+// folder's filesystem has, and how long a take of the stems it would record
+// now fits in it. `{text, title, tone}`: "41 h left", with the free space,
+// where, and what a second of take costs in the title; tone "warn" under an
+// hour (doctor's `MIN_RECORDING_HOURS`), "over" under ten minutes. Null when
+// the agent said nothing of it (a recorder off, an older agent).
+export const SPACE_WARN_S = 3600;
+export const SPACE_LOW_S = 600;
+export function spaceView(space) {
+  if (!space || typeof space !== "object") return null;
+  const where = typeof space.dir === "string" && space.dir ? ` at ${space.dir}` : "";
+  if (!isNumber(space.free_bytes)) {
+    return { text: "Space unknown", tone: space.problem ? "over" : "warn",
+      title: space.problem || `How much space is free${where} could not be read.` };
+  }
+  const free = `${gigabytes(space.free_bytes)} free${where}`;
+  const rate = isNumber(space.bytes_per_second) && space.bytes_per_second > 0 ? space.bytes_per_second : null;
+  const left = hoursLeft(space.seconds_left);
+  if (!rate || !left) return { text: `${gigabytes(space.free_bytes)} free`, tone: "", title: free };
+  const tone = space.seconds_left < SPACE_LOW_S ? "over" : space.seconds_left < SPACE_WARN_S ? "warn" : "";
+  const each = `${(rate / 1e6).toFixed(2)} MB a second: the stems a take records now, in float32`;
+  return { text: `${left} left`, tone, title: `${free}: about ${duration(space.seconds_left)} of takes at ${each}` };
+}
+
+// The meters: each stem's peak, as GET /record/levels gives it (each
+// channel's peak in dBFS since the last read, measured by the recorder as
+// it writes), with a hold. The bar is the peak, falling back at
+// `fallDbPerS` between reads, so a transient shows and then settles; the
+// hold mark stays at the highest peak for `holdMs`; a stem goes red at
+// `clipDbfs` and stays red for `clipMs`, so a clip a glance missed is still
+// there for the next one. `floorDb` is the bar's empty end. Chosen, not
+// measured: the clip at -0.1 dBFS, as an interface's converter clips at its
+// full scale, which a float stem can pass but an input cannot.
+export const METER = { floorDb: -60, clipDbfs: -0.1, holdMs: 1500, fallDbPerS: 24, clipMs: 3000 };
+
+const stemLabel = (file) => (typeof file === "string" ? file.replace(/\.wav$/i, "") : "?");
+
+// One step of the meters: `prev` is the last step's (null to begin),
+// `stems` the answer's, `now` the page's monotonic clock in ms. A stem whose
+// `peaks_dbfs` is null (nothing measured since the last read: the meter was
+// only now asked) keeps its last step, falling.
+export function meterStep(prev, stems, now) {
+  const before = new Map((prev || []).map((m) => [m.file, m]));
+  return (Array.isArray(stems) ? stems : []).filter((s) => s && typeof s.file === "string").map((s) => {
+    const was = before.get(s.file) || { db: -Infinity, hold: -Infinity, holdAt: -Infinity, clipAt: -Infinity, at: now };
+    const fallen = was.db - METER.fallDbPerS * Math.max(0, now - was.at) / 1000;
+    const peaks = Array.isArray(s.peaks_dbfs) ? s.peaks_dbfs.map((p) => (isNumber(p) ? p : -Infinity)) : null;
+    const peak = peaks ? Math.max(-Infinity, ...peaks) : -Infinity;
+    const db = Math.max(peak, fallen);
+    const held = peak >= was.hold || now - was.holdAt > METER.holdMs;
+    return {
+      file: s.file, label: stemLabel(s.file), channels: s.channels, peaks, at: now, db,
+      hold: held ? Math.max(peak, db) : was.hold, holdAt: held ? now : was.holdAt,
+      clipAt: peak >= METER.clipDbfs ? now : was.clipAt,
+    };
+  });
+}
+
+const dbText = (db) => (isNumber(db) ? minus(db.toFixed(1)) : "−∞");
+
+// What a meter draws: the bar's and the hold's place, 0 to 100 along the
+// scale; red while clipped; its words for the title and a screen reader.
+export function meterView(m, now) {
+  const at = (db) => (isNumber(db) ? Math.round(1000 * Math.min(1, Math.max(0, (db - METER.floorDb) / -METER.floorDb))) / 10 : 0);
+  const clip = now - m.clipAt <= METER.clipMs;
+  const each = (m.peaks || []).length > 1 ? ` (${m.peaks.map(dbText).join(", ")})` : "";
+  return {
+    label: m.label, fill: at(m.db), hold: at(m.hold), clip,
+    title: `${m.file}: peak ${dbText(m.db)} dBFS${each}, held ${dbText(m.hold)}${clip ? " · clipped" : ""}`,
+  };
+}
+
+// A take's file, as the agent serves it (GET /takes/{take}/{file}):
+// `download` asks for it to be saved rather than played.
+export function takeFileUrl(take, file, download = false) {
+  return `/takes/${encodeURIComponent(take)}/${encodeURIComponent(file)}${download ? "?download=1" : ""}`;
+}
+
+// The takes the player offers (GET /takes's answer, newest first): each
+// one's name, a few words (its length, whole or not), and its stems, each
+// to play and to save. `recording` is the name of the take running now,
+// which is said as such. A folder that is not a take has nothing to play
+// and is left out.
+export function takeChoices(answer, recording = null) {
+  const takes = answer && answer.ok && Array.isArray(answer.body.takes) ? answer.body.takes : [];
+  return takes.filter((t) => t && t.take !== false && typeof t.name === "string").map((t) => {
+    const len = clockText(t.seconds);
+    const said = t.name === recording ? "recording" : (t.problems || []).length ? "problems" : t.complete ? null : "unfinished";
+    return {
+      name: t.name, text: [t.name, len, said].filter(Boolean).join(" · "),
+      title: [t.folder, (t.problems || [])[0]].filter(Boolean).join(" · ") || null,
+      stems: (t.stems || []).map((file) => ({ file, label: stemLabel(file), src: takeFileUrl(t.name, file),
+        save: takeFileUrl(t.name, file, true) })),
+    };
+  });
+}
+
+// ---------------------------------------------------------------- Broken (S9, #139)
+// What the page shows when the rig is broken: what is wrong in a word or
+// two, the whole of it in the title, the log, and the one thing that
+// recovers it. Not a screen of its own: a band on the stage and the rack
+// alike, under the activity zone (web-ui.md says why).
+//
+// Broken is: Sushi not answering with the rig up; a child of the running
+// rig that exited (`agent.supervisor.crashed`, this run's only); a start
+// that failed, the rig down; the amp missing or not wired; a channel's
+// links not made. The worst is the word; how many more is said beside it.
+// Not broken: a rig simply down, an agent not answering (nothing here
+// could act on it), a command running.
+
+// A child's name in a word, for "<it> exited".
+const CHILD_WORD = { sushi: "Sushi", amp: "Amp", fmit: "Tuner", qpwgraph: "Patchbay", recorder: "Recorder",
+  "group holder": "Group holder", vistap: "Visualiser tap" };
+// The worse first: no sound at all, then a start that never came up, then
+// the amp, a channel's links, and what plays on without it.
+const CHILD_RANK = { sushi: 0, amp: 2 };
+
+export function brokenView(health, live) {
+  if (!health || !health.ok) return null;
+  const agent = health.body.agent || {};
+  const rig = health.body.rig || {};
+  if (agent.busy) return null;
+  const faults = [];
+  if (rig.running && live && !live.ok) {
+    faults.push({ rank: 0, word: "Sushi unreachable", detail: `The rig is up, but Sushi did not answer: ${live.reason}` });
+  }
+  const crashes = Array.isArray((agent.supervisor || {}).crashed) ? agent.supervisor.crashed : [];
+  for (const record of crashes) {
+    if (!record || typeof record !== "object" || !sameRun(record, rig)) continue;
+    const name = record.name || "?";
+    faults.push({ rank: CHILD_RANK[name] ?? 4, word: `${CHILD_WORD[name] || capital(name)} exited`,
+      detail: crashProblem(record, rig).reason, log: record.log || null });
+  }
+  const failed = agent.last_error && agent.last_error.kind === "lifecycle" ? agent.last_error : null;
+  const command = failed && Array.isArray(failed.command) ? failed.command : [];
+  const restartFailed = command[0] === "restart";
+  if (failed && !rig.running && (command[0] === "up" || restartFailed)) {
+    faults.push({ rank: 1, word: restartFailed ? "Restart failed" : "Start failed",
+      detail: [failed.message, ...(failed.also || [])].filter(Boolean).join("\n"),
+      start: command[0] === "up" && typeof command[1] === "string" ? command[1] : null });
+  }
+  if (rig.running) {
+    const unwired = wiringTag(agent.amp_wiring);
+    const warned = warningsTag(boxedWarnings(agent.warnings));
+    if (unwired) faults.push({ rank: 2, word: unwired.text, detail: unwired.title });
+    if (warned && !(unwired && warned.text === unwired.text)) {
+      faults.push({ rank: warned.text === "Links not made" ? 3 : 2, word: warned.text, detail: warned.title });
+    }
+  }
+  if (!faults.length) return null;
+  faults.sort((a, b) => a.rank - b.rank);
+  const worst = faults[0];
+  const log = worst.log || faults.map((f) => f.log).find(Boolean) || (rig.running ? rig.log_dir || null : null);
+  const actions = [];
+  if (rig.running) {
+    actions.push({ op: "restart", name: rig.config_name || null, label: "Restart", primary: true });
+    actions.push({ op: "stop", name: rig.config_name || null, label: "Stop", primary: false });
+  } else if (worst.start) {
+    actions.push({ op: "start", name: worst.start, label: "Start again", primary: true });
+  }
+  return {
+    word: worst.word, more: faults.length - 1,
+    title: faults.map((f) => `${f.word}: ${f.detail}`).join("\n\n") + (log ? `\n\nLog: ${log}` : ""),
+    log, actions,
+  };
+}
+
 // ---------------------------------------------------------------- notices that go by themselves (#189)
 // What says something worked leaves after NOTICE_MS: the takes folder
 // opened, a whole take stopped, and the one Undo's few words (#209). A

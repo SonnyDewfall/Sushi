@@ -96,12 +96,20 @@ appears beside the rig's name saying which one **exited**; hover over it for
 what that means for the sound, and where its log is. **Nothing restarts by itself.** That is on purpose: a rig that
 quietly patched itself up could be running wrong without you knowing.
 
-To bring it back, restart the rig. Either:
+The page turns red at the top, and a red band under it says what is wrong in
+a word or two (**Amp exited**, **Sushi unreachable**, **No amp**, **Links not
+made**, **Start failed**), with the log's path under it. Hover over the words
+for the whole story. The band's buttons are the fix:
 
-- on the page, **Stop** the rig and **Start** it again (save first: stopping
-  drops unsaved changes); or
-- in a terminal, run `sushi-rig restart`. It refuses if you have unsaved
-  changes, and tells you how to go ahead anyway.
+- **Restart** restarts the rig from its file. It asks **Restart?** first,
+  since the sound stops while it comes back, and works while the page is
+  Locked. If you have unsaved changes it says so, and offers to restart
+  anyway.
+- **Stop** stops the rig, after **Stop?**.
+- **Start again**, after a start that failed, tries the same rig again.
+
+In a terminal, `sushi-rig restart` does the same as **Restart**. It refuses if
+you have unsaved changes, and tells you how to go ahead anyway.
 
 A restart takes about five seconds.
 

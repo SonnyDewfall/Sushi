@@ -7810,3 +7810,54 @@ mono and a stereo channel records from, with the amp and without
 (`test_a_take_records_these_ports_for_a_mono_and_a_stereo_channel`). The
 tests stand the live graph in (conftest's `GraphAsWritten`) instead of reading
 the machine's. Not run on the rig. *(2026-11-26)*
+
+**Broken, the meters, the room left and a take's stems on the page (#139,
+the last of it).** The design is the canvas's own: its S9 frame ("Something
+broke: what, why, and the one fix") and its S7 Record frame (a meter a stem
+under the take's name, "94 GB free, about 26 h of takes", an Open on each
+take), read from a copy of the canvas's frames kept from 2026-11-01; the
+canvas itself is a private doc of Sonny's, and the repository had recorded
+only that these were not built. **Broken is a state of the stage and the
+rack, not a screen**: the canvas reached S9 through a "Health" tab the page
+has no bar for, a page that jumped screens would take the player off theirs
+mid-song, and a broken rig often still plays, so the master, the record bar
+and Stop stay in reach. A red band under the activity zone, on both screens
+(`R.brokenView`, `brokenRegion`): the worst fault in a word or two, how many
+more, all of them and the log in its title, the log's path, and the fix:
+Restart and Stop, each asked first in the activity zone and not behind the
+lock, or Start again for a start that failed. Broken is Sushi not answering,
+a child of this run that exited, a start or restart that failed, the amp
+missing or not wired, a channel's links not made. **The meters** are the
+recorder's: `recorder.Meter` takes each column's peak in the writer thread,
+on the blocks it writes (`column_peaks`, folding rows in halves, five times
+`abs().max(axis=0)`), never in `push`, and only for `METER_LEASE_S` (2 s)
+after a read; `GET /record/levels` reads it; the page asks ten times a second
+only while the stage shows a take running and is in view, and draws a bar,
+a 1.5 s hold and a 3 s red at −0.1 dBFS per stem in place. No node, link or
+client is added to the graph; the first idea, the visualiser's tap, carries
+the master only and is a graph follower the page leases only while it
+listens, so it was not used. Measured in a container, an eight-column take
+pushed at a 256 quantum's pace, 20 s each: the process serving the agent and
+the recorder 4.5% of a core with no page before and after, 5.0 / 5.3–5.5% with
+the rack open, 5.1 / 6.6–6.8% with the stage's meters; Chromium 2.3% / 9.1–9.8%
+on the stage, about 4.5 points of it the requests themselves; the writer 21 us
+a 4096-frame chunk while measuring, 0.2 us not, beside a 130 us write.
+**Room left**: `GET /record`'s `space` (`doctor.free_bytes`, renamed from
+`_free_bytes`, of the takes folder; the recorder's `bytes_per_second`, its
+channels by its rate by four bytes; `seconds_left`), "41 h left" at the bar's
+foot, amber under an hour, red under ten minutes. **Takes**: `GET
+/takes/{take}/{file}`, read-only, a plain take name directly in the takes
+folder and a plain file directly in it, checked again once resolved
+(`take_file`; `..`, encoded slashes, NUL, `_archive`, hidden files and links
+out are 404, tested), `audio/wav` or text or only a download, `nosniff` and a
+sandboxing CSP, refused to another site's page; on the stage's record bar and
+the rack, **Takes** opens a take's stems in the browser's own audio element
+with Save. **Tests**: `test_agent_record_levels.py` (the meter, the recorder's
+answer, the routes, traversal) and `test_ui_broken_meters.py` (rig.js's
+decisions; in Chromium, Broken from a crash, a failed start and Sushi not
+answering on both screens and at 320 px, the meters from `ui_fake.Playing`
+into the real recorder, the reads stopping on the rack and after Stop and the
+recorder's meter disarming, the room left, a stem played in Chromium's audio
+element and saved). **Not run on the rig**: no level has been read from a
+live PipeWire, the recorder process has not measured on the rig laptop, and
+nothing has been played from a phone's own browser. *(2026-11-26)*

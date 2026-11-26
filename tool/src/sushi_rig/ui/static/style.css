@@ -499,6 +499,65 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 /* No list (#189): the line naming the folder, Open folder on the laptop, and what an open said. */
 .takes-dir { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
 .takes .open-takes { align-self: flex-start; }
+.takes-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.takes-acts .rig-act { flex: 0 0 auto; }
+
+/* ---------------------------------------------------------------- the record bar's meters, space and takes (#139) */
+/* One meter a stem, as the canvas's Record frame draws them: a thin bar on
+   a dark track with the stem under it, the hold a tick, red at a clip.
+   Drawn in place from GET /record/levels; faded when a read failed. */
+.meters { display: flex; gap: 8px; }
+.meters.stale { opacity: .45; }
+.meter { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.meter-track { position: relative; height: 8px; border-radius: 4px; background: #3A2222; overflow: hidden; }
+.meter-fill { position: absolute; inset: 0; border-radius: 4px; background: #E9A58F; transform: scaleX(0); transform-origin: left; }
+/* The hold: a full-width layer moved along (translateX of its own width),
+   its tick at its left edge. */
+.meter-hold { position: absolute; inset: 0; transform: translateX(0); }
+.meter-hold::before { content: ""; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: var(--recording-soft); }
+.meter-label { font-size: 11px; color: var(--recording-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meter.clip .meter-fill, .meter.clip .meter-hold::before { background: var(--recording); }
+.meter.clip .meter-track { box-shadow: 0 0 0 1px var(--recording); }
+.meter.clip .meter-label { color: #FFFFFF; font-weight: 600; }
+.record-foot { display: flex; align-items: center; gap: 10px; }
+.record-foot .takes-open { flex: 0 0 auto; min-height: 44px; margin-left: auto; }
+.record-space { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.record-bar.recording .record-space { color: var(--recording-soft); }
+.record-space.tone-warn { color: var(--accent-soft); }
+.record-space.tone-over, .record-bar.recording .record-space.tone-over { color: var(--refused); font-weight: 600; }
+/* A take's stems, each in the browser's own audio element, with Save. */
+.take-player[hidden] { display: none; }
+.take-player { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 14px; background: var(--card); border: 1px solid var(--edge); }
+.stage-screen .take-player { margin: 8px 16px 0; }
+.player-head { display: flex; gap: 8px; align-items: center; }
+.take-pick { flex: 1; min-width: 0; min-height: 44px; padding: 0 10px; border-radius: 10px; background: var(--ground); border: 1px solid var(--edge); }
+.player-head .player-reread { flex: 0 0 44px; padding: 0; }
+.player-none { flex: 1; color: var(--muted); font-size: 13px; }
+.stems { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.stem { display: grid; grid-template-columns: minmax(48px, 7em) minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.stem-label { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stem audio { width: 100%; min-width: 0; height: 36px; }
+.stem-save { font-size: 13px; min-height: 44px; display: inline-flex; align-items: center; padding: 0 6px; }
+
+/* ---------------------------------------------------------------- Broken (S9, #139) */
+/* A band under the activity zone on both screens, in the canvas's S9 red:
+   what is wrong in a word or two, the log, the one fix. The header takes the
+   red too, as S9's does, so the screen reads as broken from across the room. */
+.broken { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 12px 16px 0; padding: 14px 16px; border-radius: 16px;
+  background: var(--recording-ground); border: 2px solid var(--recording); }
+.broken[hidden] { display: none; }
+.broken-dot { flex: none; width: 14px; height: 14px; border-radius: 50%; background: var(--recording); box-shadow: 0 0 12px var(--recording); }
+.broken-what { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.broken-word { font-family: var(--display); font-size: 22px; line-height: 1.15; }
+.broken-more { font-family: var(--mono); font-size: 14px; color: var(--recording-soft); font-weight: 500; }
+.broken-log { font-size: 12px; color: var(--recording-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.broken-acts { display: flex; gap: 10px; flex: 1 1 220px; }
+.broken-act { flex: 1; min-height: 56px; padding: 0 16px; border-radius: 14px; font-family: var(--display); font-size: 20px; font-weight: 700; cursor: pointer;
+  background: transparent; border: 1px solid var(--edge); }
+.broken-act.primary { background: var(--accent); border-color: var(--accent); color: #1A1206; }
+.broken-act:disabled { opacity: .5; cursor: default; }
+.is-broken .stage-head, .is-broken .bar.zones { background: var(--recording-ground); border-bottom-color: #7A3B3B; }
+.rack-screen .broken { margin: 12px 20px 0; }
 
 /* ---------------------------------------------------------------- rig files (the New rig screen) */
 /* The New rig screen (#new-rig) and the rack's inputs: forms in the Save

@@ -43,7 +43,11 @@ its listener are retired (#139, #218); the page is the control surface.
     GET  /record        the recorder: idle (and the name a take without one would get), recording (name, started, elapsed, stems), or unavailable and why
     POST /record/start  {"name"?} -- a take of the running rig (S7); no name is <rig>-<date>-take-<nn>
     POST /record/stop   {} -- finish it; the answer says `take check`'s verdict
+    GET  /record/levels the running take's levels: each stem's peak per channel in dBFS since the last
+                        read, measured in the recorder's writer thread only while asked (#139)
     GET  /takes         the takes, newest first: name, when, length, stems, `take check`'s verdict
+    GET  /takes/{take}/{file}  one file of a take, read-only, from the takes folder only (#139);
+                        `?download=1` to save it
     POST /takes/open    {} -- open the takes folder in this machine's file manager; loopback peers only (#189)
     GET  /machine/roles the machine file's roles: ports, widths each can feed, which tracks use each
     POST /visualiser/tap  {"page"} -- start, or renew this page's lease on, the visualiser's tap on the
@@ -351,6 +355,23 @@ real recorder process, with the engine stood in. The page no longer reads
 it (#189: the rack names the folder instead, and a stop's answer carries
 the take's folder and verdict); it stays for curl and anything else that
 lists the takes.
+
+`GET /record`'s idle and recording answers carry `space` (#139): the free
+space of the takes folder's filesystem (`doctor.free_bytes`, the nearest
+folder that exists, and a drive whose link is dangling said as a problem),
+the bytes a second the stems a take would record now write (the recorder's
+`bytes_per_second`: channels, rate, float32), and the seconds of takes
+that leaves. `GET /record/levels` is the meters': the recorder measures
+each stem's peak in its writer thread, never its audio callback, and only
+for `recorder.METER_LEASE_S` after a read, so no page asking costs nothing
+but a clock read per chunk written. `GET /takes/{take}/{file}` serves one
+file of one take, read-only: the take a plain name in the takes folder and
+the file a plain name in it, each checked again once resolved, so `..`, a
+slash, a link out of the folder or an `_archive/` take is 404
+(`take_file`). Stems are `audio/wav`; text files plain text; anything else
+a download; all with `nosniff` and a sandboxing CSP, so nothing in a take
+runs as the agent's page. Its reads are guarded as writes are against
+another site's page (`_same_site_only`).
 
 `POST /takes/open` (#189) opens the takes folder in this machine's file
 manager, for the rack's Open folder on the laptop: for a loopback peer only
@@ -731,6 +752,9 @@ STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # to that page (no CORS header), but the stream is a connection kept, not a
 # reply sent once.
 GUARDED_READS = frozenset({"/events"})
+# And every read under this: a take's files (#139), which are the player's
+# recordings, not for another site's page to play or fetch.
+GUARDED_READ_PREFIX = "/takes/"
 
 
 _HOST_NAME = re.compile(r"[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*")
@@ -3510,7 +3534,8 @@ class Agent:
         # `socket.getfqdn()`), which is a name no browser sent.
         host = request.headers.get("Host")
         reason = None
-        if request.method in STATE_CHANGING or request.path in GUARDED_READS:
+        if request.method in STATE_CHANGING or request.path in GUARDED_READS \
+                or request.path.startswith(GUARDED_READ_PREFIX):
             reason = cross_site_refusal(request.headers, host, self.allow_hosts)
         if reason is None:
             names = own_names((*self.allow_hosts, self.bound) if self.bound else self.allow_hosts)
@@ -8766,8 +8791,10 @@ class Agent:
         app.router.add_get("/record", self.record_route)
         app.router.add_post("/record/start", self.record_start_route)
         app.router.add_post("/record/stop", self.record_stop_route)
+        app.router.add_get("/record/levels", self.record_levels_route)
         app.router.add_get("/takes", self.takes_route)
         app.router.add_post("/takes/open", self.takes_open_route)
+        app.router.add_get("/takes/{take}/{file}", self.take_file_route)
 
     async def _record_state(self) -> tuple[dict[str, Any], dict[str, Any], "tuple[str, str] | None"]:
         """`(state, described, refusal)`: the state file, `describe_rig`'s
@@ -8845,7 +8872,69 @@ class Agent:
 
             answer = {**answer, "names": await asyncio.to_thread(take_names, self.takes_dir),
                       "default_name": await self._default_take_name(state)}
+        if answer["state"] in ("idle", "recording"):
+            answer = {**answer, "space": await self._record_space(answer.get("bytes_per_second"))}
         return web.json_response(answer)
+
+    async def _record_space(self, rate: Any) -> dict[str, Any]:
+        """GET /record's `space` (#139): `free_bytes` where takes are written
+        (None when it cannot be read, with `problem` when that is a drive
+        not there), `bytes_per_second` the stems a take would record now
+        write, and `seconds_left`, the one over the other, rounded down."""
+        from .doctor import free_bytes
+
+        free, problem = await asyncio.to_thread(free_bytes, Path(self.takes_dir))
+        rate = rate if type(rate) is int and rate > 0 else None
+        left = int(free // rate) if free is not None and rate else None
+        return {"free_bytes": free, "bytes_per_second": rate, "seconds_left": left,
+                "dir": str(self._takes_dir_shown), "problem": problem or None}
+
+    async def record_levels_route(self, request):
+        """`GET /record/levels` (#139): the running take's levels, for the
+        record bar's meters. `state` is `recording` (`name`, `elapsed`,
+        `frames` and `seconds` measured since the last read, and `stems`,
+        each `{file, channels, peaks_dbfs}`: a peak per channel, None for
+        exact silence, and `peaks_dbfs: null` when nothing was measured, as
+        on the first read after none) or `idle`. Measured in the recorder's
+        writer thread from the blocks it writes, and only for
+        `recorder.METER_LEASE_S` after a read: nothing new in the audio path.
+        A page asks several times a second while it shows the meters, so
+        nothing here is remembered for /health: 409 `no_recorder` when none
+        answers, 504 `recorder_timeout`, 409 with the recorder's code for a
+        refusal."""
+        try:
+            answer = await self._ask_recorder({"op": "levels"}, STATUS_TIMEOUT)
+        except RecorderDown as exc:
+            raise _conflict(f"no recorder answers: {exc}", "no_recorder")
+        except RecorderTimeout as exc:
+            error = web.HTTPGatewayTimeout(reason=str(exc))
+            error.agent_code = "recorder_timeout"
+            raise error
+        if not answer.get("ok"):
+            raise _conflict(" ".join(str(answer.get("reason") or "the recorder refused").split()),
+                            str(answer.get("code") or "refused"))
+        if answer.get("state") not in ("recording", "idle"):
+            raise web.HTTPBadGateway(reason=" ".join(
+                f"the recorder answered levels without a state it may have: {answer!r}".split())[:500])
+        return web.json_response(answer)
+
+    async def take_file_route(self, request):
+        """`GET /takes/{take}/{file}` (#139): one file of one take, read-only,
+        for the record bar's Takes to play a stem in the browser's own audio
+        element (which asks for ranges, as `FileResponse` serves them) or
+        save it (`?download=1`). Only a file directly in a take directly in
+        the takes folder (`take_file`); anything else is 404 with no more
+        said than that. No rig is needed: takes are files."""
+        found = await asyncio.to_thread(take_file, self._takes_dir_shown, request.match_info["take"],
+                                        request.match_info["file"])
+        if found is None:
+            raise web.HTTPNotFound(reason="no such file in a take")
+        path, kind = found
+        headers = {"Content-Type": kind, "X-Content-Type-Options": "nosniff",
+                   "Content-Security-Policy": "sandbox; default-src 'none'", "Cache-Control": "no-cache"}
+        if request.query.get("download") == "1" or kind == "application/octet-stream":
+            headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
+        return web.FileResponse(path, headers=headers)
 
     async def record_start_route(self, request):
         """`POST /record/start {"name"?}`: start a take. No name is
@@ -9899,6 +9988,38 @@ RECORD_CODES = {
     "name": web.HTTPBadRequest if web else None,
     "bad_request": web.HTTPInternalServerError if web else None,  # the agent's own request: a bug
 }
+
+
+# What a take's file is served as (`take_file`), by its suffix: the stems
+# as audio the browser plays, the take's own files as text to read; any
+# other is a download, never something the browser would render or run.
+TAKE_FILE_TYPES = {".wav": "audio/wav", ".yaml": "text/plain; charset=utf-8", ".yml": "text/plain; charset=utf-8",
+                   ".json": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8",
+                   ".log": "text/plain; charset=utf-8"}
+
+# A take's name and a file's, as a path segment may carry them: one plain
+# name, not hidden, not the archive or anything else starting with `_`.
+_TAKE_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,254}")
+
+
+def take_file(takes_dir: Path, take: str, name: str) -> tuple[Path, str] | None:
+    """`(path, content type)` of file `name` of take `take`, or None when it
+    is not one to serve (#139). Each a single plain name (`_TAKE_SEGMENT`:
+    no slash, no `..`, nothing hidden, no `_archive`), and then, once
+    resolved, a regular file whose folder is a folder directly in
+    `takes_dir`: a link that leads out of the takes folder, or into another
+    take's subfolder, is refused as well. `takes_dir` is resolved already.
+    Reads the filesystem; never raises."""
+    if not all(isinstance(x, str) and _TAKE_SEGMENT.fullmatch(x) and ".." not in x for x in (take, name)):
+        return None
+    try:
+        folder = (takes_dir / take).resolve(strict=True)
+        path = (takes_dir / take / name).resolve(strict=True)
+        if folder.parent != takes_dir or path.parent != folder or not path.is_file():
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return path, TAKE_FILE_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
 
 # What GET /record's `state` may be; a recorder that says anything else is a

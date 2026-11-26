@@ -551,7 +551,7 @@ def test_free_space_that_cannot_be_read_is_unchecked():
 
 def test_free_space_is_read_where_the_takes_will_go_before_the_folder_exists(tmp_path):
     """The folder is made by the first take, so until then its parent says."""
-    free, problem = doctor._free_bytes(tmp_path / "not" / "made" / "yet")
+    free, problem = doctor.free_bytes(tmp_path / "not" / "made" / "yet")
     assert isinstance(free, int) and problem == ""
 
 
@@ -560,7 +560,7 @@ def test_a_takes_folder_linked_to_an_unplugged_drive_is_a_fault(tmp_path):
     room, and let the first take fail as it started."""
     takes = tmp_path / "sushi-rig-takes"
     takes.symlink_to(tmp_path / "media" / "external")
-    free, problem = doctor._free_bytes(takes / "riff")
+    free, problem = doctor.free_bytes(takes / "riff")
     assert free is None and "plugged in" in problem
     check = doctor.check_disk(environment(takes_free_bytes=None, takes_problem=problem))
     assert check.state == FAULT and "connect the drive" in check.remedy

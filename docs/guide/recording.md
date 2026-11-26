@@ -28,7 +28,10 @@ Recording is on the **stage** screen, and works while the page is **Locked**.
    `5 stems: board.wav, board-dry.wav, vocal.wav, vocal-dry.wav, master.wav`.
 5. Tap **Record**. The bar turns red and reads **Recording**, with the take's
    name and a running clock.
-6. Play.
+6. Play. Under the name there is a **meter** for each stem: the bar is how
+   loud it is, the thin mark the loudest it was a moment ago. A meter that
+   turns **red** clipped: that input is too hot. Turn its gain down on the
+   interface and record again. Hover over a meter for its level in dBFS.
 7. Tap **Stop**. There is no second question, because stopping loses nothing.
 
 **Recorded** and the take's name, in the bar under the header, gives the
@@ -38,6 +41,22 @@ how many stems, and that no sound was dropped. A message like that goes by itsel
 after about 15 seconds. If not, it is red, and it gives the number of
 problems; a red one stays until you close it with **×**,
 so a take with problems is never missed. Any of them closes with **×**.
+
+## How much room is left
+
+At the foot of the record bar, **41 h left** (or **50 min left**) is how long
+a take of the stems it would record now fits in the space left on the disk
+the takes go to. Hover over it for the free space, the folder, and how much a
+second of take takes. It turns yellow under an hour and red under ten
+minutes. **Space unknown** means the disk could not be read; hover over it for
+why (most often, the drive the takes go to is not plugged in).
+
+## Play or save a take
+
+**Takes**, beside the room left, opens the takes under the bar: choose one
+(the newest is chosen for you), and each of its stems has a player and
+**Save**, which downloads the file. This works on a phone too. On the rack,
+**Takes** is under **TAKES** on the right.
 
 ## Find your takes
 
@@ -51,7 +70,8 @@ at `localhost` (or `127.0.0.1`), not on a phone, nor on the laptop by its
 network address. If the laptop has nothing that opens folders (`xdg-open` or
 `gio`), the page says so and gives the folder's path.
 
-The page cannot play a take. Use a file manager, or your recording software.
+To work with the takes in your recording software, open them from the
+folder.
 
 ## What is in a take's folder
 
@@ -124,8 +144,10 @@ Things worth knowing about these files:
 - **Recording needs a rig started the way the page starts one.** A rig started
   from a terminal in an older way cannot be recorded here. If the bar reads
   **Recording is off**, the line under it says why.
-- There are no level meters, and the page does not show how much disk space is
-  left.
+- **The meters, the room left and the takes' players have not been tried on
+  the rig yet**, nor on a phone's own browser: they are tested in Chromium
+  against a stand-in for the recorder and its sound. The meters show only
+  while a take runs, on the stage screen.
 - **Open folder has not been tried on the rig's desktop yet.** If it says the
   opener failed, open the folder named on the rack by hand.
 - Takes have been recorded from the page on the rig with a one-channel rig and
