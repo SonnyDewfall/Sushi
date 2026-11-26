@@ -322,7 +322,30 @@ def test_the_v1_configs_measured_are_there():
 def test_each_v1_config(config, tmp_path, request):
     for channel in channels_of(json.loads(config.read_text()), config):
         _record(request, "each v1 config (frozen), as nulltest renders one",
-                channel.name, "", _render(tmp_path, channel.name, channel.config))
+                channel.name, "", _render_as_nulltest(tmp_path, channel.name, channel.config, request))
+
+
+def _render_as_nulltest(tmp_path, name, config, request) -> "np.ndarray":
+    """`_render`, with the one retry `render.measure` (what nulltest renders
+    with) allows: a NaN that is gx_detune_'s known bug (`render.detune_nan`,
+    MANIFEST 2026-11-03: the v1 electric-octave-up renders one about once in
+    forty) is rendered once more, and the retry is listed at the end of the
+    run for CI to count (conftest, `spread_table.RETRIES`). Any other NaN,
+    or the same one twice, is left for `_record` to fail."""
+    import spread_table
+
+    from sushi_rig.render import RETRIED, detune_nan
+
+    rendered = _render(tmp_path, name, config)
+    if check_finite(rendered) is None:
+        return rendered
+    known = detune_nan(config, rendered)
+    if known is None:
+        return rendered
+    again = _render(tmp_path, f"{name}-retry", config)
+    if check_finite(again) is None:
+        spread_table.retries(request.config).append(f"{name}: {RETRIED}, {known}; the retry was finite")
+    return again
 
 
 EMPTY_RIG = {
