@@ -30,6 +30,88 @@ SHUTDOWN_STEPS: tuple[tuple[signal.Signals, float], ...] = (
     (signal.SIGKILL, 2.0),
 )
 
+# The signals a stop sends that a process can ignore. SIGKILL cannot be.
+STOP_SIGNALS: tuple[signal.Signals, ...] = (signal.SIGINT, signal.SIGTERM)
+
+
+def default_stop_signals() -> None:
+    """Put SIGINT and SIGTERM back to their defaults, in a child between fork
+    and exec: the `preexec_fn` `stop_signals_preexec` gives (#236)."""
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, signal.SIG_DFL)
+
+
+def stop_signals_preexec() -> Callable[[], None] | None:
+    """The `preexec_fn` for a child the rig starts and stops: one that puts
+    SIGINT and SIGTERM back to their defaults if this process ignores
+    either, else None (#236).
+
+    "Ignored" survives exec, and a process started with SIGINT ignored -- an
+    `up` or `verify` run from a script or as a background job of a
+    non-interactive shell, or pytest started that way -- passed it to every
+    child. Each then sat through the SIGINT step of a stop (3 s of
+    `SHUTDOWN_STEPS`, 2.5 s of a verification's) and died of the next signal,
+    its clean exit on SIGINT never run. A handled signal is reset to its
+    default by exec, so only "ignored" needs this; Popen's `restore_signals`
+    restores SIGPIPE, SIGXFZ and SIGXFSZ, not these.
+
+    None wherever neither is ignored, so nothing runs between fork and exec
+    there: the running agent is such a place, since aiohttp handles both
+    (`run_app`'s `handle_signals`), and a fork from its threads is meant to
+    run no Python (docs/reference/agent.md, "How the group is held"). Where
+    one is ignored, the function calls `signal.signal` and nothing else.
+    `signal.getsignal` reads the disposition from any thread.
+    """
+    if any(signal.getsignal(sig) == signal.SIG_IGN for sig in STOP_SIGNALS):
+        return default_stop_signals
+    return None
+
+
+def ignores(pid: int, sig: signal.Signals) -> bool | None:
+    """Whether a process ignores `sig` (/proc/<pid>/status `SigIgn`); None
+    for one that is a zombie, gone or unreadable, which ignores nothing."""
+    try:
+        with open(f"/proc/{pid}/status") as status:
+            fields = dict(line.split(":", 1) for line in status if ":" in line)
+        if fields.get("State", "").strip().startswith("Z"):
+            return None
+        return bool(int(fields["SigIgn"].strip(), 16) & (1 << (int(sig) - 1)))
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def group_members(pgid: int) -> list[int]:
+    """Every process in group `pgid`, from /proc: what is left when a group
+    would not stop, said by pid. Empty where /proc cannot be read."""
+    members = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat") as stat:
+                # "pid (comm) state ppid pgrp ...": comm may hold spaces and
+                # parentheses, so split after the last ')'.
+                fields = stat.read().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if len(fields) > 2 and fields[2] == str(pgid):
+            members.append(int(entry))
+    return sorted(members)
+
+
+def group_ignores(pgid: int, sig: signal.Signals) -> bool:
+    """Whether every member of the group that could act on a signal ignores
+    `sig`, and there is one: then waiting after sending it is waiting for
+    nothing. Zombies are left out (they go when reaped, whatever is sent),
+    and a group of zombies alone is not said to ignore anything."""
+    seen = [ignores(pid, sig) for pid in group_members(pgid)]
+    live = [said for said in seen if said is not None]
+    return bool(live) and all(live)
+
 def pid_alive(pid: int) -> bool:
     """Whether a pid exists, without caring whether we may signal it.
 
@@ -90,6 +172,12 @@ def stop_group(
     without reaping it the whole escalation runs against a dead process. Pass
     `process.poll` or a `waitpid(..., WNOHANG)`.
 
+    A step whose signal every member left ignores (`group_ignores`, read
+    from /proc on each tick) is not waited out: the next is sent at once. A
+    child the rig starts has SIGINT at its default (`default_stop_signals`),
+    so this is for a process that ignores it itself, or one started before
+    that (#236).
+
     A group that vanishes between steps (ProcessLookupError) is gone, not an
     error. `PermissionError` propagates: whether a group that is not ours is a
     message (`down`) or something to shrug off (a failed-start cleanup) is the
@@ -110,6 +198,8 @@ def stop_group(
                 poll()
             if not pgid_alive(pgid):
                 return True
+            if sig in STOP_SIGNALS and group_ignores(pgid, sig):
+                break  # nothing left in it will act on this one (#236)
             time.sleep(interval)
         if poll is not None:
             poll()
@@ -214,6 +304,8 @@ def stop_recorded(pid: int, started: int | None, comm: str,
                 signal.pidfd_send_signal(fd, sig)
             except ProcessLookupError:
                 return []
+            if sig in STOP_SIGNALS and ignores(pid, sig):
+                wait = 0  # it ignores this one: on to the next (#236)
             if poller.poll(int(wait * 1000)):
                 return []  # readable: it has exited
         return [pid]

@@ -572,6 +572,42 @@ def test_restart_brings_back_what_was_asked_for_in_a_new_group(world):
         config_name="t", headless=True, tuner=False, amp=False, amp_model=None, rig=False, visualiser_tap=True)
 
 
+@pytest.fixture
+def sigint_ignored():
+    """This process started with SIGINT ignored, as an agent started from a
+    script, a service wrapper or a background job of a non-interactive shell
+    is, and as pytest itself then is (#236). Put back after the test."""
+    before = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, before)
+
+
+def test_a_restart_by_an_agent_started_with_sigint_ignored_stops_its_children_at_sigint(world, sigint_ignored):
+    """A child inherited the ignored SIGINT, so `down`'s escalation (the
+    real one, `rig.down`'s SHUTDOWN_STEPS) waited out its SIGINT step, 3 s,
+    on every restart. Each child now starts with SIGINT at its default."""
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False, amp=False)).ok
+        children = {name: child.proc for name, child in supervisor.held.children.items()}
+        started = time.monotonic()
+        outcome = await supervisor.restart()
+        took = time.monotonic() - started
+        await supervisor.down()
+        return children, outcome, took
+
+    children, outcome, took = run(go())
+    assert outcome.ok, outcome
+    # Each died of SIGINT: by the signal, or with status 1 when it came while
+    # the stand-in's Python was still starting. Not of a later step's.
+    assert {name: proc.returncode for name, proc in children.items()
+            if proc.returncode not in (-signal.SIGINT, 1)} == {}, "each child honoured the polite signal"
+    assert took < rig.SHUTDOWN_STEPS[0][1], f"waited out the SIGINT step: {took:.2f}s"
+
+
 def test_restart_with_the_amp_on_brings_the_amp_to_a_run_started_without_it(world):
     """`restart --amp` (#246): a run started with --no-amp keeps it through a
     plain restart; this one asks `up` for the amp, the rest as asked before."""

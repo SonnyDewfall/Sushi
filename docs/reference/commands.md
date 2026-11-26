@@ -103,7 +103,11 @@ change rather than a total, since the cumulative count never resets.
 `down` signals the rig's **process group**: `sushi.bin` (Sushi re-execs itself
 out of a randomly-named AppImage mount), open-stage-control's Electron helpers
 and the listener are all group members, so none of them need a pattern to match
-and none get left behind. It then checks, and tells you if anything survived.
+and none get left behind. It sends SIGINT, then SIGTERM, then SIGKILL, each
+given a few seconds, and goes on to the next at once when everything left in the
+group ignores the one sent. It then checks, and tells you if anything survived.
+Every process `up` starts, and the supervisor that holds them, honours SIGINT,
+even when `up` itself was started with SIGINT ignored (a script's `&`, #236).
 
 Running `./sushi -c <config>` by hand, outside these commands, needs `LV2_PATH`
 set: see [Plugins](plugins.md#lv2_path).
