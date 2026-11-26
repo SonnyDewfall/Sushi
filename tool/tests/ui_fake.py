@@ -1154,9 +1154,15 @@ class UiLifecycle:
             self.started = datetime.now(timezone.utc).replace(microsecond=0)
             answer.update(how="restart", why=why, command=["up", name], output="")
             entry = self.agent._record("rig", {"rig": name, "how": "restart", "why": [w["code"] for w in why]}, previous)
+        same = self.rig == name
         self.rig = name
         if self.on_switch:
             self.on_switch(name)
+        if how != "live" and same and self.on_restart:
+            # A switch by restart into the rig that runs (a reload, #142)
+            # starts it again from its file, as `restart` does: a channel
+            # the file gained since is a track now.
+            self.on_restart()
         return {**answer, "entry": entry, "state": self.describe()}
 
 
