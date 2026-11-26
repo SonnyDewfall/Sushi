@@ -28,9 +28,10 @@ has had its one-time volume fix (see [The audio interface](audio-interface.md)).
    **rack**. With nothing playing, the top left reads **Rig down**.
 4. On the right, under **RIGS**, click the rig you want. The big button under
    the list now reads **Start** and the rig's name.
-5. Click **Start …**. It takes about five seconds. When it is done, a line
-   appears saying **Started …, headless.**, the top left shows the rig's name,
-   and beside it you see **Up** and how long, then **sound not measured**.
+5. Click **Start …**. It takes about five seconds; the bar under the top of
+   the page says **Starting …** meanwhile. When it is done, the bar says
+   **Started …** (hover over it for **headless.**), the top left shows the
+   rig's name, and beside it you see **Up** and how long.
 6. Turn the monitors up and play.
 
 ![The rack with no rig running: Rig down at the top left, in the middle a line saying no rig is running and a Browse the library button, the list of rigs on the right with electric-clean chosen, and the Start electric-clean button under the list](img/start-a-rig.png)
@@ -87,8 +88,8 @@ rig. There is no password. Use it on a network you trust.
 
 - **The page will not open, or the top left reads "Agent not answering".** The
   agent is not running. Start it (step 2).
-- **A box appears starting "Not started:".** The agent refused, and the box says
-  why in its own words. Read that first.
+- **"Not started:" appears in the bar at the top.** The agent refused, and it says
+  why in its own words: a few on the page, the whole on hover. Read that first.
 - **The rig says it is up but you hear nothing, or only one side.** See
   [When something's wrong](troubleshooting.md).
 - **You pulled an update and the page behaves oddly.** The agent keeps running

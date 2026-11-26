@@ -99,7 +99,7 @@ def shots(browser) -> list[str]:
         page.click("button.save-main")
         time.sleep(SETTLE)
         typed(page, drive, "0.5")
-        page.click(".save-result button.dismiss")
+        page.click(".activity .save-result button.dismiss")
         page.click("button.revert-open")
         page.wait_for_selector(".revert-point")
         time.sleep(SETTLE)

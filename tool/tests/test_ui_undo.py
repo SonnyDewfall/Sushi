@@ -52,6 +52,11 @@ def open_page(browser, served, screen="#rack", locked=False, width=1280, height=
     return page
 
 
+def bar(p):
+    """The activity zone (#245): what Undo said, and what it and the rest ask."""
+    return p.locator(".activity")
+
+
 def undo_button(p):
     return p.locator("button.undo")
 
@@ -60,7 +65,7 @@ def press_undo(p, label):
     button = undo_button(p)
     expect(button).to_have_attribute("title", f"Undo {label}")
     button.click()
-    expect(p.locator(".undo-said")).to_have_text(f"Undone: {label}")
+    expect(bar(p).locator(".undo-said strong")).to_have_text(f"Undone: {label}")
 
 
 def rig_file(served, name="electric_board"):
@@ -209,8 +214,8 @@ def test_what_cannot_be_undone_says_so_in_the_title_and_the_next_press_goes_on(b
     expect(button).to_have_attribute("title", "Can't undo: a rig called clean is there again")
     button.click()
     # Which step, on the page: a phone shows no title (#235's review).
-    expect(p.locator(".undo-said")).to_have_text("Can't undo: delete clean")
-    expect(p.locator(".undo-said")).to_have_attribute("title", re.compile("a rig called clean is there again"))
+    expect(bar(p).locator(".undo-said strong")).to_have_text("Can't undo: delete clean")
+    expect(bar(p).locator(".undo-said")).to_have_attribute("title", re.compile("a rig called clean is there again"))
     expect(button).to_have_attribute("title", "Nothing to undo")
     assert rig_file(served, "clean").read_text() == "# made since\n"
     page.close()
@@ -220,11 +225,11 @@ def test_stop_asks_one_word_with_yes_and_no(browser, served):
     page = open_page(browser, served)
     p = page.page
     p.get_by_role("button", name="Stop electric_board").click()
-    confirm = p.get_by_role("group", name="Stop?")
+    confirm = bar(p).get_by_role("group", name="Stop?")
     expect(confirm).to_contain_text("Stop?")
     expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
     confirm.get_by_role("button", name="No").click()
-    expect(p.get_by_role("group", name="Stop?")).to_have_count(0)
+    expect(bar(p).get_by_role("group", name="Stop?")).to_have_count(0)
     assert all(c[0] != "down" for c in served.lifecycle.calls)
     page.close()
 
@@ -290,8 +295,8 @@ def test_a_restart_asks_one_word_with_yes_and_no(browser, served):
     p.get_by_role("button", name="Change vocal's input").click()
     p.get_by_label("vocal input").select_option("keys-in")
     p.get_by_role("button", name="Apply").click()
-    p.locator(".rigfile-result").get_by_role("button", name="Restart").click()
-    confirm = p.get_by_role("group", name="Restart?")
+    bar(p).locator(".rigfile-result").get_by_role("button", name="Restart").click()
+    confirm = bar(p).get_by_role("group", name="Restart?")
     expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
     calls = len(served.lifecycle.calls)
     confirm.get_by_role("button", name="Yes").click()
@@ -381,15 +386,15 @@ def test_an_undo_that_would_drop_unsaved_work_asks_drop_changes_first(browser, s
     served.rig.bypassed["delay"] = False  # moved since from elsewhere: not undoable
     expect(undo_button(p)).to_have_attribute("title", "Undo bypass delay")
     undo_button(p).click()
-    expect(p.locator(".undo-said")).to_have_text("Can't undo: bypass delay")
+    expect(bar(p).locator(".undo-said strong")).to_have_text("Can't undo: bypass delay")
     served.rig.bypassed["delay"] = True  # and it plays, unsaved
     expect(undo_button(p)).to_have_attribute("title", "Undo revert electric_board")
     undo_button(p).click()
-    ask = p.get_by_role("group", name="Drop changes?")
+    ask = bar(p).get_by_role("group", name="Drop changes?")
     expect(ask.get_by_role("button")).to_have_text(["Yes", "No"])
     assert path.read_bytes() == reverted, "nothing put back while it is asked"
     ask.get_by_role("button", name="Yes").click()
-    expect(p.locator(".undo-said")).to_have_text("Undone: revert electric_board")
+    expect(bar(p).locator(".undo-said strong")).to_have_text("Undone: revert electric_board")
     until(lambda: path.read_bytes() == saved)
     page.close()
 
@@ -407,10 +412,10 @@ def test_a_revert_point_that_would_restart_sushi_asks_restart_first(browser, ser
     with_keys = path.read_bytes()
     p.locator("button.revert-open").click()
     p.locator("button.revert-point", has_text="Commit").first.click()
-    ask = p.get_by_role("group", name="Restart?")
+    ask = bar(p).get_by_role("group", name="Restart?")
     expect(ask.get_by_role("button")).to_have_text(["Yes", "No"])
     assert path.read_bytes() == with_keys, "nothing written while it is asked"
     ask.get_by_role("button", name="Yes").click()
     until(lambda: path.read_bytes() != with_keys)
-    expect(p.get_by_role("group", name="Restart?")).to_have_count(0)
+    expect(bar(p).get_by_role("group", name="Restart?")).to_have_count(0)
     page.close()

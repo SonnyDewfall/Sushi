@@ -671,3 +671,24 @@ def test_a_lifecycle_command_that_changed_nothing_keeps_the_live_steps(served):
     status, body = undo(served)
     assert status == 200 and body["said"] == "Undone: bypass delay", body
     assert served.rig.bypassed["delay"] is False
+
+
+# ------------------------------------------------------------- what an answer says it logged (#245's review)
+
+def test_an_undos_answer_carries_the_entries_it_logged_and_a_live_change_its_own(served):
+    """The page tells its own changes from another's by the log entries its
+    answers carry (#245). A live change carries its entry inline, as before,
+    and nothing more; an Undo's answer carried none, so the page's own Undo
+    was said as made elsewhere. Now it carries `logged`, every entry the
+    request made, as they stand in the log."""
+    status, moved = call(served, "POST", "/live/move", {"processor": "delay", "direction": "up"})
+    assert status == 200 and moved["op"] == "move" and "logged" not in moved, "its own entry is carried already"
+    status, body = undo(served)
+    assert status == 200, body
+    status, log = call(served, "GET", "/live/log")
+    newest = log["log"][-1]
+    assert newest["op"] == "undo"
+    assert body["logged"] == [{"op": newest["op"], "at": newest["at"], "args": newest["args"]}]
+    # A refusal carries nothing it did not do.
+    status, refused = undo(served)
+    assert status == 409 and "logged" not in refused

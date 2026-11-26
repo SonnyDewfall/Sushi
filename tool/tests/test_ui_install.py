@@ -190,7 +190,12 @@ def drawn_with(page, selector):
 
     The page redraws a region when a poll brings something new (a push can
     bring one at any moment), and a node just drawn has no fonts until it is
-    laid out: so it is asked again, the node found afresh, until it has."""
+    laid out: so it is asked again, the node found afresh, until it has. A
+    node drawn over between finding it and asking for its fonts is gone
+    ("Could not find node with given id", seen in CI on 2026-11-26 twice):
+    that is asked again too, the same way."""
+    from playwright.sync_api import Error as PlaywrightError
+
     devtools = page.context.new_cdp_session(page)
     devtools.send("DOM.enable")
     devtools.send("CSS.enable")
@@ -199,7 +204,12 @@ def drawn_with(page, selector):
         root = devtools.send("DOM.getDocument")["root"]["nodeId"]
         node = devtools.send("DOM.querySelector", {"nodeId": root, "selector": selector})["nodeId"]
         assert node, f"nothing matches {selector}"
-        used = devtools.send("CSS.getPlatformFontsForNode", {"nodeId": node})["fonts"]
+        try:
+            used = devtools.send("CSS.getPlatformFontsForNode", {"nodeId": node})["fonts"]
+        except PlaywrightError as exc:
+            if "Could not find node with given id" not in str(exc):
+                raise
+            used = []
         if used:
             break
         page.wait_for_timeout(50)

@@ -498,7 +498,7 @@ def test_a_level_sushi_refuses_part_way_puts_back_the_ones_already_set(browser, 
     p = page.page
     slider(p, "hall Mix").focus()
     p.keyboard.press("ArrowUp")
-    refused = p.locator(".problem.refused")
+    refused = p.locator(".activity .problem.refused")
     expect(refused).to_contain_text("Not changed: hall · mix")
     expect(refused).to_have_attribute("title", re.compile(re.escape("Sushi would not set early (test)")))
     expect(refused).to_have_attribute("title", re.compile(re.escape("put back dry as it was")))
@@ -543,7 +543,7 @@ def test_a_mix_typed_in_is_saved_as_its_three_levels(browser, hall_served):
     want = path(SAVED_LEVELS, nearest(SAVED_LEVELS), 0.5)
     until(lambda: levels(hall_served) == pytest.approx(want, abs=2e-4))
     p.get_by_role("button", name="Save to electric_board").click()
-    expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
+    expect(p.locator(".activity .save-result.ok")).to_contain_text("Saved electric_board")
     doc = yaml.safe_load((hall_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text())
     (hall,) = [e for e in doc["channels"][0]["chain"] if e["name"] == "hall"]
     for k, v in levels(hall_served).items():
