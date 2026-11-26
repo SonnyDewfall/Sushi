@@ -3416,7 +3416,7 @@ function renderRack(regions, model, unsaved, status) {
   saveRegion(regions.save, unsaved);
   takesRegion(regions.takes);
   playerRegion(regions.player, regions.takes);
-  brokenRegion(regions.broken, regions.frame, regions.activity);
+  brokenRegion(regions.broken, regions.frame);
   activityRegion(regions);
 }
 
@@ -3942,9 +3942,13 @@ async function openTakesFolder() {
 }
 
 // ---------------------------------------------------------------- Broken (S9, #139)
-// A band under the activity zone on the stage and the rack alike: what is
-// wrong in a word or two (R.brokenView), the whole of it in its title, the
-// log's path, and the one thing that recovers it. Restart and Stop each ask
+// A band at the foot of the stage and the rack alike, held there over the
+// page (sticky, just above the screens' bar where there is one), with the
+// header turned red: what is wrong in a word or two (R.brokenView), the
+// whole of it in its title, the log's path, and the one thing that recovers
+// it. At the foot, not the top, so nothing on the page moves when the rig
+// breaks (a fader under a finger stays where it is), and the fix is where a
+// thumb is. Restart and Stop each ask
 // first, in the activity zone, since each cuts the sound; neither is behind
 // the lock, which keeps a working rig from stray taps, not a broken one from
 // its fix. Start again is one tap: there is no sound to cut.
@@ -3956,10 +3960,17 @@ function placeShown(el, shown, anchor) {
   if (el.previousElementSibling !== anchor) anchor.after(el);
 }
 
-function brokenRegion(el, frame, anchor) {
+function brokenRegion(el, frame) {
   const view = R.brokenView(state.health, state.live);
   frame.classList.toggle("is-broken", !!view);
-  placeShown(el, !!view, anchor);
+  const nav = frame.querySelector(":scope > .stage-nav");
+  if (!view) el.remove();
+  else {
+    if (el.nextElementSibling !== nav) nav.before(el);
+    // Over the screens' bar where it is shown (a phone's, and the stage's).
+    const above = `${nav.offsetHeight}px`;
+    if (el.style.bottom !== above) el.style.bottom = above;
+  }
   if (!view) state.brokenAsk = null;
   const busy = !!state.pending;
   patch(el, JSON.stringify([view, busy]), () => {
@@ -4167,8 +4178,8 @@ function stageFrame() {
   regions.header = h("header", { class: "stage-head" }, regions.row, regions.detail, masterFader("stage"), regions.tiles,
     regions.problems, regions.rigs);
   Object.assign(regions, activityFrame(regions.undo));
-  // Broken (#139) after the activity zone and Takes after the record bar,
-  // each put in only while shown (`placeShown`).
+  // Takes (#139) after the record bar, put in only while shown
+  // (`placeShown`); Broken before the bar at the foot, only while broken.
   const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.activity, regions.record,
     regions.levels, regions.amp, regions.cards,
     h("nav", { class: "stage-nav" }, h("a", { href: "#stage", class: "here", "aria-current": "page" }, "Stage"), h("a", { href: "#rack" }, "Rack"),
@@ -4202,7 +4213,7 @@ function renderStage(regions, model, status) {
   patch(regions.detail, status.detail, () => status.detail);
   tilesRegion(regions.tiles);
   problemsRegion(regions.problems);
-  brokenRegion(regions.broken, regions.frame, regions.activity);
+  brokenRegion(regions.broken, regions.frame);
   recordRegion(regions.record);  // not behind the lock: recording is a stage action
   playerRegion(regions.player, regions.record);
   metersFollow();

@@ -96,8 +96,8 @@ appears beside the rig's name saying which one **exited**; hover over it for
 what that means for the sound, and where its log is. **Nothing restarts by itself.** That is on purpose: a rig that
 quietly patched itself up could be running wrong without you knowing.
 
-The page turns red at the top, and a red band under it says what is wrong in
-a word or two (**Amp exited**, **Sushi unreachable**, **No amp**, **Links not
+The page turns red at the top, and a red band at the foot of the page says
+what is wrong in a word or two (**Amp exited**, **Sushi unreachable**, **No amp**, **Links not
 made**, **Start failed**), with the log's path under it. Hover over the words
 for the whole story. The band's buttons are the fix:
 

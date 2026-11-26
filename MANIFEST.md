@@ -7821,8 +7821,10 @@ only that these were not built. **Broken is a state of the stage and the
 rack, not a screen**: the canvas reached S9 through a "Health" tab the page
 has no bar for, a page that jumped screens would take the player off theirs
 mid-song, and a broken rig often still plays, so the master, the record bar
-and Stop stay in reach. A red band under the activity zone, on both screens
-(`R.brokenView`, `brokenRegion`): the worst fault in a word or two, how many
+and Stop stay in reach. A red band held at the foot of both screens (sticky,
+above the screens' bar; first drawn under the activity zone, where its
+coming moved a fader under a finger, which test_ui_tabs.py's finding 1
+caught), the header turned red (`R.brokenView`, `brokenRegion`): the worst fault in a word or two, how many
 more, all of them and the log in its title, the log's path, and the fix:
 Restart and Stop, each asked first in the activity zone and not behind the
 lock, or Start again for a start that failed. Broken is Sushi not answering,

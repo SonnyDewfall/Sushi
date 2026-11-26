@@ -887,7 +887,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   the player off the one they chose, mid-song, and a tab would have to be
   found; and a broken rig often still plays (a tuner gone, the amp gone and
   the rest on), so the master, the record bar and Stop belong in reach. So,
-  on both screens, under the activity zone, a red band (`brokenRegion`,
+  on both screens, a red band held at the foot (sticky, over the page and
+  just above the screens' bar where one shows; in the flow only at the
+  page's end, so nothing on the page moves when it comes: a fader under a
+  finger stays put, and the fix is where a thumb is) (`brokenRegion`,
   `R.brokenView`): what is wrong in a word or two, the worst first and how
   many more beside it (**Sushi unreachable**, **Sushi exited**, **Start
   failed**, **Restart failed**, **Amp exited**, **No amp**, **Amp not

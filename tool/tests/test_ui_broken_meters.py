@@ -263,6 +263,36 @@ def test_a_crashed_amp_is_broken_on_both_screens_with_its_fix_working_locked(bro
         page.close()
 
 
+@pytest.mark.parametrize("screen, width", [("stage", 390), ("rack", 1280), ("rack", 390)])
+def test_broken_coming_moves_nothing_on_the_page_and_sits_at_the_foot_in_view(browser, screen, width):
+    """A fader under a finger must stay where it is when the rig breaks
+    (test_ui_tabs.py's finding 1): the band is held at the foot, over the
+    page and above the screens' bar, and in the flow only at the page's end."""
+    with Served() as served:
+        page = page_at(browser, served, screen, width=width)
+        p = page.page
+        target = p.locator(".record-bar" if screen == "stage" else ".unit").first
+        # Measured from the activity zone's foot: the crash's own box in the
+        # status zone (#245) can make the header a row taller on a phone,
+        # which is the status zone's, and was so before the band.
+        gap = "(e) => e.getBoundingClientRect().top - document.querySelector('.activity').getBoundingClientRect().bottom"
+        before = target.evaluate(gap)
+        crash_the_amp(served)
+        band = p.locator("section.broken")
+        expect(band).to_be_visible()
+        assert target.evaluate(gap) == before, "nothing came between the activity zone and the page"
+        order = p.evaluate("() => [...document.querySelector('.screen').children].map((e) => e.className.split(' ')[0])")
+        assert order[-2:] == ["broken", "stage-nav"], order
+        box = band.bounding_box()
+        height = p.evaluate("() => innerHeight")
+        nav = p.locator(".stage-nav").filter(has=p.locator("a.here"))
+        foot = nav.bounding_box()["y"] if nav.is_visible() else height
+        assert box["y"] >= 0 and box["y"] + box["height"] <= foot + 1, (box, foot, height)
+        band.get_by_role("button", name="Restart").click()
+        expect(p.locator(".activity [data-ask]")).to_contain_text("Restart?")
+        page.close()
+
+
 def test_stop_from_broken_asks_and_a_no_changes_nothing(browser):
     with Served() as served:
         page = page_at(browser, served, "stage")

@@ -540,11 +540,13 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .stem-save { font-size: 13px; min-height: 44px; display: inline-flex; align-items: center; padding: 0 6px; }
 
 /* ---------------------------------------------------------------- Broken (S9, #139) */
-/* A band under the activity zone on both screens, in the canvas's S9 red:
-   what is wrong in a word or two, the log, the one fix. The header takes the
+/* A band held at the foot of both screens (sticky, over the page and above
+   the screens' bar; app.js sets its `bottom`), in the canvas's S9 red: what
+   is wrong in a word or two, the log, the one fix. In the flow only at the
+   page's end, so nothing above it moves when it comes. The header takes the
    red too, as S9's does, so the screen reads as broken from across the room. */
-.broken { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 12px 16px 0; padding: 14px 16px; border-radius: 16px;
-  background: var(--recording-ground); border: 2px solid var(--recording); }
+.broken { position: sticky; z-index: 25; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 12px 16px 8px; padding: 14px 16px;
+  border-radius: 16px; background: var(--recording-ground); border: 2px solid var(--recording); box-shadow: 0 -6px 24px rgba(0, 0, 0, .55); }
 .broken[hidden] { display: none; }
 .broken-dot { flex: none; width: 14px; height: 14px; border-radius: 50%; background: var(--recording); box-shadow: 0 0 12px var(--recording); }
 .broken-what { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -557,7 +559,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .broken-act.primary { background: var(--accent); border-color: var(--accent); color: #1A1206; }
 .broken-act:disabled { opacity: .5; cursor: default; }
 .is-broken .stage-head, .is-broken .bar.zones { background: var(--recording-ground); border-bottom-color: #7A3B3B; }
-.rack-screen .broken { margin: 12px 20px 0; }
+.rack-screen .broken { margin: 12px 20px 8px; }
 
 /* ---------------------------------------------------------------- rig files (the New rig screen) */
 /* The New rig screen (#new-rig) and the rack's inputs: forms in the Save
