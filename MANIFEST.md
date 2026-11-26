@@ -7517,3 +7517,18 @@ What belongs to an open editor stays in it: the pickers' own checks, the
 New rig form's result, the drawer's "why", a knob's "refused:" note, the amp
 card's state, a removal panel's "what goes". Not tried on a real phone or in
 Safari: sticky positioning is seen in headless Chromium only. *(2026-11-26)*
+
+**#245, the second part: the past, and changes made elsewhere.** The "+n"
+list also keeps the last 20 results gone (dismissed, answered, expired,
+replaced), their words and times only (`activityRemember`). And a change
+another page, a pedal's switch or the CLI made is said in the bar, tagged
+"elsewhere", for 15 s. The agent's log keeps no origin, so it is inferred on
+the page: every write's answer carries the log entry the agent made for it,
+which the page keeps by its signature (op, time, arguments:
+`answerEntry`, `logSignature`), and a new entry of the kinds that change the
+rig's shape (rig, save, add, remove, move, undo, amp model) whose signature
+is not one of the page's is someone else's (`elsewhereSeen`). It is judged
+only while none of the page's writes is in flight, so its own is never
+caught between the log and the answer; knobs and bypasses are never said. A
+rig file edited from elsewhere (an input, a channel added) is not in the log
+and is not said. Tested pure and with two pages in Chromium. *(2026-11-26)*

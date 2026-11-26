@@ -904,6 +904,8 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
 .activity .act-list .act-item { display: flex; }
 .act-list .act-item.past strong { font-weight: 400; color: var(--muted); }
 .act-list .rchan { font-family: var(--display); font-weight: 600; font-size: 15px; }
+/* A change this page did not make (#242's pushes), tagged as such. */
+.activity .from { flex: none; font-size: 12px; color: #9CCBFA; background: #16283A; border-radius: 6px; padding: 2px 6px; }
 /* The strip a question came from, marked in place (#245). */
 .strip.asking { border-color: var(--refused-edge); box-shadow: inset 3px 0 0 var(--refused); }
 /* A chip's strip, shown below the pinned zone, not under it. */

@@ -88,8 +88,27 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
     times and one on a phone, newest first, each with its second tap
     (Restart, Restart anyway, Load anyway, Remove anyway, Add anyway, Save &
     assign) and ×; and **Undo**, at its right end, beside what it would take
-    back. The rest is a **+n** chip that drops a list over the page: the
-    older questions, still answerable there, and the results not shown.
+    back. The rest is a **+n** chip that drops a list over the page (Escape
+    closes it): the older questions, still answerable there, the results
+    not shown, and **the past**, the last 20 results gone (dismissed,
+    answered, expired or replaced), newest first with their times, their
+    words only (`R.activityRemember`).
+  - **Changes made elsewhere** (#242's pushes). A push still only brings a
+    poll; the log (`GET /live/log`) does not say who made a change, so the
+    page says "elsewhere" of one it did not make. Each of its own writes'
+    answers carries the entry the agent logged for it (inline, or under
+    `entry`: `R.answerEntry`), kept by its signature (op, time and
+    arguments, `R.logSignature`); a new entry in the log that changes the
+    rig's shape (a switch, a save, a plugin added, removed or moved, an
+    undo, an amp model) whose signature is not one of those is said in the
+    bar, tagged **elsewhere**, for 15 s (`R.elsewhereSeen`,
+    `R.elsewhereSaid`). It is judged only while none of the page's own
+    writes is in flight, since its entry is known as the page's only once
+    its answer is in; the first log seen, and that of an agent started
+    again, are where the page starts from. Knobs, faders and bypasses are
+    never said: a pedal moves them by the dozen. Not said either: a rig
+    file edit from elsewhere (a channel added, an input changed), which is
+    not in the log.
     Each result or question about a channel has the channel's **chip**: a
     tap shows that strip (and opens its tab); the strip a question came from
     is marked with an edge in the refused colour (`.strip.asking`). Which is

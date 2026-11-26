@@ -47,7 +47,8 @@ The top of the rack and of the stage screen has three parts:
   looking for a question. The channel's name beside a message is a button:
   tap it to go to that channel. The strip a question is about has a red edge
   while it waits. When more has happened than fits, a **+** and a number
-  opens the rest. A message that worked goes by itself after a while or
+  opens the rest, with what has gone by. A change made from another phone or
+  page, such as a switch of rig, shows there too, marked **elsewhere**. A message that worked goes by itself after a while or
   stays until the next one; one that was refused stays until you close it
   with **×**.
 

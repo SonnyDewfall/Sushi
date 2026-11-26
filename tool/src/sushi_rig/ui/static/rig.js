@@ -3868,3 +3868,58 @@ export function activityBusy({ pending = null, agentBusy = null, saving = false,
   if (deleting) return "Deleting…";
   return null;
 }
+// Changes made elsewhere (#242's pushes): the log (GET /live/log) does not
+// say who made a change, so the page says "elsewhere" of a change it did
+// not make itself. Each of its own writes' answers carries the entry the
+// agent logged for it (`answerEntry`), kept by its signature (`logSignature`);
+// a new entry in the log of the kinds below whose signature is not one of
+// those was made by another page, a pedal or the CLI. Knob, fader and
+// bypass moves are left out: a pedal makes them by the dozen.
+export const ELSEWHERE_OPS = ["rig", "save", "add", "remove", "move", "undo", "amp_model"];
+
+export function logSignature(entry) {
+  if (!entry || typeof entry.op !== "string") return null;
+  return `${entry.op}|${entry.at}|${JSON.stringify(entry.args ?? null)}`;
+}
+
+// The log entry a write's answer carries: inline (a live change's, an undo's)
+// or under `entry` (a switch's, a save's, a revert's), or null.
+export function answerEntry(body) {
+  if (!body || typeof body !== "object") return null;
+  if (body.entry && typeof body.entry === "object" && typeof body.entry.op === "string") return body.entry;
+  if (typeof body.op === "string" && "at" in body && "args" in body) return { op: body.op, at: body.at, args: body.args };
+  return null;
+}
+
+// The log entries new since `seen` (`{agent, next}`, the agent's start and
+// the number of the next entry to judge), of the kinds above, whose
+// signature is not in `mine`. The first log seen, and the first of an agent
+// started again, are where the page starts from, not news. Returns
+// `{seen, found}`.
+export function elsewhereSeen(seen, log, mine, agent = null) {
+  if (!log || !Array.isArray(log.log)) return { seen, found: [] };
+  const first = isNumber(log.first) ? log.first : 0;
+  const end = first + log.log.length;
+  if (!seen || seen.agent !== agent || end < seen.next) return { seen: { agent, next: end }, found: [] };
+  const found = [];
+  for (let i = Math.max(seen.next, first); i < end; i++) {
+    const entry = log.log[i - first];
+    if (entry && ELSEWHERE_OPS.includes(entry.op) && !(mine && mine.has(logSignature(entry)))) found.push({ index: i, entry });
+  }
+  return { seen: { agent, next: end }, found };
+}
+
+// What a change made elsewhere is said as: `{title, channel}`, a word or two.
+export function elsewhereSaid(entry) {
+  const a = (entry && entry.args) || {};
+  switch (entry && entry.op) {
+    case "rig": return { title: `Switched to ${a.rig}`, channel: null };
+    case "save": return { title: `Saved ${a.rig || a.file || "the rig"}`, channel: null };
+    case "add": return { title: `Added ${a.name}`, channel: a.track || null };
+    case "remove": return { title: `Removed ${a.processor}`, channel: null };
+    case "move": return { title: `Moved ${a.processor} ${a.direction}`, channel: null };
+    case "undo": return { title: `Undone: ${a.of}`, channel: null };
+    case "amp_model": return { title: `Amp: ${modelName(a.model)}`, channel: null };
+    default: return { title: entry && entry.op ? `Changed: ${entry.op}` : "Changed", channel: null };
+  }
+}

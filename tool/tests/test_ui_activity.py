@@ -260,7 +260,97 @@ def test_results_beyond_the_bars_room_are_in_more_and_answerable_there(browser):
         expect(listed).to_be_visible()
         expect(listed.locator(".problem.refused strong")).to_have_text("Not moved: delay")
         listed.get_by_role("button", name="Dismiss").click()
-        expect(bar.get_by_role("button", name="1 more")).to_have_count(0)
         expect(bar.locator(".problem.refused")).to_have_count(3)
+        # Dismissed, it is in the past: its words, with no buttons (PR 2 of #245).
+        expect(bar.get_by_role("button", name="1 more")).to_be_visible()
+        past = listed.locator(".act-item.past")
+        expect(past.locator("strong")).to_have_text("Not moved: delay")
+        expect(past.get_by_role("button")).to_have_count(0)
         assert served.rig.writes() == []
         page.close()
+
+
+# --------------------------------------------------------------------------- #
+# The past, and changes made elsewhere (#242's pushes)
+# --------------------------------------------------------------------------- #
+
+def test_a_change_the_page_did_not_make_is_found_in_the_log_by_its_signature(blank):
+    out = rigjs(blank, """
+      const e = (op, at, args) => ({op, at, args, previous: null});
+      const log = (first, entries) => ({ok: true, first, log: entries});
+      const mine = new Set([R.logSignature(e('add', '10:00:01', {name: 'slap', track: 'board'}))]);
+      const start = R.elsewhereSeen(null, log(0, [e('rig', '09:00:00', {rig: 'a'})]), mine, 'agent-1');
+      const next = R.elsewhereSeen(start.seen, log(0, [e('rig', '09:00:00', {rig: 'a'}),
+        e('add', '10:00:01', {name: 'slap', track: 'board'}), e('parameter', '10:00:02', {processor: 'x'}),
+        e('move', '10:00:03', {processor: 'delay', direction: 'up'}), e('rig', '10:00:04', {rig: 'clean'})]), mine, 'agent-1');
+      const again = R.elsewhereSeen(next.seen, log(2, [e('parameter', '10:00:02', {processor: 'x'}),
+        e('move', '10:00:03', {processor: 'delay', direction: 'up'}), e('rig', '10:00:04', {rig: 'clean'})]), mine, 'agent-1');
+      const restarted = R.elsewhereSeen(next.seen, log(0, [e('save', '11:00:00', {rig: 'clean'})]), mine, 'agent-2');
+      return {
+        start: start.found, startSeen: start.seen,
+        found: next.found.map((f) => [f.index, f.entry.op]), said: next.found.map((f) => R.elsewhereSaid(f.entry)),
+        again: again.found, restarted: restarted.found, restartedSeen: restarted.seen,
+        inline: R.answerEntry({ok: true, op: 'move', at: 't', args: {a: 1}, previous: [], chain: []}),
+        nested: R.answerEntry({ok: true, how: 'live', entry: {op: 'rig', at: 't', args: {rig: 'b'}}}),
+        none: R.answerEntry({ok: true, said: 'Opened'}),
+        unread: R.elsewhereSeen(next.seen, null, mine, 'agent-1').seen,
+      };""")
+    assert out["start"] == [] and out["startSeen"] == {"agent": "agent-1", "next": 1}, "what is there at first is not news"
+    # This page's add is known by its signature; a knob is never said.
+    assert out["found"] == [[3, "move"], [4, "rig"]]
+    assert out["said"] == [{"title": "Moved delay up", "channel": None}, {"title": "Switched to clean", "channel": None}]
+    assert out["again"] == [], "each entry is judged once, the log's numbering kept"
+    assert out["restarted"] == [] and out["restartedSeen"] == {"agent": "agent-2", "next": 1}, \
+        "an agent started again: its log is where the page starts from"
+    assert out["inline"] == {"op": "move", "at": "t", "args": {"a": 1}}
+    assert out["nested"] == {"op": "rig", "at": "t", "args": {"rig": "b"}}
+    assert out["none"] is None
+    assert out["unread"] == {"agent": "agent-1", "next": 5}, "an unread log changes nothing"
+
+
+def test_a_change_from_another_page_is_said_as_made_elsewhere_and_ones_own_are_not(browser, served):
+    mine = Page(browser, served.url + "/#rack", width=1280, height=900)
+    other = Page(browser, served.url + "/#rack", width=1280, height=900)
+    for page in (mine, other):
+        page.page.wait_for_selector(".rigs .rig")
+    p, q = mine.page, other.page
+    p.locator(".rig", has_text="electric-delay").click()
+    p.get_by_role("button", name="Switch to electric-delay").click()
+    expect(p.locator(".activity .notice strong")).to_have_text("Switched to electric-delay")
+    said = q.locator(".activity .elsewhere")
+    expect(said.locator("strong")).to_have_text("Switched to electric-delay")
+    expect(said.locator(".from")).to_have_text("elsewhere")
+    expect(said).to_have_attribute("title", re.compile("^Not from this page"))
+    # The page that made it says it as its own, never as elsewhere.
+    q.wait_for_timeout(1500)
+    expect(p.locator(".activity .from")).to_have_count(0)
+    # A knob turned elsewhere is no news: only what changes the rig's shape.
+    from test_ui import post
+
+    post(served, "/live/parameter", {"processor": "delay", "parameter": "Feedback", "value": 0.5})
+    post(served, "/live/move", {"processor": "delay", "direction": "up"})
+    expect(p.locator(".activity .elsewhere strong")).to_have_text("Moved delay up")
+    expect(q.locator(".activity .elsewhere strong")).to_have_text(["Moved delay up", "Switched to electric-delay"])
+    mine.close()
+    other.close()
+
+
+def test_a_result_gone_is_kept_in_the_past_list_with_its_time(browser, served):
+    page = Page(browser, served.url + "/#rack", width=1280, height=900)
+    p = page.page
+    p.wait_for_selector(".unit")
+    p.get_by_role("button", name="Move delay up (locked)").click()
+    bar = p.locator(".activity")
+    item = bar.locator(".problem.refused")
+    expect(item.locator(".t")).to_have_text(re.compile(r"\d\d:\d\d"))
+    item.get_by_role("button", name="Dismiss").click()
+    expect(bar.locator(".act-results")).to_have_count(0)
+    more = bar.get_by_role("button", name="1 more")
+    expect(more).to_have_attribute("title", "Not moved: delay")
+    more.click()
+    past = bar.locator(".act-list .act-item.past")
+    expect(past.locator("strong")).to_have_text("Not moved: delay")
+    expect(past).to_have_attribute("title", re.compile("^Locked: reordering"))
+    p.keyboard.press("Escape")
+    expect(bar.locator(".act-list")).to_be_hidden()
+    page.close()

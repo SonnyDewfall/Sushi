@@ -186,6 +186,10 @@ const state = {
   // opened on a phone (`statusOpen`).
   activity: { items: [], asks: [], seen: null, times: new Map(), counter: 0, history: [], open: false, wide: null },
   statusOpen: false,
+  // Changes made elsewhere (#242, #245): the signatures of this page's own
+  // logged writes (R.answerEntry), how far the log has been judged
+  // (R.elsewhereSeen), and what was found, said in the activity zone.
+  mine: new Set(), elsewhereSeen: null, elsewhere: [],
 };
 
 // ---------------------------------------------------------------- network
@@ -201,6 +205,10 @@ async function request(method, path, body) {
     });
     let data = null;
     try { data = await response.json(); } catch { /* not JSON: said below */ }
+    // A write of this page's that the agent logged: kept, so the log's entry
+    // for it is not said as made elsewhere (R.elsewhereSeen). Kept before the
+    // write counts as ended, so no poll judges the log between the two.
+    if (writes) noteMine(data);
     if (response.ok && data && data.ok !== false) return { ok: true, status: response.status, body: data };
     return {
       ok: false, status: response.status, body: data, code: data && data.code,
@@ -228,6 +236,32 @@ const sender = new R.Sender((call) => request("POST", call.path, call.json), {
   },
   onSent: (key) => { state.failed.delete(key); },
 });
+
+// The signature of a logged write of this page's (R.logSignature), kept for
+// R.elsewhereSeen; the oldest go once there are more than the log keeps.
+function noteMine(body) {
+  const sig = R.logSignature(R.answerEntry(body));
+  if (!sig) return;
+  state.mine.add(sig);
+  while (state.mine.size > 600) state.mine.delete(state.mine.values().next().value);
+}
+
+// The log, judged for changes this page did not make (R.elsewhereSeen):
+// only while none of its own writes is in flight, since the entry a write
+// logs is known as this page's only once its answer is in. Each found is
+// said in the activity zone for R.NOTICE_MS, as an Undo's few words are.
+function noteElsewhere(log, agentStart) {
+  if (state.writing || !log) return;
+  const judged = R.elsewhereSeen(state.elsewhereSeen, log, state.mine, agentStart);
+  state.elsewhereSeen = judged.seen;
+  if (!judged.found.length) return;
+  const at = noticeClock();
+  for (const { index, entry } of judged.found) {
+    state.elsewhere.unshift({ ok: true, ...R.elsewhereSaid(entry), entry, index, agent: agentStart, at });
+  }
+  state.elsewhere.length = Math.min(state.elsewhere.length, 5);
+  armNotices();
+}
 
 function fail(title, result, action = null) {
   state.failures.unshift({ title, reason: result.reason, code: result.code || null, action, at: new Date(), lock: !!result.lock });
@@ -499,6 +533,7 @@ async function poll() {
     state.amp = amp;
     noteRecord(record);
     state.log = logBody;
+    noteElsewhere(logBody, health.ok ? (health.body.agent || {}).started_at ?? null : null);
     state.undo.answer = undoNext;
     state.switches = switches;
     state.seq = seq;
@@ -1185,6 +1220,12 @@ function sayFailuresAndNotice() {
       offer: f.action ? { label: f.action.label, cls: "act", run: () => { drop(f); f.action.run(); } } : null,
       dismiss: () => { drop(f); render(); } });
   }
+  // Changes this page did not make (#242's pushes), for R.NOTICE_MS each.
+  for (const e of state.elsewhere) {
+    actResult({ id: actId(e, "e"), cls: "elsewhere", ok: true, elsewhere: true, title: e.title, channel: e.channel,
+      detail: `Not from this page: another page, a pedal or the command line. ${e.entry.op} at ${clock(e.entry.at)}.`,
+      dismiss: () => { state.elsewhere = state.elsewhere.filter((x) => x !== e); render(); } });
+  }
   const n = state.notice;
   if (n) {
     actResult({ id: actId(n, "n"), cls: "notice", ok: true, title: n.text, detail: n.title || null,
@@ -1376,6 +1417,7 @@ function actItem(item, { older = false } = {}) {
   return h("div", { class: `act-item ${item.cls || ""} ${item.ok ? "ok" : "refused"}${older ? " older" : ""}`,
     role: item.ok ? "status" : "alert", title: item.detail || null, "data-act": item.id },
   h("span", { class: "t" }, clock(item.at)),
+  item.elsewhere ? h("span", { class: "from", title: "Not from this page" }, "elsewhere") : null,
   actChip(item.channel),
   item.what ? h("span", { class: "what" }, item.what) : null,
   h("strong", {}, item.title),
@@ -1399,11 +1441,12 @@ function actQuestion(ask) {
 function actPast(p) {
   return h("div", { class: `act-item past ${p.ok ? "ok" : "refused"}`, title: p.detail || null },
     h("span", { class: "t" }, clock(p.at)),
+    p.elsewhere ? h("span", { class: "from", title: "Not from this page" }, "elsewhere") : null,
     p.channel ? h("span", { class: "rchan" }, p.channel) : null,
     h("strong", {}, p.title), p.said ? h("span", { class: "said" }, p.said) : null);
 }
 
-const itemKey = (i) => [i.id, i.ok, i.what || null, i.title, i.said || null, i.detail || null, i.channel || null, i.cls || null,
+const itemKey = (i) => [i.id, i.ok, !!i.elsewhere, i.what || null, i.title, i.said || null, i.detail || null, i.channel || null, i.cls || null,
   i.offer ? [i.offer.label, !!i.offer.disabled, i.offer.title || null] : null, !!i.dismiss, i.sig ?? null, clock(i.at)];
 const askKey = (a) => a && [a.key, a.q, a.label || null, a.channel || null, !!a.pending, a.cls || null, a.detail || null, a.sig ?? null];
 
@@ -1414,6 +1457,8 @@ function activityRegion(regions) {
   const wide = actWide();
   const tracked = R.activitySeen(act.seen, act.items, act.asks, Date.now(), act.counter, act.times);
   Object.assign(act, { seen: tracked.seen, times: tracked.times, counter: tracked.counter });
+  // What has gone (dismissed, answered, expired, replaced) is kept for "+n".
+  if (tracked.gone.length) act.history = R.activityRemember(act.history, tracked.gone);
   const items = act.items.map((i) => { const t = tracked.seen.items.get(i.id); return { ...i, n: t.n, at: t.at }; });
   const asks = act.asks.map((a) => { const t = tracked.seen.asks.get(a.key); return { ...a, n: t.n, at: t.at }; });
   const view = R.activityView(items, asks, act.history, { wide, busy: currentBusy() });
@@ -1758,7 +1803,7 @@ function undoNotice() {
 function armNotices() {
   clearTimeout(noticeTimer);
   noticeTimer = null;
-  const wait = R.nextNoticeIn([state.takesOpen.result, state.recordResult, undoNotice()], noticeClock());
+  const wait = R.nextNoticeIn([state.takesOpen.result, state.recordResult, undoNotice(), ...state.elsewhere], noticeClock());
   if (wait !== null) noticeTimer = setTimeout(expireNotices, wait);
 }
 
@@ -1780,7 +1825,8 @@ function expireNotices() {
   const openDone = R.noticeDone(state.takesOpen.result, now);
   const recordDone = R.noticeDone(state.recordResult, now);
   const undoDone = R.noticeDone(undoNotice(), now);
-  if (openDone || recordDone || undoDone) {
+  const elsewhereDone = state.elsewhere.some((e) => R.noticeDone(e, now));
+  if (openDone || recordDone || undoDone || elsewhereDone) {
     const active = document.activeElement;
     const held = active && active !== document.body ? active : null;
     const item = held && held.closest(".act-item");
@@ -1790,6 +1836,7 @@ function expireNotices() {
     if (undoDone) state.undo.said = null;
     if (openDone) state.takesOpen.result = null;
     if (recordDone) state.recordResult = null;
+    state.elsewhere = state.elsewhere.filter((e) => !R.noticeDone(e, now));
     render();
     if (held && !held.isConnected) focusAfterNotice(where);
   }
