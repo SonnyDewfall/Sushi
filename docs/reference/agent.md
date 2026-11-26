@@ -391,6 +391,24 @@ got there since the request arrived. Each change that Sushi confirmed is appende
 in-memory log of the last 500 (`/live/log`: `at`, `op`, `args`, and the
 `previous` value where it was known), which is where undo comes from.
 
+**How a change is confirmed (#241).** Sushi carries a change out and says so
+on a notice stream of its own, which elkpy opens on a thread of its own when
+the connection is made; each request's connection is new, so the change is
+its first command. elkpy loses that notice two ways: when it comes before the
+command's own answer has been read (it is now kept, and confirms the command
+when the answer is), and when it comes before the stream is up (Sushi never
+sends it; nothing on the client recovers it). So a change with no notice
+after a quarter of a second (`live.READBACK_AFTER`) is read back from Sushi,
+and again every quarter second: the parameter's value (within
+`verify.TOLERANCE`), the bypass, the chain's order, the processor or track
+there or gone, the CC mapping held or not. One Sushi holds is done; one it
+does not hold when `live.CONFIRM_TIMEOUT` (5 s) is up is `502` "not applied";
+a parameter that reads back as some other value is `502` "may or may not have
+been applied", since a stepped parameter is held at its step. A notice that
+says the change failed is a failure whatever a reading says. Tested against
+the real elkpy and a gRPC stand-in that loses the notice each way
+(`tests/test_live_confirm.py`), not against a real Sushi.
+
 ### Undo
 
 The page's one Undo button is [One Undo](#one-undo) (#209), which steps back
@@ -1380,7 +1398,9 @@ some nine hundred runs of [a probe](../../tool/spikes/live_remove_track/README.m
 master went on with the other channel alone, nothing of the removed one in
 it; but not every time. About one command in twenty was applied and never
 confirmed (elkpy's notice of an async command, nearly always the first on a
-fresh connection), which fails the step and restarts the rig unasked; and a
+fresh connection), which failed the step and restarted the rig unasked
+until #241 (a change whose notice does not come is now read back, see
+*Live operations*); and a
 few times Sushi stopped applying graph changes at `delete_track` on the
 emptied track, neither applying nor confirming it, and then ignored SIGTERM.
 `delete_track` sent alone, which takes the processors off inside Sushi, was

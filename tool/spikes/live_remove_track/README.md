@@ -42,7 +42,11 @@ spectrum in 100 ms blocks, that the master went from both sines to the
   connection is made, and a command sent before that subscription is up is
   never confirmed. It is nearly always the first command on a connection.
   The agent would take it as a failed step and restart the rig without
-  asking.
+  asking. Since #241 the agent reads such a change back instead
+  (`live._wait`'s `applied`), and keeps a notice that comes before its
+  command's answer (`live.Confirmations`, which this probe's connection now
+  has too). The probe's `command` still asks for the notice alone, so it
+  goes on counting lost notices; the counts above are from before #241.
 - **Where it worked**, the track, its processors and its send were gone from
   Sushi's lists, and the master carried the other channel alone with nothing
   of the removed one in it.
