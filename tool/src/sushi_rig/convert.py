@@ -36,7 +36,8 @@ from .stereo import COPY_UID
 from .patchbay import GUITAR_ROLE, MONITOR_ROLE
 from .rigfile import (
     _CHANNEL_KEYS,
-    _PLUGIN_KEYS, _SETTING_KEYS, KIND, LIMITER, LIMITER_SETTINGS, MASTER, RETURN, SCHEMA_VERSION, SEND_SUFFIX,
+    _PLUGIN_KEYS, _SETTING_KEYS, KIND, LIMITER, LIMITER_SETTINGS, MASTER, RETIRED_META, RETURN, SCHEMA_VERSION,
+    SEND_SUFFIX,
     UNITY_STRIP, WIDTHS, emit_rig, parse_rig,
 )
 
@@ -202,6 +203,10 @@ def to_rig(config: dict[str, Any], name: str,
     meta = dict(config.get("_meta") or {})
     meta.pop("name", None)
     description = meta.pop("description", None)
+    # A v1 config's version number is not carried into the rig: the rig
+    # format has none (rigfile.RETIRED_META, #143).
+    for key in RETIRED_META:
+        meta.pop(key, None)
     rig: dict[str, Any] = {"kind": KIND, "schema_version": SCHEMA_VERSION, "name": name}
     # Empty and absent are the same here and in `differences`: a rig file has no
     # way to say "an empty description", so neither side may count it.
@@ -231,7 +236,9 @@ def differences(v1: dict[str, Any], compiled: dict[str, Any]) -> list[str]:
     the return, the limiter (#137) and the master track the compiler adds,
     the limiter only as the compiler makes it. Everything else must
     match exactly: each track's plugins in order, every initial_state entry, the
-    host, the amp and the config's name and description.
+    host, the amp and the config's `_meta` (its name and description, and
+    the rest of its provenance), except a version number, which a rig does
+    not have (#143).
     """
     found = []
     tracks = {t["name"]: t for t in compiled.get("tracks", [])}
@@ -277,6 +284,10 @@ def differences(v1: dict[str, Any], compiled: dict[str, Any]) -> list[str]:
     held = {key: v1.get(key) for key in ("host_config", "_amp", "_meta")}
     if isinstance(held["_meta"], dict) and not held["_meta"].get("description", True):
         held["_meta"] = {k: v for k, v in held["_meta"].items() if k != "description"}
+    # A config's version number is not the rig's to keep (#143): the rig
+    # format dropped it, and nothing was ever made from it.
+    if isinstance(held["_meta"], dict):
+        held["_meta"] = {k: v for k, v in held["_meta"].items() if k not in RETIRED_META}
     for key, value in held.items():
         if (value or None) != (compiled.get(key) or None):
             found.append(f"{key}: {compiled.get(key)!r}, was {v1.get(key)!r}")

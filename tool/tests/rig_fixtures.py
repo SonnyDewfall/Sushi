@@ -19,7 +19,9 @@ about the code and had only pinned what two rig files held. So, the rule:
 **The frozen set**, all under fixtures/, each file byte for byte what master
 held at c494625 (2026-11-07):
 
-- `rigs/*.yaml`: the eleven rigs of config/rigs/ (`FROZEN`, `frozen(name)`).
+- `rigs/*.yaml`: the eleven rigs of config/rigs/ (`FROZEN`, `frozen(name)`),
+  less the `version:` line under `meta:` each had, taken out when the format
+  dropped the field (#143, 2026-11-26).
 - `v1/*.json`: the eleven v1 configs of config/ those rigs were converted
   from (`FROZEN_V1`, `frozen_v1(name)`), and `v1/src/*.yaml`, config/src/'s
   three sources (`FROZEN_SRC`).

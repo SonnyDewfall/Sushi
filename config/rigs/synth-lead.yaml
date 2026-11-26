@@ -20,7 +20,6 @@ name: synth-lead
 description: Electric guitar as a synth lead — compressor, fuzz, an envelope filter and a tape echo, for
   single notes
 meta:
-  version: '1.0'
   status: draft
 host:
   samplerate: 48000
