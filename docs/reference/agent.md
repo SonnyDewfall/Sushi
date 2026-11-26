@@ -394,7 +394,8 @@ in-memory log of the last 500 (`/live/log`: `at`, `op`, `args`, and the
 **How a change is confirmed (#241).** Sushi carries a change out and says so
 on a notice stream of its own, which elkpy opens on a thread of its own when
 the connection is made; each request's connection is new, so the change is
-its first command. elkpy loses that notice two ways: when it comes before the
+its first command. (elkpy 1.4.0, what Python 3.12 gets, subscribes to the
+notices only when asked; the agent asks.) elkpy loses that notice two ways: when it comes before the
 command's own answer has been read (it is now kept, and confirms the command
 when the answer is), and when it comes before the stream is up (Sushi never
 sends it; nothing on the client recovers it). So a change with no notice

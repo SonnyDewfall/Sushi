@@ -25,6 +25,7 @@ import contextlib
 import io
 import queue
 import re
+import sys
 import threading
 import time
 from concurrent import futures
@@ -295,8 +296,18 @@ def _commands(rig):
     }
 
 
+@pytest.fixture
+def info_types(monkeypatch):
+    """What `add_live_processor` and `add_live_copy` import from elkpy
+    (`sushi_info_types.PluginType`), so the stand-in runs where elkpy is not
+    installed (the fast job)."""
+    stand_in = SimpleNamespace(PluginType=SimpleNamespace(INTERNAL=1, VST2X=2, VST3X=3, LV2=4))
+    monkeypatch.setitem(sys.modules, "elkpy", SimpleNamespace(sushi_info_types=stand_in))
+    monkeypatch.setitem(sys.modules, "elkpy.sushi_info_types", stand_in)
+
+
 @pytest.mark.parametrize("which", list(_commands(_Rig())))
-def test_every_strict_command_applied_but_never_confirmed_is_done(which, monkeypatch):
+def test_every_strict_command_applied_but_never_confirmed_is_done(which, monkeypatch, info_types):
     monkeypatch.setattr(live, "CONFIRM_TIMEOUT", 3.0)
     rig = _Rig(apply=True)
     started = time.monotonic()
@@ -306,7 +317,7 @@ def test_every_strict_command_applied_but_never_confirmed_is_done(which, monkeyp
 
 
 @pytest.mark.parametrize("which", list(_commands(_Rig())))
-def test_every_strict_command_neither_applied_nor_confirmed_is_not_done(which, monkeypatch):
+def test_every_strict_command_neither_applied_nor_confirmed_is_not_done(which, monkeypatch, info_types):
     monkeypatch.setattr(live, "CONFIRM_TIMEOUT", 0.1)
     rig = _Rig(apply=False)
     with pytest.raises(live.LiveError, match="did not confirm"):
@@ -442,13 +453,26 @@ def _elkpy_rpc() -> Path:
     return Path(sushicontroller.__file__).parent / "rpc"
 
 
-@pytest.fixture
-def sushi():
-    pytest.importorskip("elkpy")
+def _generated():
+    """Sushi's gRPC modules, got as the installed elkpy gets them: 1.4.0
+    ships them generated (`elkpy.rpc`), 1.3.0 compiles its proto with
+    grpcio-tools (`grpc_gen`), which it requires and 1.4.0 does not. Told
+    apart by the file, not by trying the import: grpcio-tools' import hook
+    would compile 1.3.0's proto a second time under the package's name."""
+    if (_elkpy_rpc() / "sushi_rpc_pb2.py").exists():
+        from elkpy.rpc import sushi_rpc_pb2, sushi_rpc_pb2_grpc
+
+        return sushi_rpc_pb2, sushi_rpc_pb2_grpc
     from elkpy import grpc_gen
 
     with contextlib.redirect_stdout(io.StringIO()):
-        proto, rpc = grpc_gen.modules_from_proto(str(_elkpy_rpc() / "sushi_rpc.proto"))
+        return grpc_gen.modules_from_proto(str(_elkpy_rpc() / "sushi_rpc.proto"))
+
+
+@pytest.fixture
+def sushi():
+    pytest.importorskip("elkpy")
+    proto, rpc = _generated()
     made = []
 
     def make(**how):

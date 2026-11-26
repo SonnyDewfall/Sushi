@@ -7511,12 +7511,20 @@ value is "may or may not have been applied" (a stepped one is held at its
 step); a notice that says it failed is a failure whatever is read. A command
 that was applied is never reported as failed, and one that was not is never
 reported as done. Not a sleep: a notice that comes is taken at once, and the
-reading costs only the change whose notice was lost. Tested in
+reading costs only the change whose notice was lost. A third way, found by
+CI: elkpy 1.4.0, which pip gives Python 3.12 (the rig container's; 1.4.0
+wants Python below 3.13, so 3.13 and 3.14 get 1.3.0), no longer subscribes to
+those notices unless asked (`auto_update_async_command_responses` now
+defaults to False), so there no strict command was ever confirmed by its
+notice; `live._controller` asks for it by name. 1.4.0 also ships Sushi's gRPC
+modules generated, and needs no grpcio-tools. Tested in
 `test_live_confirm.py`: elkpy's matching on stand-ins, every strict command
 applied-and-silent and neither, and the real elkpy against a gRPC server in the
 test that plays Sushi and loses the notice each way (each loss reproduced
-first with elkpy's own dict and timing). That half needs elkpy, as
-`test_live_close.py`'s does. Not run against a real Sushi: whether Sushi's
+first with elkpy's own dict and timing), built from the generated modules the
+installed elkpy uses. That half needs elkpy, as `test_live_close.py`'s does;
+run here against elkpy 1.3.0 (Python 3.13) and 1.4.0 (a Python 3.12 venv, as
+the container has it), and with elkpy hidden for the other half. Not run against a real Sushi: whether Sushi's
 request ids are unique across clients (assumed, since a kept notice is matched
 by id), and the probe rerun with the read-back, are the checks left.
 *(2026-11-26)*

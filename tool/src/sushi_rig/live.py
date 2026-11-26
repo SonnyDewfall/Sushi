@@ -63,7 +63,11 @@ def _controller(address: str):
             "elkpy not found. Install it into the tool's venv: "
             "pip install elkpy (see docs/reference/environment.md)"
         ) from None
-    controller = sc.SushiController(address)
+    # Asked for by name: elkpy 1.3.0 subscribes to Sushi's notices of async
+    # commands by default, 1.4.0 (what pip gives Python 3.12, the rig
+    # container's) does not, and without the subscription no strict command
+    # is ever confirmed by its notice (#241).
+    controller = sc.SushiController(address, auto_update_async_command_responses=True)
     # Before any command is sent on it, so no response is registered yet.
     controller.command_responses = Confirmations()
     return controller
