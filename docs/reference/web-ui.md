@@ -72,7 +72,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
     not load), each a small box whose `title` is the whole of it. They are
     states of the rig, not answers to a tap, so they stay here. On a phone
     the status is the rig's name and its dot; the words are the dot's
-    `title`, and a tap on it shows them and the tiles (`state.statusOpen`).
+    `title`, and a tap on it (a button there only: on a laptop the line is
+    no control, and not in the tab order) shows them and the tiles
+    (`state.statusOpen`). On a laptop the name and the state are never cut:
+    the tiles give way first, their second words ("of 21.3 ms", "since
+    opened") in their titles, the amp's last.
   - **Controls**, in the header beside the status: the master volume, the
     Lock (an icon on a phone, its label its `aria-label` and `title`), and
     the Stage and Help links, which on a phone are a bar at the foot, as on
@@ -87,25 +91,34 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
     `R.activityBusy`); the **last results**, three on a laptop with their
     times and one on a phone, newest first, each with its second tap
     (Restart, Restart anyway, Load anyway, Remove anyway, Add anyway, Save &
-    assign) and ×; and **Undo**, at its right end, beside what it would take
+    assign) and ×, a second tap not drawn while its own question is asked
+    (the question is then the one place for it); and **Undo**, at its right end, beside what it would take
     back. The rest is a **+n** chip that drops a list over the page (Escape
-    closes it): the older questions, still answerable there, the results
+    closes it; "2 asks" when more than one question waits, so the newest
+    never hides an older one, and every strip with one waiting is marked):
+    the older questions, still answerable there, the results
     not shown, and **the past**, the last 20 results gone (dismissed,
     answered, expired or replaced), newest first with their times, their
     words only (`R.activityRemember`).
   - **Changes made elsewhere** (#242's pushes). A push still only brings a
     poll; the log (`GET /live/log`) does not say who made a change, so the
     page says "elsewhere" of one it did not make. Each of its own writes'
-    answers carries the entry the agent logged for it (inline, or under
-    `entry`: `R.answerEntry`), kept by its signature (op, time and
+    answers carries the entries the agent logged for it (inline, under
+    `entry`, or, where neither carries them, as an Undo's did not, under
+    `logged`: [the agent](agent.md#one-undo), `R.answerEntries`), kept by its signature (op, time and
     arguments, `R.logSignature`); a new entry in the log that changes the
     rig's shape (a switch, a save, a plugin added, removed or moved, an
     undo, an amp model) whose signature is not one of those is said in the
-    bar, tagged **elsewhere**, for 15 s (`R.elsewhereSeen`,
+    bar, tagged **elsewhere**, for 15 s, in a word ("Switched", "Moved")
+    with the rest on hover (`R.elsewhereSeen`,
     `R.elsewhereSaid`). It is judged only while none of the page's own
     writes is in flight, since its entry is known as the page's only once
     its answer is in; the first log seen, and that of an agent started
-    again, are where the page starts from. Knobs, faders and bypasses are
+    again (a known start that differs: a poll that did not say one is no
+    sign), are where the page starts from. A write whose answer never came
+    (the network dropped it) may still have been made: for 10 s after one,
+    nothing new is said as elsewhere, the lesser fault than calling the
+    page's own change another's. Knobs, faders and bypasses are
     never said: a pedal moves them by the dozen. Not said either: a rig
     file edit from elsewhere (a channel added, an input changed), which is
     not in the log.
@@ -321,8 +334,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   the agent's "give a name", which is for a client that chooses none. The drawer closes, the
   place reads "Adding mda_delay…" (`aria-busy`, and it keeps the focus)
   until the agent has confirmed and the row is drawn in its place, and a
-  refusal is said in the activity zone (#245), "Add after delay · Not
-  added", with the channel's chip, the agent's reason on hover and a
+  refusal is said in the activity zone (#245), "board · Add · Not
+  added", the agent's reason on hover and a
   dismiss that gives the focus back to the place: a plugin Sushi cannot host is refused from the manifest (400)
   before Sushi is asked anything, and an add while the rig's load is over
   80 % of its block (409 `over_budget`, #137) is refused with the load

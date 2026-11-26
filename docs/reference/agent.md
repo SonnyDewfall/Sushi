@@ -1193,6 +1193,12 @@ another page's step, or a change landing since, is **409 `changed`**, with
 for, and refuses `changed` too if a newer one landed between its picks),
 `discard` and `restart` (below):
 
+Its answer, as any write's that logged entries it does not carry already
+(inline, as a live change's, or under `entry`), has `logged`: each entry
+the request made, `{op, at, args}` as the log holds it (the middleware
+`_say_logged`). The page knows its own changes by them, and says the rest
+were made elsewhere (#245).
+
 - **`live`**: a change made through `/live`, the amp or a pedal (a
   footswitch's bypass, and a channel's mute, its send bypassed: "mute
   vocal"), by its index in the live log, undone by the live undo (`POST /live/undo`'s own code, with its

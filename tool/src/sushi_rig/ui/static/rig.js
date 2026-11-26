@@ -3821,6 +3821,8 @@ export function activitySeen(before, items, asks, now, counter, times = new Map(
   let n = counter;
   for (const item of items) {
     const t = kept.get(item.id) || { n: ++n, at: now };
+    // Moved to the end, so what is still seen is the last to be let go.
+    kept.delete(item.id);
     kept.set(item.id, t);
     seen.items.set(item.id, { ...t, snap: activitySnap(item) });
   }
@@ -3833,8 +3835,11 @@ export function activitySeen(before, items, asks, now, counter, times = new Map(
   for (const [id, was] of before ? before.items : []) {
     if (!seen.items.has(id)) gone.push({ ...was.snap, n: was.n, at: was.at });
   }
-  // The times kept are bounded: the oldest go first.
-  while (kept.size > 200) kept.delete(kept.keys().next().value);
+  // The times kept are bounded: the longest unseen go first, never one seen now.
+  for (const id of [...kept.keys()]) {
+    if (kept.size <= 200) break;
+    if (!seen.items.has(id)) kept.delete(id);
+  }
   return { seen, times: kept, gone: gone.sort(newestFirst), counter: n };
 }
 
@@ -3882,6 +3887,19 @@ export function logSignature(entry) {
   return `${entry.op}|${entry.at}|${JSON.stringify(entry.args ?? null)}`;
 }
 
+// The log entries a write's answer carries: `logged`, every entry the
+// request made (the agent adds it where the answer does not carry them
+// already: an Undo's, #245's review), and the one inline or under `entry`.
+export function answerEntries(body) {
+  const out = [];
+  if (body && typeof body === "object" && Array.isArray(body.logged)) {
+    for (const e of body.logged) if (e && typeof e.op === "string") out.push({ op: e.op, at: e.at, args: e.args });
+  }
+  const one = answerEntry(body);
+  if (one) out.push(one);
+  return out;
+}
+
 // The log entry a write's answer carries: inline (a live change's, an undo's)
 // or under `entry` (a switch's, a save's, a revert's), or null.
 export function answerEntry(body) {
@@ -3894,32 +3912,37 @@ export function answerEntry(body) {
 // The log entries new since `seen` (`{agent, next}`, the agent's start and
 // the number of the next entry to judge), of the kinds above, whose
 // signature is not in `mine`. The first log seen, and the first of an agent
-// started again, are where the page starts from, not news. Returns
-// `{seen, found}`.
+// started again, are where the page starts from, not news. An agent's start
+// not known (`agent` null) is no sign of another agent: only a known start
+// that differs from the last known one is. Returns `{seen, found}`.
 export function elsewhereSeen(seen, log, mine, agent = null) {
   if (!log || !Array.isArray(log.log)) return { seen, found: [] };
   const first = isNumber(log.first) ? log.first : 0;
   const end = first + log.log.length;
-  if (!seen || seen.agent !== agent || end < seen.next) return { seen: { agent, next: end }, found: [] };
+  const known = agent ?? (seen ? seen.agent : null);
+  const another = !!seen && agent !== null && seen.agent !== null && agent !== seen.agent;
+  if (!seen || another || end < seen.next) return { seen: { agent: known, next: end }, found: [] };
   const found = [];
   for (let i = Math.max(seen.next, first); i < end; i++) {
     const entry = log.log[i - first];
     if (entry && ELSEWHERE_OPS.includes(entry.op) && !(mine && mine.has(logSignature(entry)))) found.push({ index: i, entry });
   }
-  return { seen: { agent, next: end }, found };
+  return { seen: { agent: known, next: end }, found };
 }
 
-// What a change made elsewhere is said as: `{title, channel}`, a word or two.
+// What a change made elsewhere is said as: `{title, detail, channel}`, the
+// title a word (the UI's rule, #209), the rest its `detail`, for a hover.
 export function elsewhereSaid(entry) {
   const a = (entry && entry.args) || {};
+  const said = (title, detail, channel = null) => ({ title, detail, channel });
   switch (entry && entry.op) {
-    case "rig": return { title: `Switched to ${a.rig}`, channel: null };
-    case "save": return { title: `Saved ${a.rig || a.file || "the rig"}`, channel: null };
-    case "add": return { title: `Added ${a.name}`, channel: a.track || null };
-    case "remove": return { title: `Removed ${a.processor}`, channel: null };
-    case "move": return { title: `Moved ${a.processor} ${a.direction}`, channel: null };
-    case "undo": return { title: `Undone: ${a.of}`, channel: null };
-    case "amp_model": return { title: `Amp: ${modelName(a.model)}`, channel: null };
-    default: return { title: entry && entry.op ? `Changed: ${entry.op}` : "Changed", channel: null };
+    case "rig": return said("Switched", `Switched to ${a.rig}`);
+    case "save": return said("Saved", `Saved ${a.rig || a.file || "the rig"}`);
+    case "add": return said("Added", `Added ${a.name}`, a.track || null);
+    case "remove": return said("Removed", `Removed ${a.processor}`);
+    case "move": return said("Moved", `Moved ${a.processor} ${a.direction}`);
+    case "undo": return said("Undone", `Undone: ${a.of}`);
+    case "amp_model": return said("Amp", `Amp model: ${modelName(a.model)}`);
+    default: return said("Changed", entry && entry.op ? `Changed: ${entry.op}` : "Changed");
   }
 }

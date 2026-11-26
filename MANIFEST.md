@@ -7652,3 +7652,28 @@ only while none of the page's writes is in flight, so its own is never
 caught between the log and the answer; knobs and bypasses are never said. A
 rig file edited from elsewhere (an input, a channel added) is not in the log
 and is not said. Tested pure and with two pages in Chromium. *(2026-11-26)*
+
+**#245, PR #251's review.** Thirteen findings. (1) The page's own Undo was
+said as made elsewhere: `POST /undo`'s answer carried no log entry. Every
+write's answer now carries `logged`, the entries the request made, where it
+does not carry them already (a middleware, `_say_logged`, fed by `_record`
+through a context variable); the page reads it (`answerEntries`). (2) A
+redraw of the bar dropped a focused Yes to the page's body, and a lost focus
+went to Undo: the focus is put back by what it was (`actFocus`,
+`actRefocus`), else kept by the zone, and only Undo's own words send it to
+Undo. (3) A refusal said again took back its first place: each refusal is
+an object of its own. (4) The times kept let go of what was still shown
+first: now the longest unseen. (5) A start not known reset the log's
+baseline: only a known, different start does. (6) A write whose answer never
+came: for 10 s after, nothing new is said as elsewhere, the lesser fault.
+(7) On a phone the newest question hid an older one: "2 asks" on the chip,
+and every strip with one waiting marked; a strip's question is keyed by its
+channel and rig. (8) A stage test could pass on nothing: it asserts the words
+are there first; a knob test narrowed to the zone is page-wide again. (9) The
+bar's words are one or two: "Add · Not added", "Moved", "Switched". (10) The
+status line is no control on a laptop. (11) The rig's name and state are
+never cut on a laptop: the tiles' second words go to their titles. (12) While
+"Restart?" is asked, the result beside it drops its own Restart. (13) On a
+phone a question, "+n" and Undo fit one row. Tested in Chromium, the
+reviewer's two repro tests among them. Not tried on a real phone or in
+Safari. *(2026-11-26)*

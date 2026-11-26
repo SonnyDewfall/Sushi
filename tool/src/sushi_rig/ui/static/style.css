@@ -845,6 +845,17 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
 .bar.zones .zone-status .tile { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
 .bar.zones .zone-status .tile .s { overflow: hidden; text-overflow: ellipsis; }
 .zone-status .status .status-more { display: none; }
+/* On a laptop the rig's name and its state are never cut (#245's review):
+   the tiles give way first, their second words into their titles, the amp's
+   last, since its model is what it says. */
+@media (min-width: 641px) {
+  .zone-status .rig-name, .zone-status .status-slot { flex: none; }
+  .bar.zones .zone-status .tile .s { display: none; }
+  .bar.zones .zone-status .tile:last-child { flex-shrink: 0.2; }
+}
+@media (min-width: 641px) and (max-width: 1360px) {
+  .zone-controls .volume-rack input[type=range] { width: 96px; }
+}
 .zone-controls { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
 .zone-controls .volume-rack input[type=range] { width: 120px; }
 /* The status line: a plain line on a laptop, a tap on a phone (below). */
@@ -943,10 +954,16 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
      and the question's title. A result is said whole (a take's name is
      the take's), wrapping if it must. */
   .act-ask .what { display: none; }
-  .act-ask { flex-wrap: nowrap; flex: none; gap: 6px; }
-  .act-ask .rig-act.small { padding: 0 10px; }
-  .act-chan { padding: 0 6px; }
-  .activity .undo { padding: 0 12px; }
+  /* A question, "+n" and Undo in one row at 390 px (#245's review). */
+  .act-msg { gap: 6px; }
+  .activity { gap: 6px; }
+  .act-ask { flex-wrap: nowrap; flex: none; gap: 4px; padding: 2px 4px; }
+  .act-ask .rig-act.small { padding: 0 8px; }
+  .act-chan { padding: 0 6px; font-size: 14px; }
+  .act-ask .confirm { gap: 4px; }
+  .act-ask .confirm .q { font-size: 13px; }
+  .act-more { padding: 0 6px; }
+  .activity .undo { padding: 0 10px; }
   .act-results { flex: 1 1 0; min-width: 0; }
   .act-list { left: -16px; right: -16px; }
   .act-list > * { padding: 6px 16px; }

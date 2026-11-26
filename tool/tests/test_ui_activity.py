@@ -298,7 +298,8 @@ def test_a_change_the_page_did_not_make_is_found_in_the_log_by_its_signature(bla
     assert out["start"] == [] and out["startSeen"] == {"agent": "agent-1", "next": 1}, "what is there at first is not news"
     # This page's add is known by its signature; a knob is never said.
     assert out["found"] == [[3, "move"], [4, "rig"]]
-    assert out["said"] == [{"title": "Moved delay up", "channel": None}, {"title": "Switched to clean", "channel": None}]
+    assert out["said"] == [{"title": "Moved", "detail": "Moved delay up", "channel": None},
+                           {"title": "Switched", "detail": "Switched to clean", "channel": None}]
     assert out["again"] == [], "each entry is judged once, the log's numbering kept"
     assert out["restarted"] == [] and out["restartedSeen"] == {"agent": "agent-2", "next": 1}, \
         "an agent started again: its log is where the page starts from"
@@ -318,9 +319,9 @@ def test_a_change_from_another_page_is_said_as_made_elsewhere_and_ones_own_are_n
     p.get_by_role("button", name="Switch to electric-delay").click()
     expect(p.locator(".activity .notice strong")).to_have_text("Switched to electric-delay")
     said = q.locator(".activity .elsewhere")
-    expect(said.locator("strong")).to_have_text("Switched to electric-delay")
+    expect(said.locator("strong")).to_have_text("Switched")
     expect(said.locator(".from")).to_have_text("elsewhere")
-    expect(said).to_have_attribute("title", re.compile("^Not from this page"))
+    expect(said).to_have_attribute("title", re.compile(r"^Switched to electric-delay, at \d\d:\d\d.*\. Not from this page"))
     # The page that made it says it as its own, never as elsewhere.
     q.wait_for_timeout(1500)
     expect(p.locator(".activity .from")).to_have_count(0)
@@ -329,8 +330,9 @@ def test_a_change_from_another_page_is_said_as_made_elsewhere_and_ones_own_are_n
 
     post(served, "/live/parameter", {"processor": "delay", "parameter": "Feedback", "value": 0.5})
     post(served, "/live/move", {"processor": "delay", "direction": "up"})
-    expect(p.locator(".activity .elsewhere strong")).to_have_text("Moved delay up")
-    expect(q.locator(".activity .elsewhere strong")).to_have_text(["Moved delay up", "Switched to electric-delay"])
+    expect(p.locator(".activity .elsewhere strong")).to_have_text("Moved")
+    expect(p.locator(".activity .elsewhere")).to_have_attribute("title", re.compile("^Moved delay up"))
+    expect(q.locator(".activity .elsewhere strong")).to_have_text(["Moved", "Switched"])
     mine.close()
     other.close()
 
@@ -354,3 +356,253 @@ def test_a_result_gone_is_kept_in_the_past_list_with_its_time(browser, served):
     p.keyboard.press("Escape")
     expect(bar.locator(".act-list")).to_be_hidden()
     page.close()
+
+
+# --------------------------------------------------------------------------- #
+# PR #251's review
+# --------------------------------------------------------------------------- #
+
+def test_the_pages_own_undo_is_never_said_as_made_elsewhere(browser):
+    """Review finding 1: POST /undo's answer carried no log entry, so the
+    page's own Undo of a live step (an `undo` entry) and of a load (the
+    switch back logs a `rig` entry) was said as "elsewhere"."""
+    from test_ui_channel_load import SPARE, panel
+
+    with Served(save=True) as served:
+        (served.save.root / "config" / "rigs" / "spare.yaml").write_text(SPARE)
+        page = Page(browser, served.url + "/#rack", width=1280, height=900)
+        p = page.page
+        p.wait_for_selector(".unit")
+        unlock(p)
+        group = panel(p, "vocal")
+        group.get_by_label("Channel to load onto vocal").select_option(label="spare / lead")
+        group.get_by_role("button", name="Load", exact=True).click()
+        expect(p.locator(".activity .load-result")).to_contain_text("Loaded spare / lead onto vocal")
+        p.get_by_role("button", name="Undo load spare / lead").click()
+        expect(p.locator(".activity .undo-said strong")).to_have_text("Undone: load spare / lead")
+        row = p.locator('.unit[data-unit="delay"]')
+        row.get_by_role("button", name="delay", exact=True).click()
+        row.get_by_role("button", name="Remove delay", exact=True).click()
+        until(lambda: "delay" not in served.rig.chains["board"])
+        p.get_by_role("button", name="Undo remove delay").click()
+        until(lambda: "delay" in served.rig.chains["board"])
+        expect(p.locator(".activity .undo-said strong")).to_have_text("Undone: remove delay")
+        p.wait_for_timeout(2500)  # two polls and more, each judging the log
+        expect(p.locator(".activity .elsewhere")).to_have_count(0)
+        expect(p.locator(".activity .from")).to_have_count(0)
+        page.close()
+
+
+def test_the_focus_stays_on_yes_when_the_bar_is_drawn_again_and_enter_answers(browser, served):
+    """Review finding 2: a message arriving redrew the bar and the focused Yes
+    fell to the page's body; a lost focus then went to Undo, so the next
+    Enter undid instead of answering."""
+    page = Page(browser, served.url + "/#rack", width=1280, height=900)
+    p = page.page
+    p.wait_for_selector(".rigs .rig")
+    p.get_by_role("button", name="Stop electric_board").click()
+    yes = p.locator(".activity .confirm").get_by_role("button", name="Yes")
+    yes.focus()
+    from test_ui import post
+
+    post(served, "/live/move", {"processor": "delay", "direction": "up"})
+    expect(p.locator(".activity .elsewhere strong")).to_have_text("Moved")
+    expect(yes).to_be_focused()
+    p.keyboard.press("Enter")
+    until(lambda: served.lifecycle.calls == [["down"]])
+    # The question has gone with its answer: the zone holds the focus, not Undo.
+    expect(p.locator(".activity")).to_be_focused()
+    assert p.evaluate("() => document.activeElement !== document.body")
+    page.close()
+
+
+def test_a_refusal_said_again_is_new_and_takes_its_own_time_and_place(browser):
+    """Review finding 3: a refusal's id was made of its words, so said again
+    after it was dismissed it took back its first place, behind newer ones."""
+    from ui_fake import fixture_library
+
+    with Served(library=fixture_library) as served:
+        served.pw_top_output = served.pw_top_output.replace("0.23    2", "0.83    2")  # over the add's budget
+        page = Page(browser, served.url + "/#rack", width=1280, height=900)
+        p = page.page
+        p.wait_for_selector(".unit")
+        unlock(p)
+        bar = p.locator(".activity")
+
+        def refused_add():
+            p.get_by_role("button", name="Add after overdrive…").click()
+            p.locator('.lib-entry[data-uri="http://drobilla.net/plugins/mda/Delay"]').click()
+            expect(bar.locator(".add-said")).to_have_count(1)
+
+        refused_add()
+        bar.locator(".add-said").get_by_role("button", name="Dismiss").click()
+        p.locator("button.lock").click()  # locked: a refusal of its own, newer
+        p.get_by_role("button", name="Move delay up (locked)").click()
+        expect(bar.locator(".act-results .act-item").first.locator("strong")).to_have_text("Not moved: delay")
+        unlock(p)
+        refused_add()
+        # Said again: the newest, first in the row.
+        expect(bar.locator(".act-results .act-item").first).to_have_class(re.compile(r"\badd-said\b"))
+        page.close()
+
+
+def test_the_times_kept_let_go_of_what_is_unseen_first(blank):
+    """Review finding 4: past 200 ids the oldest-set went first, whatever was
+    still shown; a result seen all along must keep its time."""
+    out = rigjs(blank, """
+      const a = {id: 'standing', ok: true, title: 'standing'};
+      let s = R.activitySeen(null, [a], [], 1000, 0);
+      for (let i = 0; i < 250; i++) {
+        s = R.activitySeen(s.seen, [a, {id: 'r' + i, ok: true, title: 'r'}], [], 2000 + i, s.counter, s.times);
+      }
+      const t = s.seen.items.get('standing');
+      return {n: t.n, at: t.at, size: s.times.size, kept: s.times.has('standing')};""")
+    assert out == {"n": 1, "at": 1000, "size": 200, "kept": True}
+
+
+def test_an_unknown_agent_start_is_no_sign_of_another_agent(blank):
+    """Review finding 5: a poll whose /health said no start reset the log's
+    baseline, and changes made elsewhere across it were never said."""
+    out = rigjs(blank, """
+      const e = (op, at, args) => ({op, at, args, previous: null});
+      const log = (entries) => ({ok: true, first: 0, log: entries});
+      const one = [e('rig', 't0', {rig: 'a'})];
+      const two = [...one, e('move', 't1', {processor: 'delay', direction: 'up'})];
+      const s1 = R.elsewhereSeen(null, log(one), new Set(), 'agent-1');
+      const unknown = R.elsewhereSeen(s1.seen, log(two), new Set(), null);
+      const back = R.elsewhereSeen(s1.seen, log(two), new Set(), 'agent-1');
+      return {unknown: unknown.found.map((f) => f.entry.op), seen: unknown.seen, back: back.found.length};""")
+    assert out == {"unknown": ["move"], "seen": {"agent": "agent-1", "next": 2}, "back": 1}
+
+
+def test_a_write_whose_answer_never_came_is_not_said_as_made_elsewhere(browser, served):
+    """Review finding 6: a write the agent made whose answer the page never
+    had (the network dropped it) left the page not knowing its own entry.
+    For a few seconds after such a write, nothing new is said as elsewhere."""
+    page = Page(browser, served.url + "/#rack", width=1280, height=900)
+    p = page.page
+    p.wait_for_selector(".unit")
+    unlock(p)
+
+    def made_then_lost(route):
+        route.fetch()  # the agent moves it
+        route.abort()  # and the page never hears
+
+    p.route("**/live/move", made_then_lost)
+    p.get_by_role("button", name="Move delay up", exact=True).click()
+    until(lambda: served.rig.chains["board"].index("delay") == 1)
+    p.wait_for_timeout(2500)
+    expect(p.locator(".activity .elsewhere")).to_have_count(0)
+    expect(p.locator(".activity .problem.refused")).to_contain_text("Not moved: delay up")
+    page.close()
+
+
+def test_on_a_phone_every_question_waiting_is_counted_and_its_strip_marked(browser):
+    """Review finding 7: the newest question hid an older one on a phone,
+    and moved the strip's mark; a strip's question is its own (keyed by
+    channel and rig)."""
+    with Served(save=True) as served:
+        page = Page(browser, served.url + "/#rack", width=390, height=844)
+        p = page.page
+        p.wait_for_selector(".unit")
+        unlock(p)
+        p.get_by_role("button", name="Remove vocal", exact=True).click()
+        bar = p.locator(".activity")
+        expect(bar.locator(".act-ask .act-chan")).to_have_text("vocal")
+        p.get_by_role("button", name="Stop electric_board").click()
+        # The newest is asked; the older is counted on the chip, and its strip stays marked.
+        expect(bar.locator(".act-ask .confirm .q").first).to_have_text("Stop?")
+        more = bar.locator(".act-more")
+        expect(more).to_have_text("2 asks")
+        expect(p.locator(".strip.asking")).to_have_attribute("data-channel", "vocal")
+        more.click()
+        older = bar.locator('.act-list .act-ask[data-ask="remove-channel electric_board vocal"]')
+        expect(older.locator(".confirm .q")).to_have_text("Remove?")
+        older.get_by_role("button", name="No", exact=True).click()
+        expect(p.locator(".strip.asking")).to_have_count(0)
+        expect(bar.locator(".act-more.asks")).to_have_count(0)
+        page.close()
+
+
+def test_the_status_is_no_control_on_a_laptop(browser, served):
+    """Review finding 10: the status line was a button that did nothing on a
+    laptop; it is a plain line there, out of the tab order, and a tap on a
+    phone only."""
+    page = Page(browser, served.url + "/#rack", width=1280, height=900)
+    p = page.page
+    p.wait_for_selector(".unit")
+    slot = p.locator("header.bar .status-slot")
+    expect(slot).not_to_have_attribute("role", "button")
+    expect(slot).not_to_have_attribute("tabindex", "0")
+    expect(p.locator("header.bar").get_by_role("button", name=re.compile("Up 12 min"))).to_have_count(0)
+    p.set_viewport_size({"width": 390, "height": 844})
+    expect(slot).to_have_attribute("role", "button")
+    expect(slot).to_have_attribute("aria-expanded", "false")
+    slot.press("Enter")
+    expect(slot).to_have_attribute("aria-expanded", "true")
+    page.close()
+
+
+@pytest.mark.parametrize("width", [1280, 1440])
+def test_on_a_laptop_the_rigs_name_and_state_are_never_cut(browser, width):
+    """Review finding 11: at 1280 and 1440 the name was cut ("electric_…")
+    and the tiles clipped; the tiles' second words go to their titles."""
+    with Served() as served:
+        served.state["describe"] = (lambda d: (lambda: {**d(), "config_name": "electric_board_with_a_longer_name"}))(
+            served.state["describe"])
+        page = Page(browser, served.url + "/#rack", width=width, height=900)
+        p = page.page
+        p.wait_for_selector(".unit")
+        cut = p.evaluate("""() => [...document.querySelectorAll('.zone-status .rig-name, .zone-status .status')]
+          .map((e) => [e.className, e.scrollWidth > e.clientWidth + 1, e.getBoundingClientRect().right
+            <= document.querySelector('.zone-status').getBoundingClientRect().right + 1])""")
+        assert all(not c and inside for _, c, inside in cut), cut
+        load = p.locator(".zone-status .tile").first
+        expect(load).to_have_attribute("title", re.compile(r"^of 21\.3 ms · "))
+        assert p.evaluate("() => document.documentElement.scrollWidth <= innerWidth")
+        page.close()
+
+
+def test_an_open_question_is_the_one_place_for_its_offer(browser):
+    """Review finding 12: after an input change the bar showed "Restart?" and
+    the result's own Restart beside it. While it is asked, the result keeps
+    its words and drops the button."""
+    with Served(save=True) as served:
+        page = Page(browser, served.url + "/#rack", width=1280, height=900)
+        p = page.page
+        p.wait_for_selector(".unit")
+        unlock(p)
+        p.get_by_role("button", name="Change vocal's input").click()
+        p.get_by_label("vocal input").select_option("keys-in")
+        p.get_by_role("button", name="Apply").click()
+        result = p.locator(".activity .wiring-result")
+        result.get_by_role("button", name="Restart").click()
+        expect(p.locator(".activity .act-ask .confirm .q")).to_have_text("Restart?")
+        expect(result.locator("strong")).to_have_text("Changed vocal's input")
+        expect(result.get_by_role("button", name="Restart")).to_have_count(0)
+        p.locator(".activity .act-ask").get_by_role("button", name="No", exact=True).click()
+        expect(result.get_by_role("button", name="Restart")).to_be_visible()
+        page.close()
+
+
+def test_on_a_phone_a_question_more_and_undo_are_one_row(browser):
+    """Review finding 13: "+2" wrapped onto a row of its own."""
+    with Served(save=True) as served:
+        page = Page(browser, served.url + "/#rack", width=390, height=844)
+        p = page.page
+        p.wait_for_selector(".unit")
+        unlock(p)
+        p.get_by_role("button", name="Save to electric_board").click()
+        expect(p.locator(".activity .save-result")).to_have_count(1)
+        p.get_by_role("button", name="Change board's input").click()
+        p.get_by_label("board input").select_option("keys-in")
+        p.get_by_role("button", name="Apply").click()
+        p.locator(".activity .wiring-result").get_by_role("button", name="Restart").click()
+        bar = p.locator(".activity")
+        expect(bar.locator(".act-more")).to_have_text("+2")
+        tops = [bar.locator(sel).bounding_box() for sel in (".act-ask", ".act-more", "button.undo")]
+        middles = [b["y"] + b["height"] / 2 for b in tops]
+        assert max(middles) - min(middles) < 8, tops
+        assert bar.bounding_box()["height"] <= 64
+        assert p.evaluate("() => document.documentElement.scrollWidth <= innerWidth")
+        page.close()

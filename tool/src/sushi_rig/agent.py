@@ -519,6 +519,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
 import copy
 import dataclasses
 import functools
@@ -555,6 +556,11 @@ from .rigfile import (  # the limiter, the top and the centred pan (#137)
 )
 from .rig import RigError, compile_named_rig, plugins_folder, plugins_refusal
 from .state import read_state, write_state
+
+# The log entries the request being answered made (`_record`), for its
+# answer's `logged` (`_say_logged`): the page tells its own changes from
+# another's by them (#245). Per request, as asyncio keeps a context a task.
+_LOGGED: contextvars.ContextVar[list | None] = contextvars.ContextVar("sushi_rig_logged", default=None)
 from .verify import diff_state
 from .recorder_process import (  # recording from the web UI (S7)
     START_TIMEOUT, STATUS_TIMEOUT, STOP_TIMEOUT, RecorderDown, RecorderTimeout,
@@ -2140,7 +2146,8 @@ class Agent:
     def app(self):
         # The guard inside `_json_errors`, so its 403 is JSON as every refusal
         # is; `_push_changes` inside the guard, so a refused write pushes nothing.
-        app = web.Application(middlewares=[self._json_errors, self._same_site_only, self._push_changes])
+        app = web.Application(middlewares=[self._json_errors, self._same_site_only, self._push_changes,
+                                           self._say_logged])
         self._events_routes(app)  # pushed changes (#139): GET /events, see its block
         app.router.add_get("/health", self.health)
         app.router.add_post("/visualiser/tap", self.visualiser_tap_route)
@@ -2732,6 +2739,9 @@ class Agent:
         entry = log_entry(
             op, args, previous, datetime.now(timezone.utc).isoformat(timespec="seconds"), **marks)
         self.log.append(entry)
+        said = _LOGGED.get()
+        if said is not None:
+            said.append(entry)
         self.events.publish("log")  # a pedal's change too, which sends no request (#139)
         self._history_follows(entry, self._trimmed + len(self.log) - 1)
         if op in ("add", "remove", "rig", "save") or (op == "undo" and args.get("of") in ("add", "remove")):
@@ -3563,6 +3573,38 @@ class Agent:
         finally:
             if request.method in STATE_CHANGING and not request.path.startswith("/visualiser/"):
                 self.events.publish(request.path)
+
+    @web.middleware if web else (lambda f: f)
+    async def _say_logged(self, request, handler):
+        """A write's JSON answer, when it worked, carries `logged`: every log
+        entry the request made (`_record`), whichever route and however deep
+        (an Undo's own entry, the switch a revert or a load made). The page
+        knows its own changes by them, and says the rest were made elsewhere
+        (#245): the log keeps no origin."""
+        if request.method not in STATE_CHANGING:
+            return await handler(request)
+        logged: list = []
+        token = _LOGGED.set(logged)
+        try:
+            response = await handler(request)
+        finally:
+            _LOGGED.reset(token)
+        if logged and isinstance(response, web.Response) and response.status < 400 \
+                and response.content_type == "application/json" and response.body is not None:
+            try:
+                body = json.loads(response.body)
+            except (TypeError, ValueError):
+                return response
+            said = [{k: e.get(k) for k in ("op", "at", "args")} for e in logged]
+            # An answer that carries its entry already (inline, as a live
+            # change's does, or under `entry`) is left as it was.
+            carried = [{k: x.get(k) for k in ("op", "at", "args")} for x in (body, body.get("entry"))
+                       if isinstance(x, dict) and "op" in x and "at" in x] if isinstance(body, dict) else []
+            if isinstance(body, dict) and any(e not in carried for e in said):
+                body["logged"] = said
+                return web.json_response(body, status=response.status, headers={
+                    k: v for k, v in response.headers.items() if k.lower() not in ("content-type", "content-length")})
+        return response
 
     async def events_route(self, request):
         """`GET /events`: `text/event-stream`, a `hello` and then a `changed`

@@ -534,6 +534,7 @@ def test_a_switch_from_the_dropdown_refused_for_plugins_missing_says_which_and_t
     expect(alert).to_contain_text("Not switched to electric-delay", timeout=8000)
     expect(alert).to_be_visible()
     # The few words say what is wrong; the whole refusal is the title (#209).
+    expect(alert.locator(".said")).to_have_count(1)
     expect(alert.locator(".said")).not_to_have_text("Not switched to electric-delay")
     expect(alert).to_have_attribute("title", re.compile(re.escape(f"{detune}: installed in ")))
     expect(alert).to_have_attribute("title", re.compile(re.escape("Nothing was changed: electric_board plays on.")))

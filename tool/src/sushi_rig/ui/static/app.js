@@ -162,7 +162,7 @@ const state = {
   editsRun: null,            // the rig shown (`shownRun`) the three below belong to: see settleEdits
   unplaced: [],              // answers of adds and removes that came while /health did not answer: see placeAnswer
   adding: new Map(),         // "track\u0000slot" -> {shown, done?, at}: an add from that slot in flight, or confirmed and not drawn yet
-  addRefused: new Map(),     // "track\u0000slot" -> the agent's reason an add from there was refused, shown in place
+  addRefused: new Map(),     // "track\u0000slot" -> {reason}: an add from there refused, said in the activity zone
   removing: new Map(),       // unit -> {armed, timer} | {pending} | {reason}: its Remove, in place in its row
   failures: [],              // this page's refused changes, newest first
   failed: new Map(),         // control key -> the reason its last change was refused
@@ -187,9 +187,9 @@ const state = {
   activity: { items: [], asks: [], seen: null, times: new Map(), counter: 0, history: [], open: false, wide: null },
   statusOpen: false,
   // Changes made elsewhere (#242, #245): the signatures of this page's own
-  // logged writes (R.answerEntry), how far the log has been judged
+  // logged writes (R.answerEntries), how far the log has been judged
   // (R.elsewhereSeen), and what was found, said in the activity zone.
-  mine: new Set(), elsewhereSeen: null, elsewhere: [],
+  mine: new Set(), elsewhereSeen: null, elsewhere: [], elsewhereBlindUntil: -Infinity,
 };
 
 // ---------------------------------------------------------------- network
@@ -215,6 +215,7 @@ async function request(method, path, body) {
       reason: (data && data.reason) || `${response.status} ${response.statusText || "with no reason given"}`,
     };
   } catch (error) {
+    if (writes) state.elsewhereBlindUntil = Date.now() + ELSEWHERE_BLIND_MS;
     return { ok: false, status: 0, body: null, reason: `the agent did not answer (${error.message})` };
   } finally {
     if (writes) { state.writing -= 1; state.lastWriteEnd = Date.now(); }
@@ -240,11 +241,16 @@ const sender = new R.Sender((call) => request("POST", call.path, call.json), {
 // The signature of a logged write of this page's (R.logSignature), kept for
 // R.elsewhereSeen; the oldest go once there are more than the log keeps.
 function noteMine(body) {
-  const sig = R.logSignature(R.answerEntry(body));
-  if (!sig) return;
-  state.mine.add(sig);
+  for (const entry of R.answerEntries(body)) state.mine.add(R.logSignature(entry));
   while (state.mine.size > 600) state.mine.delete(state.mine.values().next().value);
 }
+
+// A write of this page's whose answer never came (the network dropped, the
+// page went away mid-write) may still have been made, and its entry is not
+// known: for ELSEWHERE_BLIND_MS after, nothing new in the log is said as
+// elsewhere (#245's review). Saying another device's change as nobody's for a
+// few seconds is the lesser fault than calling this page's own "elsewhere".
+const ELSEWHERE_BLIND_MS = 10000;
 
 // The log, judged for changes this page did not make (R.elsewhereSeen):
 // only while none of its own writes is in flight, since the entry a write
@@ -254,7 +260,7 @@ function noteElsewhere(log, agentStart) {
   if (state.writing || !log) return;
   const judged = R.elsewhereSeen(state.elsewhereSeen, log, state.mine, agentStart);
   state.elsewhereSeen = judged.seen;
-  if (!judged.found.length) return;
+  if (!judged.found.length || Date.now() < state.elsewhereBlindUntil) return;
   const at = noticeClock();
   for (const { index, entry } of judged.found) {
     state.elsewhere.unshift({ ok: true, ...R.elsewhereSaid(entry), entry, index, agent: agentStart, at });
@@ -1186,7 +1192,10 @@ function tileViews(health) {
 // review).
 function tilesRegion(el) {
   const views = tileViews(state.health);
-  patch(el, JSON.stringify(views), () => views.map((t) => h("span", { class: `tile${t.tone ? " " + t.tone : ""}`, title: t.title },
+  // A tile's second words ("of 21.3 ms") are in its title too: the rack's
+  // status zone shows them only where there is room (#245's review).
+  patch(el, JSON.stringify(views), () => views.map((t) => h("span", { class: `tile${t.tone ? " " + t.tone : ""}`,
+    title: [t.s, t.title].filter(Boolean).join(" · ") || null },
     h("span", { class: "k" }, t.k), h("span", { class: "v" }, t.v), t.s ? h("span", { class: "s" }, t.s) : null)));
 }
 
@@ -1223,7 +1232,7 @@ function sayFailuresAndNotice() {
   // Changes this page did not make (#242's pushes), for R.NOTICE_MS each.
   for (const e of state.elsewhere) {
     actResult({ id: actId(e, "e"), cls: "elsewhere", ok: true, elsewhere: true, title: e.title, channel: e.channel,
-      detail: `Not from this page: another page, a pedal or the command line. ${e.entry.op} at ${clock(e.entry.at)}.`,
+      detail: `${e.detail}, at ${clock(e.entry.at)}. Not from this page: another page, a pedal or the command line.`,
       dismiss: () => { state.elsewhere = state.elsewhere.filter((x) => x !== e); render(); } });
   }
   const n = state.notice;
@@ -1466,34 +1475,68 @@ function activityRegion(regions) {
   const key = JSON.stringify([wide, view.busy, askKey(view.ask), view.shown.map(itemKey), view.more.asks.map(askKey),
     view.more.items.map(itemKey), view.more.past.map((p) => [p.id, p.title, clock(p.at)]), act.open]);
   const el = regions.activity;
-  patch(regions.actMsg, key, () => {
+  const held = actFocus(regions.actMsg);
+  const rebuilt = patch(regions.actMsg, key, () => {
     const parts = [];
     if (view.busy) parts.push(h("div", { class: "act-busy rig-busy", role: "status" }, h("span", { class: "pulse", "aria-hidden": "true" }), view.busy));
     if (view.ask) parts.push(actQuestion(view.ask));
     if (view.shown.length) parts.push(h("div", { class: "act-results" }, view.shown.map((i, n) => actItem(i, { older: n > 0 }))));
     if (view.count) {
       const titles = [...view.more.asks.map((a) => a.q), ...view.more.items.map((i) => i.title), ...view.more.past.map((p) => p.title)];
-      parts.push(h("button", { type: "button", class: "act-more", "aria-expanded": String(act.open), "aria-controls": "act-list",
-        "aria-label": `${view.count} more`, title: titles.join("\n"),
-        onclick: () => { act.open = !act.open; render(); } }, `+${view.count}`));
+      // More than one question waiting: said on the chip, so the newest
+      // never hides an older one unseen (#245's review).
+      const waiting = view.more.asks.length ? view.more.asks.length + 1 : 0;
+      parts.push(h("button", { type: "button", class: `act-more${waiting ? " asks" : ""}`, "aria-expanded": String(act.open),
+        "aria-controls": "act-list", "aria-label": waiting ? `${waiting} asks, ${view.count} more` : `${view.count} more`,
+        title: titles.join("\n"), onclick: () => { act.open = !act.open; render(); } },
+      waiting ? `${waiting} asks` : `+${view.count}`));
     }
     parts.push(h("div", { class: "act-list", id: "act-list", role: "group", "aria-label": "More activity", hidden: !act.open },
       view.more.asks.map(actQuestion), view.more.items.map((i) => actItem(i)), view.more.past.map(actPast)));
     return parts;
   });
+  if (rebuilt && held) actRefocus(regions, held);
   el.classList.toggle("idle", !view.ask && !view.busy && !view.shown.length);
   el.classList.toggle("asking", !!view.ask);
   el.classList.toggle("wide", wide);
-  // The strip the question came from, marked in place (#245's L-A2).
-  const marked = view.ask && view.ask.channel;
-  for (const strip of document.querySelectorAll(".strip")) strip.classList.toggle("asking", !!marked && strip.dataset.channel === marked);
+  // The strips questions came from, marked in place (#245's L-A2): every
+  // one still waiting, the newest's and the older ones' in "+n".
+  const marked = new Set([view.ask, ...view.more.asks].filter((a) => a && a.channel).map((a) => a.channel));
+  for (const strip of document.querySelectorAll(".strip")) strip.classList.toggle("asking", marked.has(strip.dataset.channel));
 }
 
-// The zone's element: the messages, then Undo, which acts on them.
+// The zone's element: the messages, then Undo, which acts on them. It takes
+// the focus itself (`tabindex -1`, never in the tab order) when what had it
+// has gone, so a key never lands on the page's body, nor on Undo.
 function activityFrame(undo) {
   const actMsg = h("div", { class: "act-msg" });
-  const activity = h("div", { class: "activity", role: "region", "aria-label": "Activity" }, actMsg, undo);
+  const activity = h("div", { class: "activity", role: "region", "aria-label": "Activity", tabindex: "-1" }, actMsg, undo);
   return { activity, actMsg };
+}
+
+// The control with the focus in the zone's messages, by what it is: the
+// result or question it is in (its id or key) and the button (its class and
+// words), never the element, which a redraw replaces (#245's review: a Yes
+// focused fell to the page's body when another message came in).
+function actFocus(msg) {
+  const active = document.activeElement;
+  if (!active || !msg.contains(active)) return null;
+  const home = active.closest("[data-act], [data-ask], .act-list");
+  return { home: home ? home.dataset.act || home.dataset.ask || "list" : null, cls: active.className,
+    text: active.textContent, more: active.classList.contains("act-more") };
+}
+
+function actRefocus(regions, held) {
+  const msg = regions.actMsg;
+  const homes = held.home === null ? [msg]
+    : [...msg.querySelectorAll("[data-act], [data-ask]")].filter((e) => (e.dataset.act || e.dataset.ask) === held.home);
+  for (const home of homes) {
+    const same = [...home.querySelectorAll("button")].find((b) => b.className === held.cls && b.textContent === held.text)
+      || (held.more ? msg.querySelector(".act-more") : null);
+    if (same && !same.disabled) { same.focus({ preventScroll: true }); return; }
+  }
+  // What had it has gone (answered, dismissed): the zone keeps it.
+  regions.activity.focus({ preventScroll: true });
 }
 
 document.addEventListener("keydown", (event) => {
@@ -1809,11 +1852,12 @@ function armNotices() {
 
 // Where the focus goes when what held it leaves with its notice: from the
 // activity zone (#245), where every notice is now, to what made it: the
-// record bar's Record, the takes folder's Open folder, else Undo. Never left
-// on the page's body.
+// record bar's Record, the takes folder's Open folder, Undo for Undo's own
+// words, and the zone itself for the rest (#245's review: a lost focus sent
+// to Undo made the next Enter undo). Never left on the page's body.
 function focusAfterNotice(where) {
   const tries = where === "record" ? ["button.record-act.rec", "button.record-act.stop"]
-    : where === "takes" ? ["button.open-takes"] : where ? ["button.undo"] : [];
+    : where === "takes" ? ["button.open-takes"] : where === "undo" ? ["button.undo"] : [];
   for (const selector of tries) {
     const el = document.querySelector(selector);
     if (el && !el.disabled) { el.focus(); if (document.activeElement === el) return; }
@@ -1832,13 +1876,18 @@ function expireNotices() {
     const item = held && held.closest(".act-item");
     const where = held && (held.closest(".record-bar") || (item && item.classList.contains("record-result")) ? "record"
       : held.closest("section.takes") || (item && item.classList.contains("open-result")) ? "takes"
-        : held.closest(".activity") ? "undo" : null);
+        : held.closest(".undo-slot") || (item && item.classList.contains("undo-said")) ? "undo"
+          : held.closest(".activity") ? "activity" : null);
     if (undoDone) state.undo.said = null;
     if (openDone) state.takesOpen.result = null;
     if (recordDone) state.recordResult = null;
     state.elsewhere = state.elsewhere.filter((e) => !R.noticeDone(e, now));
     render();
-    if (held && !held.isConnected) focusAfterNotice(where);
+    if (held && !held.isConnected) {
+      focusAfterNotice(where);
+      const zone = state.regions && state.regions.activity;
+      if (where === "activity" && zone && document.activeElement === document.body) zone.focus({ preventScroll: true });
+    }
   }
   armNotices();
 }
@@ -2276,8 +2325,14 @@ function helpAnchor(which, cls = "help-link") {
 function rackFrame() {
   const regions = {
     title: h("h1", { class: "rig-name" }),
-    status: h("button", { type: "button", class: "status-slot", "aria-expanded": "false",
-      onclick: () => { state.statusOpen = !state.statusOpen; render(); } }),
+    // A plain line on a laptop; on a phone a tap (`statusRegion`).
+    status: h("span", { class: "status-slot",
+      onclick: () => { if (!matchMedia(WIDE).matches) { state.statusOpen = !state.statusOpen; render(); } },
+      onkeydown: (event) => {
+        if ((event.key === "Enter" || event.key === " ") && !matchMedia(WIDE).matches) {
+          event.preventDefault(); state.statusOpen = !state.statusOpen; render();
+        }
+      } }),
     lock: h("span", { class: "lock-slot" }),
     undo: h("span", { class: "undo-slot" }),
     problems: h("span", { class: "problems", "aria-live": "polite" }),
@@ -2991,8 +3046,9 @@ function drawAddSlot(parts, track, slot) {
   const refused = now ? null : state.addRefused.get(parts.key) || null;
   if (refused) {
     const key = parts.key;
-    actResult({ id: actId(`${key}\u0000${refused}`, "a"), cls: "add-said", ok: false, what: slot.label.replace(/…$/, ""),
-      title: R.shortSaid(refused), detail: refused, channel: track.isMaster ? R.MASTER : track.name,
+    // Each refusal its own (an object): one said again is new, with its own time.
+    actResult({ id: actId(refused, "a"), cls: "add-said", ok: false, what: "Add",
+      title: "Not added", detail: refused.reason, channel: track.isMaster ? R.MASTER : track.name,
       dismiss: () => { state.addRefused.delete(key); render(); parts.button.focus({ preventScroll: true }); } });
   }
 }
@@ -3120,7 +3176,7 @@ async function addFrom(entry) {
     }
     state.adding.delete(key);
     // Said at its place; where that is not on the page now, in the boxes.
-    if (placeOnPage(key)) state.addRefused.set(key, outcome.reason);
+    if (placeOnPage(key)) state.addRefused.set(key, { reason: outcome.reason });
     else fail(`Not added: ${shown}`, { reason: outcome.reason.replace(/^Not added: /, "") });
   }, () => {
     state.adding.delete(key);
@@ -3324,7 +3380,12 @@ function renderRack(regions, model, unsaved, status) {
 function statusRegion(regions, status) {
   patch(regions.status, JSON.stringify(status), () => statusLine(status));
   regions.status.title = status.detail;
-  regions.status.setAttribute("aria-expanded", String(state.statusOpen));
+  // A button on a phone only, where it opens the rest; on a laptop all of it
+  // is in view, and the line is no control and not in the tab order.
+  const tap = !matchMedia(WIDE).matches;
+  for (const [k, v] of [["role", "button"], ["tabindex", "0"], ["aria-expanded", String(state.statusOpen)]]) {
+    if (tap) regions.status.setAttribute(k, v); else regions.status.removeAttribute(k);
+  }
   regions.header.classList.toggle("status-open", state.statusOpen);
 }
 
@@ -4162,13 +4223,19 @@ function pedalsRegion(el) {
   if (shown && pu.result) {
     actResult({ id: actId(pu.result, "q"), cls: "rigfile-result pedal-result", ...rigFileWords(pu.result),
       dismiss: () => { pu.result = null; render(); }, extra: rigFileHint(pu.result),
-      offer: pu.result.ok && pu.result.offer ? { label: pu.result.offer.op === "restart" ? "Restart" : pu.result.offer.label,
+      offer: pu.result.ok && pu.result.offer && !pu.restartConfirm ? { label: pu.result.offer.op === "restart" ? "Restart" : pu.result.offer.label,
         cls: "rig-act primary offer", disabled: !!state.pending, run: () => { pu.restartConfirm = true; render(); } } : null });
   }
-  if (shown && behind) {
-    actResult({ id: actId(`${behind.text}\u0000${behind.title}`, "b"), cls: "rigfile-result pedal-behind", ok: true,
+  // One object an appearance, so each time it comes back it is new.
+  const shownBehind = shown && behind ? behind : null;
+  if (!shownBehind) pu.behindSaid = null;
+  else if (!pu.behindSaid || pu.behindSaid.text !== behind.text || pu.behindSaid.title !== behind.title) {
+    pu.behindSaid = { text: behind.text, title: behind.title };
+  }
+  if (shownBehind) {
+    actResult({ id: actId(pu.behindSaid, "b"), cls: "rigfile-result pedal-behind", ok: true,
       title: "Pedals", said: behind.text, detail: behind.title,
-      offer: { label: behind.offer.label, cls: "rig-act primary offer", disabled: !!state.pending,
+      offer: pu.restartConfirm ? null : { label: behind.offer.label, cls: "rig-act primary offer", disabled: !!state.pending,
         run: () => { pu.restartConfirm = true; render(); } } });
   }
   if (shown && pu.restartConfirm) {
@@ -4618,7 +4685,8 @@ function stripsRegion(el, model, unsaved) {
     const result = w.result;
     actResult({ id: actId(result, "w"), cls: "rigfile-result wiring-result", channel: result.channel || null,
       ...rigFileWords(result), extra: rigFileHint(result), dismiss: () => { w.result = null; render(); },
-      offer: result.ok && result.offer ? { label: result.offer.op === "restart" ? "Restart" : result.offer.label,
+      // While its "Restart?" is asked, the question is the one place for it.
+      offer: result.ok && result.offer && !w.restartConfirm ? { label: result.offer.op === "restart" ? "Restart" : result.offer.label,
         cls: "rig-act primary offer", disabled: !!state.pending, run: () => { w.restartConfirm = true; render(); } } : null });
   }
   if (w.restartConfirm) {
@@ -4733,7 +4801,7 @@ function loadActivity(view) {
     const { channel, choice } = lu;
     const rig = view.rig;
     const off = !!lu.pending || !!state.removeUi.pending || !!state.pending || !!locked;
-    actAsk({ key: "load-amp", label: "Load", q: "Restart?", channel, pending: off, cls: "load-amp-ask", sig: [rig, channel, choice],
+    actAsk({ key: `load-amp ${rig} ${channel}`, label: "Load", q: "Restart?", channel, pending: off, cls: "load-amp-ask", sig: [rig, channel, choice],
       detail: `Load ${choice.rig} / ${choice.channel} onto ${channel} with ${choice.rig}'s amp: ${rig} gains that amp, and restarts with it.`,
       yes: () => { lu.ampAsk = false; loadChannel(channel, rig, choice, { withAmp: true }); },
       no: () => { lu.ampAsk = false; render(); } });
@@ -4828,10 +4896,10 @@ function removeActivity(view, filed) {
     const result = ru.result && ru.result.channel === c.name && ru.result.rig === rig ? ru.result : null;
     if (!result) {
       const goes = R.channelGoes(c, midiControls());
-      actAsk({ key: "remove-channel", q: "Remove?", channel: c.name, pending: busy || !!locked, cls: "remove-ask", sig: [rig, c.name],
+      actAsk({ key: `remove-channel ${rig} ${c.name}`, q: "Remove?", channel: c.name, pending: busy || !!locked, cls: "remove-ask", sig: [rig, c.name],
         detail: goes.title || goes.words, yes: () => ask({}), no: close });
     } else if (result.ask === "restart") {
-      actAsk({ key: "remove-restart", label: "Remove", q: "Restart?", channel: c.name, pending: busy || !!locked, cls: "remove-ask",
+      actAsk({ key: `remove-restart ${rig} ${c.name}`, label: "Remove", q: "Restart?", channel: c.name, pending: busy || !!locked, cls: "remove-ask",
         sig: [rig, c.name, result.offer], detail: result.reason || null, yes: () => ask(result.offer), no: close });
     } else {
       actResult({ id: actId(result, "m"), cls: "save-result remove-result", ok: !!result.ok, title: result.title, channel: c.name,

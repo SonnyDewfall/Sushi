@@ -532,7 +532,7 @@ def test_the_master_and_each_channels_volume_work_on_the_stage_once_unlocked(bro
     width = p.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
     assert width[0] <= width[1], "it fits a phone"
     # No confirm was asked for.
-    expect(p.locator(".activity .confirm")).to_have_count(0)
+    expect(p.locator(".confirm")).to_have_count(0)
     page.close()
 
 
