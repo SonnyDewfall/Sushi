@@ -499,8 +499,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 /* No list (#189): the line naming the folder, Open folder on the laptop, and what an open said. */
 .takes-dir { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
 .takes .open-takes { align-self: flex-start; }
-.takes-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.takes-acts { display: flex; margin-top: -4px; }
 .takes-acts .rig-act { flex: 0 0 auto; }
+.side .take-player { margin-top: 8px; }
 
 /* ---------------------------------------------------------------- the record bar's meters, space and takes (#139) */
 /* One meter a stem, as the canvas's Record frame draws them: a thin bar on

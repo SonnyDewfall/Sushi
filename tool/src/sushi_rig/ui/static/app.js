@@ -2365,6 +2365,8 @@ function rackFrame() {
     changes: h("div", { class: "changes-list" }),
     save: h("section", { class: "save", "aria-label": "Save" }),
     takes: h("section", { class: "takes", "aria-label": "Takes" }),
+    // Takes (#139): the toggle, under the folder's section, its own region.
+    takesPlay: h("div", { class: "takes-acts" }),
     player: h("section", { class: "take-player", id: "take-player", "aria-label": "Takes", hidden: true }),
     broken: h("section", { class: "broken", role: "alert", "aria-label": "Broken", hidden: true }),
     drawer: h("div", { class: "drawer", hidden: true }),
@@ -2402,7 +2404,7 @@ function rackFrame() {
       h("div", { class: "rack-main" }, regions.tabs, regions.panel),
       h("div", { class: "side files", "aria-label": "Rigs and files" }, regions.rigs,
         h("aside", { class: "changes", "aria-label": "Undo, save and revert" }, regions.changes, regions.save),
-        regions.takes, regions.channels)),
+        regions.takes, regions.takesPlay, regions.channels)),
     // The Library drawer (#130): over the page, not in a column, so opening
     // it moves nothing on the rack, and a chain changing under it moves
     // nothing in it.
@@ -3415,7 +3417,8 @@ function renderRack(regions, model, unsaved, status) {
   renderChanges(regions.changes);
   saveRegion(regions.save, unsaved);
   takesRegion(regions.takes);
-  playerRegion(regions.player, regions.takes);
+  patch(regions.takesPlay, JSON.stringify(state.player.open), () => takesButton());
+  playerRegion(regions.player, regions.takesPlay);
   brokenRegion(regions.broken, regions.frame);
   activityRegion(regions);
 }
@@ -3910,12 +3913,10 @@ function nameField(view) {
 function takesRegion(el) {
   const view = R.takesFolder(state.health, state.takesOpen);
   const result = view.result;
-  patch(el, JSON.stringify([view, state.player.open]), () => [
+  patch(el, JSON.stringify(view), () => [
     h("h2", {}, "TAKES"),
     view.dir ? h("p", { class: "takes-dir", title: "Takes go in this folder" }, h("code", {}, view.dir)) : null,
-    h("div", { class: "takes-acts" },
-      view.button ? h("button", { class: "rig-act open-takes", disabled: view.button.disabled, onclick: openTakesFolder }, view.button.label) : null,
-      takesButton()),
+    view.button ? h("button", { class: "rig-act open-takes", disabled: view.button.disabled, onclick: openTakesFolder }, view.button.label) : null,
     helpAnchor("takes"),
   ]);
   // What Open folder said, in the activity zone (#245).
