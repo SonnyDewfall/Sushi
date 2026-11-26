@@ -7863,3 +7863,41 @@ recorder's meter disarming, the room left, a stem played in Chromium's audio
 element and saved). **Not run on the rig**: no level has been read from a
 live PipeWire, the recorder process has not measured on the rig laptop, and
 nothing has been played from a phone's own browser. *(2026-11-26)*
+
+**A tuner inside the rig: the spike (#58).** Whether `fmit` can give way to
+an LV2 tuner on the guitar channel, read by the page. A spike,
+[`tool/spikes/tuner/`](tool/spikes/tuner/README.md); no rig code changed.
+Run in CI's rig image built here with the real Sushi 1.3.0, on JACK's dummy
+driver at 48 kHz and a 256 period, with a 110 Hz sine and steps of 5 cents.
+**Candidates**: x42's tuner (`tuna#one`/`#two`) and GxTuner (`gxtuner#tuner`)
+come with packages the rig installs; neither is in `plugin-manifest.txt`.
+**x42's tuner cannot be hosted**: Sushi aborts ("stack smashing detected")
+as soon as it hears a note, because the plugin writes 12-byte MTS SysEx and
+Sushi copies every MIDI event a plugin writes into a 4-byte array
+(`to_midi_data_byte`'s loop runs to `std::max(size, 4)`; the smashed frame
+held the SysEx, under gdb; the same code in 1.4.0's source). **GxTuner
+works, and its reading can be read**: Sushi registers output control ports
+as parameters (`Direction::OUTPUT`, not automatable), and
+`get_parameter_value_in_domain` reads `FREQ` in hertz from the plugin's
+buffer; 110.000 for 110 Hz, +4.99 to +5.01 cents for +5, the low E and E4
+right to 0.02 cents, 0 in silence. **How fast**: the value changes 11.3
+times a second however fast it is read; from a step to a reading within a
+cent that stays, 83–175 ms in 120 steps (median 126–131) polled at 100 Hz,
+96–201 ms by notifications; three of four earlier runs had a slowest step of
+0.5–1.3 s, not explained. At 10–30 reads a second on a held connection, a read
+0.6–0.9 ms (median), 0.4–1.3 points of a core in the reader and 0.2–0.7 in
+Sushi; a fresh connection a read (what the agent's `Live` does) 3.4–4.5 ms
+and 6.5–14.5% of a core. **Cost** (Sushi's timings, a 64-frame chunk is 1333
+us): running 4.3–5.0 us a chunk, about the rig's compressor; bypassed
+0.19–0.27 us, Sushi's CPU at its no-tuner level (3.5–3.7% against
+3.6–3.9%); the guitar passes unchanged either way. A bypassed tuner holds
+its last reading, and is right 179–191 ms after it is engaged again.
+**Recommended**: GxTuner first on the guitar channel, put there by the
+compiler, bypassed except while a page tunes, on a lease, read on one held
+connection at about 10 Hz and served to the page as the record meters are
+(#254). Not a tuning state (it would spend a switch to save nothing); a
+detector on a tap is the fallback, if GxTuner cannot track a string through
+the amp, which sits in front of the channel. **Not measured**: the rig, its
+PipeWire and realtime scheduling (`sushi-rig top` needs PipeWire), a real
+string, the amp, the agent and the page; Sushi on JACK here needed a
+stand-in for ALSA's sequencer, preloaded into Sushi alone. *(2026-11-26)*

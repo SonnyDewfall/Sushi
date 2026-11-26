@@ -1,0 +1,12 @@
+{
+ "plugin": "http://gareus.org/oss/lv2/tuna#one",
+ "period": 256,
+ "error": "SushiUnavailableError: ('failed to connect to all addresses; last error: UNKNOWN: ipv4:127.0.0.1:60859: Failed to connect to remote host: Connection refused', 'With processor name: tuner')",
+ "sushi_exit": -6,
+ "sushi_said": [
+  "SUSHI - Copyright 2017-2023 Elk Audio AB, Stockholm",
+  "SUSHI is licensed under the Affero GPL 3.0. Source code is available at github.com/elk-audio",
+  "*** stack smashing detected ***: terminated"
+ ],
+ "kept": "/tmp/tuner-probe-xn5yjzih"
+}

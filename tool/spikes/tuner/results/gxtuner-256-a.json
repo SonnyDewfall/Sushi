@@ -1,0 +1,516 @@
+{
+ "plugin": "http://guitarix.sourceforge.net/plugins/gxtuner#tuner",
+ "period": 256,
+ "ports": [
+  {
+   "id": 0,
+   "name": "FREQ",
+   "automatable": false,
+   "min": 0.0,
+   "max": 1000.0
+  },
+  {
+   "id": 1,
+   "name": "REFFREQ",
+   "automatable": true,
+   "min": 427.0,
+   "max": 453.0
+  },
+  {
+   "id": 2,
+   "name": "Tuner Mode",
+   "automatable": true,
+   "min": 0.0,
+   "max": 54.0
+  },
+  {
+   "id": 3,
+   "name": "TEMPERAMENT",
+   "automatable": true,
+   "min": 0.0,
+   "max": 4.0
+  },
+  {
+   "id": 4,
+   "name": "THRESHOLD",
+   "automatable": true,
+   "min": -60.0,
+   "max": 4.0
+  },
+  {
+   "id": 5,
+   "name": "MAXL",
+   "automatable": false,
+   "min": 0.0,
+   "max": 1000.0
+  },
+  {
+   "id": 6,
+   "name": "RESET",
+   "automatable": true,
+   "min": -10.0,
+   "max": 10.0
+  },
+  {
+   "id": 7,
+   "name": "LEVEL",
+   "automatable": true,
+   "min": -60.0,
+   "max": 4.0
+  },
+  {
+   "id": 8,
+   "name": "CHANNELL",
+   "automatable": true,
+   "min": 0.0,
+   "max": 16.0
+  },
+  {
+   "id": 9,
+   "name": "MIDI_ON",
+   "automatable": true,
+   "min": 0.0,
+   "max": 1.0
+  },
+  {
+   "id": 10,
+   "name": "FASTNOTE",
+   "automatable": true,
+   "min": 0.0,
+   "max": 1.0
+  },
+  {
+   "id": 11,
+   "name": "PITCHBEND",
+   "automatable": true,
+   "min": 0.0,
+   "max": 1.0
+  },
+  {
+   "id": 12,
+   "name": "SINGLENOTE",
+   "automatable": true,
+   "min": 0.0,
+   "max": 1.0
+  },
+  {
+   "id": 13,
+   "name": "BPM",
+   "automatable": true,
+   "min": 0.0,
+   "max": 360.0
+  },
+  {
+   "id": 14,
+   "name": "VELOCITY",
+   "automatable": true,
+   "min": 0.0,
+   "max": 127.0
+  },
+  {
+   "id": 15,
+   "name": "VERIFY",
+   "automatable": true,
+   "min": 1.0,
+   "max": 12.0
+  },
+  {
+   "id": 16,
+   "name": "GATE",
+   "automatable": true,
+   "min": 0.0,
+   "max": 1.0
+  },
+  {
+   "id": 17,
+   "name": "SYNTHFREQ",
+   "automatable": true,
+   "min": 30.0,
+   "max": 1000.0
+  },
+  {
+   "id": 18,
+   "name": "GAIN",
+   "automatable": true,
+   "min": 0.0,
+   "max": 1.0
+  }
+ ],
+ "reading": [
+  {
+   "case": "A2",
+   "hz": 110.0,
+   "want": "A2 +0.00c",
+   "read_hz_last": 110.0,
+   "read_note": "A2",
+   "cents_mean": 0.0,
+   "cents_min": -0.0,
+   "cents_max": 0.0,
+   "zero_reads": 0,
+   "outputs": {
+    "FREQ": 110.0,
+    "MAXL": 0.341
+   }
+  },
+  {
+   "case": "A2 +5c",
+   "hz": 110.318,
+   "want": "A2 +5.00c",
+   "read_hz_last": 110.318,
+   "read_note": "A2",
+   "cents_mean": 5.0,
+   "cents_min": 4.99,
+   "cents_max": 5.0,
+   "zero_reads": 0,
+   "outputs": {
+    "FREQ": 110.318,
+    "MAXL": 0.341
+   }
+  },
+  {
+   "case": "A2 -20c",
+   "hz": 108.737,
+   "want": "A2 -20.00c",
+   "read_hz_last": 108.737,
+   "read_note": "A2",
+   "cents_mean": -19.33,
+   "cents_min": -20.0,
+   "cents_max": -5.21,
+   "zero_reads": 0,
+   "outputs": {
+    "FREQ": 108.737,
+    "MAXL": 0.392
+   }
+  },
+  {
+   "case": "E2",
+   "hz": 82.407,
+   "want": "E2 +0.00c",
+   "read_hz_last": 82.407,
+   "read_note": "E2",
+   "cents_mean": -0.0,
+   "cents_min": -0.0,
+   "cents_max": 0.0,
+   "zero_reads": 0,
+   "outputs": {
+    "FREQ": 82.407,
+    "MAXL": 0.392
+   }
+  },
+  {
+   "case": "E2 +12c",
+   "hz": 82.98,
+   "want": "E2 +12.00c",
+   "read_hz_last": 82.98,
+   "read_note": "E2",
+   "cents_mean": 12.0,
+   "cents_min": 12.0,
+   "cents_max": 12.0,
+   "zero_reads": 0,
+   "outputs": {
+    "FREQ": 82.98,
+    "MAXL": 0.392
+   }
+  },
+  {
+   "case": "E4",
+   "hz": 329.628,
+   "want": "E4 +0.00c",
+   "read_hz_last": 329.627,
+   "read_note": "E4",
+   "cents_mean": 0.0,
+   "cents_min": -0.01,
+   "cents_max": 0.01,
+   "zero_reads": 0,
+   "outputs": {
+    "FREQ": 329.626,
+    "MAXL": 0.392
+   }
+  },
+  {
+   "case": "silence",
+   "outputs": {
+    "FREQ": 0.0,
+    "MAXL": 0.392
+   }
+  }
+ ],
+ "latency": {
+  "steps": 40,
+  "hold_s": 1.5,
+  "tolerance_cents": 1.0,
+  "xruns": 66,
+  "poll": {
+   "settled": 40,
+   "of": 40,
+   "median_ms": 125.6,
+   "p90_ms": 165.5,
+   "min_ms": 85.5,
+   "max_ms": 1258.8,
+   "reads_per_s": 3674.7
+  },
+  "notifications": {
+   "settled": 40,
+   "of": 40,
+   "median_ms": 143.8,
+   "p90_ms": 180.5,
+   "min_ms": 94.9,
+   "max_ms": 1265.2,
+   "per_s": 10.0,
+   "count": 630
+  },
+  "poll_cents_in_last_300ms_of_each_step": {
+   "n": 44330,
+   "nan": 0
+  }
+ },
+ "rates": [
+  {
+   "mode": "held",
+   "asked_hz": 0.0,
+   "reads_per_s": 0.0,
+   "probe_cpu_pct": 2.0,
+   "sushi_cpu_pct": 4.4,
+   "xruns": 0
+  },
+  {
+   "mode": "held",
+   "asked_hz": 10.0,
+   "reads_per_s": 10.0,
+   "probe_cpu_pct": 2.6,
+   "sushi_cpu_pct": 4.6,
+   "xruns": 0,
+   "read_ms_median": 0.916,
+   "read_ms_p99": 1.422,
+   "cents_mean": 5.0,
+   "cents_sd": 0.003,
+   "cents_min": 4.994,
+   "cents_max": 5.005,
+   "no_reading": 0,
+   "off_by_over_1c": 0
+  },
+  {
+   "mode": "held",
+   "asked_hz": 20.0,
+   "reads_per_s": 20.0,
+   "probe_cpu_pct": 3.0,
+   "sushi_cpu_pct": 5.0,
+   "xruns": 0,
+   "read_ms_median": 0.783,
+   "read_ms_p99": 1.625,
+   "cents_mean": 5.0,
+   "cents_sd": 0.003,
+   "cents_min": 4.994,
+   "cents_max": 5.005,
+   "no_reading": 0,
+   "off_by_over_1c": 0
+  },
+  {
+   "mode": "held",
+   "asked_hz": 30.0,
+   "reads_per_s": 30.0,
+   "probe_cpu_pct": 3.0,
+   "sushi_cpu_pct": 4.8,
+   "xruns": 0,
+   "read_ms_median": 0.595,
+   "read_ms_p99": 1.076,
+   "cents_mean": 5.0,
+   "cents_sd": 0.003,
+   "cents_min": 4.994,
+   "cents_max": 5.005,
+   "no_reading": 0,
+   "off_by_over_1c": 0
+  },
+  {
+   "mode": "held",
+   "asked_hz": 100.0,
+   "reads_per_s": 100.0,
+   "probe_cpu_pct": 5.3,
+   "sushi_cpu_pct": 6.4,
+   "xruns": 0,
+   "read_ms_median": 0.515,
+   "read_ms_p99": 1.225,
+   "cents_mean": 5.0,
+   "cents_sd": 0.003,
+   "cents_min": 4.994,
+   "cents_max": 5.006,
+   "no_reading": 0,
+   "off_by_over_1c": 0
+  },
+  {
+   "mode": "held",
+   "asked_hz": "max",
+   "reads_per_s": 3867.3,
+   "probe_cpu_pct": 70.9,
+   "sushi_cpu_pct": 47.2,
+   "xruns": 2,
+   "read_ms_median": 0.237,
+   "read_ms_p99": 0.471,
+   "cents_mean": 4.948,
+   "cents_sd": 0.542,
+   "cents_min": -0.696,
+   "cents_max": 5.005,
+   "no_reading": 0,
+   "off_by_over_1c": 353
+  },
+  {
+   "mode": "per-read",
+   "asked_hz": 10.0,
+   "reads_per_s": 10.0,
+   "probe_cpu_pct": 7.2,
+   "sushi_cpu_pct": 4.9,
+   "xruns": 5,
+   "read_ms_median": 4.467,
+   "read_ms_p99": 7.05,
+   "cents_mean": 4.98,
+   "cents_sd": 0.671,
+   "cents_min": -0.985,
+   "cents_max": 7.789,
+   "no_reading": 0,
+   "off_by_over_1c": 3
+  },
+  {
+   "mode": "per-read",
+   "asked_hz": 20.0,
+   "reads_per_s": 20.0,
+   "probe_cpu_pct": 11.3,
+   "sushi_cpu_pct": 5.7,
+   "xruns": 3,
+   "read_ms_median": 4.227,
+   "read_ms_p99": 7.879,
+   "cents_mean": 5.0,
+   "cents_sd": 0.007,
+   "cents_min": 4.953,
+   "cents_max": 5.036,
+   "no_reading": 0,
+   "off_by_over_1c": 0
+  },
+  {
+   "mode": "per-read",
+   "asked_hz": 30.0,
+   "reads_per_s": 30.0,
+   "probe_cpu_pct": 14.5,
+   "sushi_cpu_pct": 5.9,
+   "xruns": 6,
+   "read_ms_median": 3.807,
+   "read_ms_p99": 6.795,
+   "cents_mean": 5.0,
+   "cents_sd": 0.003,
+   "cents_min": 4.994,
+   "cents_max": 5.006,
+   "no_reading": 0,
+   "off_by_over_1c": 0
+  }
+ ],
+ "dsp": {
+  "chunk_budget_us": 1333.3,
+  "level_in_out_dbfs_compressor_bypassed": {
+   "tuner_running": [
+    -15.05,
+    -15.05
+   ],
+   "tuner_bypassed": [
+    -15.05,
+    -15.05
+   ]
+  },
+  "running": {
+   "tuner": {
+    "avg_us": 4.68,
+    "max_us": 228.31,
+    "avg_of_chunk_pct": 0.351
+   },
+   "compressor": {
+    "avg_us": 4.9,
+    "max_us": 2476.51,
+    "avg_of_chunk_pct": 0.368
+   },
+   "track": {
+    "avg_us": 9.88,
+    "max_us": 2481.23
+   },
+   "sushi_threads_cpu_pct": {
+    "sushi.bin/50": 1.4,
+    "sushi.bin/49": 1.4,
+    "sushi.bin/48": 1.0,
+    "sushi.bin/35": 0.1,
+    "event_engine/43": 0.1
+   },
+   "xruns": 0,
+   "engine": {
+    "avg_of_chunk_pct": 0.786,
+    "max_of_chunk_pct": 186.173
+   },
+   "sushi_cpu_pct": 4.0,
+   "reads_hz": 110.0
+  },
+  "bypassed": {
+   "tuner": {
+    "avg_us": 0.23,
+    "max_us": 6.33,
+    "avg_of_chunk_pct": 0.017
+   },
+   "compressor": {
+    "avg_us": 4.07,
+    "max_us": 508.21,
+    "avg_of_chunk_pct": 0.305
+   },
+   "track": {
+    "avg_us": 4.57,
+    "max_us": 509.41
+   },
+   "sushi_threads_cpu_pct": {
+    "sushi.bin/50": 1.4,
+    "sushi.bin/49": 1.4,
+    "sushi.bin/48": 0.6,
+    "event_engine/42": 0.2,
+    "event_engine/41": 0.1
+   },
+   "xruns": 0,
+   "engine": {
+    "avg_of_chunk_pct": 0.391,
+    "max_of_chunk_pct": 38.331
+   },
+   "sushi_cpu_pct": 3.7,
+   "reads_hz_after_a_move_to_+5c": 110.0
+  },
+  "unbypass_to_right_ms": 189.8,
+  "unbypass_cents_every_100ms": [
+   -0.0,
+   -6.48,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   4.99,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0,
+   5.0
+  ]
+ },
+ "sushi_exit": null,
+ "sushi_said": [
+  "SUSHI - Copyright 2017-2023 Elk Audio AB, Stockholm",
+  "SUSHI is licensed under the Affero GPL 3.0. Source code is available at github.com/elk-audio"
+ ]
+}
