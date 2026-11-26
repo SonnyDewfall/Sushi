@@ -3764,3 +3764,185 @@ export function shortSaid(text, max = 40, heading = null) {
   if (cut.length > max) cut = `${cut.slice(0, max).replace(/\s+\S*$/, "")}…`;
   return cut;
 }
+
+// ---------------------------------------------------------------- the activity zone (#245)
+// The top of each screen is three zones: the rig's status (read only), the
+// activity (what happened and what waits for an answer), and the controls
+// (the master, the Lock, the links). The activity is decided here; app.js
+// gathers what each region has to say (`items`, the results standing; `asks`,
+// the questions open) and draws what `activityView` picks.
+//
+// An item is `{id, ok, title, said, detail, channel, ...}`: `id` stays the
+// same while it is the same result, so it keeps its place and its time. An
+// ask is `{key, q, channel, ...}`. When each was first seen is the page's
+// (`activitySeen`), a counter that only grows, so the newest is the one seen
+// last, never a clock that can step back.
+
+// How many past results the "+n" list keeps.
+export const ACTIVITY_KEEP = 20;
+// How many standing results the bar shows: on a laptop the last few side by
+// side, on a phone only the latest; fewer beside a question or a busy line.
+export const ACTIVITY_SHOWN = { wide: 3, narrow: 1 };
+
+const newestFirst = (a, b) => (b.n ?? 0) - (a.n ?? 0);
+
+// What the bar shows: the newest question (`ask`, null for none), what is
+// running (`busy`), the newest results (`shown`), and the rest (`more`: the
+// older questions, still answerable, the results not shown, and the past,
+// `history`, less any that stand again), with their count.
+export function activityView(items, asks, history, { wide = true, busy = null } = {}) {
+  const open = [...asks].sort(newestFirst);
+  const ask = open[0] || null;
+  const standing = [...items].sort(newestFirst);
+  const room = wide ? ACTIVITY_SHOWN.wide - (ask || busy ? 1 : 0) : (ask || busy ? 0 : ACTIVITY_SHOWN.narrow);
+  const shown = standing.slice(0, room);
+  const now = new Set(standing.map((i) => i.id));
+  const past = history.filter((h) => !now.has(h.id));
+  const more = { asks: open.slice(1), items: standing.slice(room), past };
+  return { ask, busy: busy || null, shown, more, count: more.asks.length + more.items.length + past.length };
+}
+
+// What is kept of a result once it has gone (dismissed, expired, replaced):
+// its words, for the "+n" list, and never its buttons.
+export function activitySnap(item) {
+  return { id: item.id, ok: item.ok !== false, title: item.title, said: item.said || null, detail: item.detail || null,
+    channel: item.channel || null, elsewhere: !!item.elsewhere };
+}
+
+// The results and questions seen at this draw, against those of the last:
+// each new one is numbered (`counter` on) and timed (`now`, wall clock, for
+// the time shown), one seen before keeps its number and time (`times`, which
+// outlives a result's absence, so one drawn only on the rack is not new
+// again on coming back to it). Returns `{seen, times, gone, counter}`:
+// `gone`, the results seen last time and not now, newest first, as kept.
+export function activitySeen(before, items, asks, now, counter, times = new Map()) {
+  const seen = { items: new Map(), asks: new Map() };
+  const kept = new Map(times);
+  let n = counter;
+  for (const item of items) {
+    const t = kept.get(item.id) || { n: ++n, at: now };
+    // Moved to the end, so what is still seen is the last to be let go.
+    kept.delete(item.id);
+    kept.set(item.id, t);
+    seen.items.set(item.id, { ...t, snap: activitySnap(item) });
+  }
+  // A question asked again is a new question: its time is its own.
+  for (const ask of asks) {
+    const was = before && before.asks.get(ask.key);
+    seen.asks.set(ask.key, was || { n: ++n, at: now });
+  }
+  const gone = [];
+  for (const [id, was] of before ? before.items : []) {
+    if (!seen.items.has(id)) gone.push({ ...was.snap, n: was.n, at: was.at });
+  }
+  // The times kept are bounded: the longest unseen go first, never one seen now.
+  for (const id of [...kept.keys()]) {
+    if (kept.size <= 200) break;
+    if (!seen.items.has(id)) kept.delete(id);
+  }
+  return { seen, times: kept, gone: gone.sort(newestFirst), counter: n };
+}
+
+// The past, with `gone` put in front, one entry an id, ACTIVITY_KEEP at most.
+export function activityRemember(history, gone) {
+  const out = [];
+  const ids = new Set();
+  for (const h of [...gone, ...history]) {
+    if (ids.has(h.id)) continue;
+    ids.add(h.id);
+    out.push(h);
+  }
+  return out.sort(newestFirst).slice(0, ACTIVITY_KEEP);
+}
+
+// What is running, in a word or two, or null: this page's lifecycle command
+// (as the picker said it, `rigPicker`'s busy), the agent's own (another
+// page's, a pedal's), then this page's other writes in flight.
+export function activityBusy({ pending = null, agentBusy = null, saving = false, undoing = false, amp = null,
+  ampAdd = false, loading = false, removing = false, writing = false, assigning = false, deleting = false } = {}) {
+  if (pending) return `${VERBS[pending.op]} ${pending.name || "the rig"}…`;
+  if (agentBusy) return `${agentBusy} is running`;
+  if (undoing) return "Undoing…";
+  if (saving) return "Saving…";
+  if (amp) return `Loading ${modelName(amp)}…`;
+  if (ampAdd) return "Adding amp…";
+  if (loading) return typeof loading === "string" ? `Loading onto ${loading}…` : "Loading…";
+  if (removing) return typeof removing === "string" ? `Removing ${removing}…` : "Removing…";
+  if (writing) return "Writing…";
+  if (assigning) return "Assigning…";
+  if (deleting) return "Deleting…";
+  return null;
+}
+// Changes made elsewhere (#242's pushes): the log (GET /live/log) does not
+// say who made a change, so the page says "elsewhere" of a change it did
+// not make itself. Each of its own writes' answers carries the entry the
+// agent logged for it (`answerEntry`), kept by its signature (`logSignature`);
+// a new entry in the log of the kinds below whose signature is not one of
+// those was made by another page, a pedal or the CLI. Knob, fader and
+// bypass moves are left out: a pedal makes them by the dozen.
+export const ELSEWHERE_OPS = ["rig", "save", "add", "remove", "move", "undo", "amp_model"];
+
+export function logSignature(entry) {
+  if (!entry || typeof entry.op !== "string") return null;
+  return `${entry.op}|${entry.at}|${JSON.stringify(entry.args ?? null)}`;
+}
+
+// The log entries a write's answer carries: `logged`, every entry the
+// request made (the agent adds it where the answer does not carry them
+// already: an Undo's, #245's review), and the one inline or under `entry`.
+export function answerEntries(body) {
+  const out = [];
+  if (body && typeof body === "object" && Array.isArray(body.logged)) {
+    for (const e of body.logged) if (e && typeof e.op === "string") out.push({ op: e.op, at: e.at, args: e.args });
+  }
+  const one = answerEntry(body);
+  if (one) out.push(one);
+  return out;
+}
+
+// The log entry a write's answer carries: inline (a live change's, an undo's)
+// or under `entry` (a switch's, a save's, a revert's), or null.
+export function answerEntry(body) {
+  if (!body || typeof body !== "object") return null;
+  if (body.entry && typeof body.entry === "object" && typeof body.entry.op === "string") return body.entry;
+  if (typeof body.op === "string" && "at" in body && "args" in body) return { op: body.op, at: body.at, args: body.args };
+  return null;
+}
+
+// The log entries new since `seen` (`{agent, next}`, the agent's start and
+// the number of the next entry to judge), of the kinds above, whose
+// signature is not in `mine`. The first log seen, and the first of an agent
+// started again, are where the page starts from, not news. An agent's start
+// not known (`agent` null) is no sign of another agent: only a known start
+// that differs from the last known one is. Returns `{seen, found}`.
+export function elsewhereSeen(seen, log, mine, agent = null) {
+  if (!log || !Array.isArray(log.log)) return { seen, found: [] };
+  const first = isNumber(log.first) ? log.first : 0;
+  const end = first + log.log.length;
+  const known = agent ?? (seen ? seen.agent : null);
+  const another = !!seen && agent !== null && seen.agent !== null && agent !== seen.agent;
+  if (!seen || another || end < seen.next) return { seen: { agent: known, next: end }, found: [] };
+  const found = [];
+  for (let i = Math.max(seen.next, first); i < end; i++) {
+    const entry = log.log[i - first];
+    if (entry && ELSEWHERE_OPS.includes(entry.op) && !(mine && mine.has(logSignature(entry)))) found.push({ index: i, entry });
+  }
+  return { seen: { agent: known, next: end }, found };
+}
+
+// What a change made elsewhere is said as: `{title, detail, channel}`, the
+// title a word (the UI's rule, #209), the rest its `detail`, for a hover.
+export function elsewhereSaid(entry) {
+  const a = (entry && entry.args) || {};
+  const said = (title, detail, channel = null) => ({ title, detail, channel });
+  switch (entry && entry.op) {
+    case "rig": return said("Switched", `Switched to ${a.rig}`);
+    case "save": return said("Saved", `Saved ${a.rig || a.file || "the rig"}`);
+    case "add": return said("Added", `Added ${a.name}`, a.track || null);
+    case "remove": return said("Removed", `Removed ${a.processor}`);
+    case "move": return said("Moved", `Moved ${a.processor} ${a.direction}`);
+    case "undo": return said("Undone", `Undone: ${a.of}`);
+    case "amp_model": return said("Amp", `Amp model: ${modelName(a.model)}`);
+    default: return said("Changed", entry && entry.op ? `Changed: ${entry.op}` : "Changed");
+  }
+}

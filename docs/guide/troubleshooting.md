@@ -3,9 +3,10 @@
 What to check when there is no sound, what to do after an update, and how to ask
 the rig what it thinks is wrong.
 
-One habit helps with all of it: **read the box**. When the rig refuses to do
-something, or a part of it stops, the page says so in a box near the top, in
-plain words, usually with what to do next.
+One habit helps with all of it: **read the top of the page**. When the rig
+refuses to do something, the bar under the header says so; when a part of it
+stops, a box at the top left says so, beside the rig's name. Each is a word
+or two; hover over it for the rest, usually with what to do next.
 
 ## No sound
 
@@ -15,7 +16,7 @@ Work down this list. Stop at the first thing that is wrong.
    start one ([Getting started](getting-started.md)). If it reads
    **Agent not answering**, see
    [The page says "Agent not answering"](#the-page-says-agent-not-answering).
-2. **Is there a box near the top?** If a part of the rig has stopped, it says
+2. **Is there a red box beside the rig's name?** If a part of the rig has stopped, it says
    which. See [A part of the rig has stopped](#a-part-of-the-rig-has-stopped).
 3. **Are the volumes up?** Check **MASTER** in the header and each channel's
    **VOLUME**. Silence shows as **−∞** ([Mixing](mixing.md)).
@@ -91,8 +92,8 @@ rig.
 
 The rig is several programs working together: the effects engine, the amp, the
 tuner, the connections between them, and the recorder. If one stops, a box
-appears saying which one **exited**, what that means for the sound, and where
-its log is. **Nothing restarts by itself.** That is on purpose: a rig that
+appears beside the rig's name saying which one **exited**; hover over it for
+what that means for the sound, and where its log is. **Nothing restarts by itself.** That is on purpose: a rig that
 quietly patched itself up could be running wrong without you knowing.
 
 To bring it back, restart the rig. Either:
@@ -146,8 +147,9 @@ itself: that is why the page always says **sound not measured**.
 
 ## Other things you may see
 
-- **A box starting "Not changed:", "Not moved:", "Not saved", "Not started:" or
-  "Not switched to".** The agent refused. The reason follows, in the box.
+- **"Not changed:", "Not moved:", "Not saved", "Not started:" or
+  "Not switched to" in the bar at the top.** The agent refused. The reason
+  follows, in a few words; hover for all of it.
 - **A box saying plugins "are not in" a plugins folder, or "cannot be
   loaded from" it.** The rig loads a plugin the rig's own plugins folder
   does not have yet, or has a broken copy of, so it was not started,

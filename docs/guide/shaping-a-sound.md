@@ -147,7 +147,7 @@ is on. With no rig running, the middle of the rack has
    same way.)
 3. At the foot of the row, click **Remove**. It goes at once, with no
    question. (While the page is locked it reads **Remove (locked)**, and
-   clicking it only says **Locked**.)
+   clicking it only says **Locked**, in the bar at the top.)
 
 The plugin and its settings leave the chain. **Undo** puts it back where it
 was, with the settings it had.
@@ -185,8 +185,8 @@ rig itself.
 
 Before a plugin goes in, the rig checks how hard the computer is working, the
 figure the stage screen shows as **LOAD**. Above 80 %, one more plugin could
-make the sound drop out, so the add is refused, and the line beside the Add
-button says how busy the rig is. Switch off or take out a plugin you are not
+make the sound drop out, so the add is refused, and the bar at the top says
+**Not added**; hover over it for how busy the rig is. Switch off or take out a plugin you are not
 using, then add again. If the load cannot be read, the plugin is added
 anyway.
 
@@ -219,7 +219,7 @@ If the card says **Amp not wired**, the amp is running but the guitar is not
 going through it, so you hear it dry. Hover over the words to see which link
 is missing. Restart the rig; if it still says so, check the patchbay and the
 machine file. The same words, or **No amp** when the amp did not start, show
-at the top of the page after a start, a restart or a switch of rig. Hover over
+at the top left, beside the rig's name, after a start, a restart or a switch of rig. Hover over
 them for what the rig said.
 
 If the rig was started without its amp, the card says so and offers **Amp
@@ -259,10 +259,10 @@ On the stage screen, with the lock off, you get the amp's model name and
 
 ## Take a change back
 
-**Undo** is at the top of the rack and of the stage screen, beside the lock.
-Hover over it (or long-press on a phone) to see what it would take back, for
+**Undo** is at the right end of the bar under the header, on the rack and on
+the stage screen. Hover over it (or long-press on a phone) to see what it would take back, for
 example **Undo overdrive Drive**. Click it to put that change back; beside it
-the page says **Undone:** and the change. Click again for the one before, up to
+the bar says **Undone:** and the change. Click again for the one before, up to
 50 changes back.
 
 - It takes back knobs, bypasses, moves, plugins added or taken out, volumes and

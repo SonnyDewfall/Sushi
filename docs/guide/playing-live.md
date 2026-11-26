@@ -94,10 +94,10 @@ On the stage screen:
    selected. There is no second question: choosing a different rig switches
    to it at once.
 
-While the switch runs, the name cannot be tapped and a line under the tiles
+While the switch runs, the name cannot be tapped and the bar under the header
 says what is happening. With no rig up, choosing a rig does not start it: tap
 **Start** and its name, under the tiles. **Stop** is there instead while a rig
-is up, and asks again before it stops the sound.
+is up, and the bar asks **Stop?** before it stops the sound.
 
 On the rack the list of rigs is always there, under **RIGS** on the right: tap
 the rig you want, then **Switch to** and its name.
@@ -360,13 +360,13 @@ level is. It shows which parts are louder than the others, not how loud you are.
 
 ## If something goes wrong
 
-- **A box appears at the top saying something "exited".** A part of the rig has
-  stopped. The box says which part and what it means for the sound. Nothing
+- **A box appears beside the rig's name saying something "exited".** A part of the rig has
+  stopped. The box says which part; hover over it for what it means for the sound. Nothing
   restarts by itself: see [When something's wrong](troubleshooting.md#a-part-of-the-rig-has-stopped).
 - **XRUNS is rising, or the sound crackles.** See
   [When something's wrong](troubleshooting.md#crackles-and-dropouts).
-- **A box starts "Not switched to".** The agent refused, or the switch failed,
-  and the box gives the reason. The rig that was playing is left playing where
+- **The bar at the top says "Not switched to".** The agent refused, or the switch failed,
+  and the bar at the top gives the reason. The rig that was playing is left playing where
   that is possible.
 - **The top reads "Agent not answering".** The agent has stopped. The rig itself
   may well still be playing. Start the agent again: see

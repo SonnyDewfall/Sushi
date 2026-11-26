@@ -7606,6 +7606,78 @@ request ids are unique across clients (assumed, since a kept notice is matched
 by id), and the probe rerun with the read-back, are the checks left.
 *(2026-11-26)*
 
+**#245: the top of the page in three zones, and every answer in one bar.**
+The owner, after #209: "a lot of scrolling is required to read and address
+some of the messages", then, of the mock-ups: one activity bar at the top
+(option A), with "status information in one area, changes and any action
+needed in another, and then anything that we can change (eg. volume) in
+another". So the rack's header is a **status** zone (the name, up and for
+how long, LOAD, XRUNS, AMP, and the rig's problems as boxes of a word or two,
+"No amp", "Amp not wired", the reason on hover) and a **controls** zone (the
+master, the Lock, Stage and Help); under it, sticky at the top of the window
+once the header has gone, the **activity** zone: the newest question
+(Restart?, Stop?, Drop changes?, Remove?), what is running, the last results
+(three on a laptop with their times, one on a phone), a "+n" for the rest,
+and Undo. The stage has the same bar under its header, with its Undo. On a
+phone the status is the name and a dot, a tap away from the rest, and Stage
+and Help are at the foot, so the top is two rows. Every result, refusal and
+second tap that was drawn where its action was taken (the strips' foot, a
+Load… or Remove panel, the save column, the pedal panel, a unit's row, an
+add's place, the record bar, the problem boxes) is now said in the bar: each
+region hands its result or question to the zone as it draws (`actResult`,
+`actAsk`), with the same buttons calling the same functions, so an answer
+still goes to the strip and the rig it was asked for. A result or question
+about a channel carries its chip, which shows that strip, and the strip a
+question came from is marked. Which is shown is rig.js's (`activityView`,
+`activitySeen`, `activityBusy`), tested pure; the zones, the sticky bar, a
+question answered from it and the stage in Chromium (`test_ui_activity.py`).
+About 110 assertions in twelve `test_ui_*.py` files that looked for results
+where they were drawn now look in the zone for the same words and titles.
+What belongs to an open editor stays in it: the pickers' own checks, the
+New rig form's result, the drawer's "why", a knob's "refused:" note, the amp
+card's state, a removal panel's "what goes". Not tried on a real phone or in
+Safari: sticky positioning is seen in headless Chromium only. *(2026-11-26)*
+
+**#245, the second part: the past, and changes made elsewhere.** The "+n"
+list also keeps the last 20 results gone (dismissed, answered, expired,
+replaced), their words and times only (`activityRemember`). And a change
+another page, a pedal's switch or the CLI made is said in the bar, tagged
+"elsewhere", for 15 s. The agent's log keeps no origin, so it is inferred on
+the page: every write's answer carries the log entry the agent made for it,
+which the page keeps by its signature (op, time, arguments:
+`answerEntry`, `logSignature`), and a new entry of the kinds that change the
+rig's shape (rig, save, add, remove, move, undo, amp model) whose signature
+is not one of the page's is someone else's (`elsewhereSeen`). It is judged
+only while none of the page's writes is in flight, so its own is never
+caught between the log and the answer; knobs and bypasses are never said. A
+rig file edited from elsewhere (an input, a channel added) is not in the log
+and is not said. Tested pure and with two pages in Chromium. *(2026-11-26)*
+
+**#245, PR #251's review.** Thirteen findings. (1) The page's own Undo was
+said as made elsewhere: `POST /undo`'s answer carried no log entry. Every
+write's answer now carries `logged`, the entries the request made, where it
+does not carry them already (a middleware, `_say_logged`, fed by `_record`
+through a context variable); the page reads it (`answerEntries`). (2) A
+redraw of the bar dropped a focused Yes to the page's body, and a lost focus
+went to Undo: the focus is put back by what it was (`actFocus`,
+`actRefocus`), else kept by the zone, and only Undo's own words send it to
+Undo. (3) A refusal said again took back its first place: each refusal is
+an object of its own. (4) The times kept let go of what was still shown
+first: now the longest unseen. (5) A start not known reset the log's
+baseline: only a known, different start does. (6) A write whose answer never
+came: for 10 s after, nothing new is said as elsewhere, the lesser fault.
+(7) On a phone the newest question hid an older one: "2 asks" on the chip,
+and every strip with one waiting marked; a strip's question is keyed by its
+channel and rig. (8) A stage test could pass on nothing: it asserts the words
+are there first; a knob test narrowed to the zone is page-wide again. (9) The
+bar's words are one or two: "Add · Not added", "Moved", "Switched". (10) The
+status line is no control on a laptop. (11) The rig's name and state are
+never cut on a laptop: the tiles' second words go to their titles. (12) While
+"Restart?" is asked, the result beside it drops its own Restart. (13) On a
+phone a question, "+n" and Undo fit one row. Tested in Chromium, the
+reviewer's two repro tests among them. Not tried on a real phone or in
+Safari. *(2026-11-26)*
+
 **A stop's SIGINT is heard however the rig was started (#236).** A process
 started with SIGINT ignored (a background job of a non-interactive shell, a
 script or service wrapper, and pytest started that way) passed it to every
