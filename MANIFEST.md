@@ -216,6 +216,16 @@ Utility/test configs get a `test_` prefix (`test_passthrough.json`, currently
 
 ### Versioning — three layers, each doing a different job
 
+> **The version number is dropped (2026-11-26, #143).** Layer 2 was enforced by
+> nothing: every rig file said `1.0`, and no save ever changed it. The owner's
+> decision: "Rigs will have their own identity and the setlist functionality
+> will make them more usable." A rig file has no `version`; one that still has
+> `meta.version` loads, and it is ignored without a message
+> (`rigfile.RETIRED_META`). Git (layer 1) is the history. The v1 configs'
+> `_meta.version` and `config/archive/<name>/v<MAJOR>.<MINOR>.json` (layer 3)
+> belong to the v1 path, which is being retired, and are left to that. The
+> rest of this section records what was once intended.
+
 1. **Git** is the version of record for the project and for every change to a
    sound. Live config *filenames* stay stable forever — `start-rig.sh` never
    needs editing on a tonal change, and `git diff` on the JSON is exactly how
@@ -1012,6 +1022,11 @@ noted here and left for now.
 apart from `_meta`: the same tracks, parameters and amp. Their sound references
 are identical to four decimals, which is the null test working rather than
 failing. Whether that is intended is for whoever saved them.
+
+**Decided (2026-11-26, #143):** `electric-chorus-hall` and `hard-feelings` are
+kept as they are, two names for one tone. The owner: "Let me police which rigs
+we keep and delete." (`electric-chorus-2` has differed since it gained a vocal
+channel.)
 
 ### 🟢 One calibration understates a config's spread (2026-10-30)
 
@@ -7485,3 +7500,65 @@ time: the answer is kept by the file's path, size and `st_mtime_ns`
 run can change without the file. Tested: two polls parse once, and a write is
 parsed again. (3) Add amp's picker shares the model picker's CSS rules. Not run
 on the rig. *(2026-11-25)*
+
+**#143 closed out: the four leftovers of the October audit.** (1) **The
+delay tolerances**: done in #237, the delay a reference holds now the earliest
+path (the two entries of 2026-11-24 above). (2) **The report to Elk**:
+`docs/upstream/sushi-pipewire-two-links.md`, checked against Sushi's source
+here and still a draft, for the owner to post; its link goes here and in #143
+once it is. The call the first draft quoted, `jack_port_get_buffer(port,
+AUDIO_CHUNK_SIZE)`, was not the line: `jack_frontend.cpp:345` at 1.3.0 is
+`jack_port_get_buffer(_input_ports[i], framecount)) + start_frame` inside
+`process_audio(start_frame, framecount, ...)`, which `internal_process_callback`
+calls once per 64-frame chunk as `process_audio(frame, AUDIO_CHUNK_SIZE, ...)`
+(lines 295 to 300). The same 64 frames asked for once per chunk, so the
+mechanism and the fix stand; the report quotes the line and its caller.
+**Sushi 1.4.0** (tag 1.4.0, `c6ddde6`, 2026-10-12) has the same lines: the one
+change to the file is line 273's chunk-size check, `AUDIO_CHUNK_SIZE` for the
+literal 64 ("Allow buffersizes < 64 in JackFrontend"), so the fault is there
+still, as read; 1.4.0 not run. elk-audio/sushi has no issue on it (seven
+issues in all; nothing for "jack_port_get_buffer", "pipewire", "pw-jack",
+"jack input zeros" or "chunk jack"). (3) **The two identical rigs**
+(`electric-chorus-hall`, `hard-feelings`) are kept as they are, by the
+owner's decision: "Let me police which rigs we keep and delete." Recorded
+under *Three configs are one tone under three names*. (4) **The version
+number is dropped**, by the owner's decision: "Rigs will have their own
+identity and the setlist functionality will make them more usable." The rule
+is marked dropped in section 4. `version:` is gone from every rig in
+`config/rigs/` (fifteen; `pedals` had none) and from the eleven frozen rigs,
+whose new sha256 are in `test_rig_fixtures.py` (the frozen set's rule: a file
+changes with the code that reads it). A rig file that still has
+`meta.version` loads, and **it is ignored silently** (`rigfile.RETIRED_META`):
+nothing ever read it, and a note would be said at every compile until the
+file's next save. It is kept out of the compiled `_meta` (`parse_rig`), a save
+or Save as writes the file without it (`fold_state`, with a `meta` that held
+nothing else), and `convert` neither writes a v1 config's version into a rig
+nor holds the rig to it (`to_rig`, `differences`). New rig and a channel copy
+never wrote one; tested so. Pinned by three tests in `test_rigfile.py` and one
+in `test_convert.py`; the only existing expectations changed are those
+eleven checksums. Left as it is:
+the v1 path's `_meta.version` (`save_config`, `config/*.json`,
+`config/src/`, `config/archive/`), which is being retired on its own branch,
+and the frozen v1 fixtures, which are the input `convert` drops it from. Every
+other "version" is another thing and is kept: `schema_version`, a profile's
+`plugin.version`, the agent's `VERSION`, the panel's and the patchbay's file
+versions, the fonts'. No sound reference changed: `meta` is not rendered and
+not in `rig_hash`. *(2026-11-26)*
+
+**A list of the rig's dependencies, to check for updates (#143's follow-on).**
+`docs/reference/dependencies.md`: one row per outside project the rig runs on
+or is built with (Sushi, elkpy, the NAM plugin, Carla, PipeWire and
+pipewire-jack, qpwgraph, JACK, fmit, the LV2 plugin groups, lilv, Python and
+the packages of `tool/pyproject.toml`, Playwright and Chromium, the fonts,
+butterchurn, CI's base image and actions), each with the version used and the
+file that pins or records it ("not recorded" where none does: the NAM plugin,
+Carla, qpwgraph as run, most of the rig machine's packages), where to look
+upstream, a one-liner to check, and the upstream faults worked around. There
+is no lockfile. Checked from here on 2026-11-26; newer upstream: Sushi 1.4.0,
+an elkpy 1.4.0 tag (PyPI still 1.3.0), PipeWire 1.6.11 (GitHub mirror; the rig
+records 1.6.2), qpwgraph 1.0.5, guitarix 0.47.0, Calf 0.90.9, mda-lv2 1.2.12,
+Ardour 9.10, lilv 0.28.0, Carla 2.5.10 (the rig's not recorded), Python 3.15,
+python-osc 1.10.3, numpy 2.5.5, pytest 9.2.0, Playwright 1.65.2, and v7 of
+checkout, setup-python and upload-artifact. Not checked from here:
+gitlab.freedesktop.org, x42-plugins.com and GitHub's release pages. Nothing
+was upgraded. *(2026-11-26)*

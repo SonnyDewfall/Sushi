@@ -370,6 +370,18 @@ def test_meta_cannot_rename_the_rig(key):
         rigfile.parse_rig(raw)
 
 
+def test_a_configs_version_number_is_not_carried_into_its_rig():
+    """A v1 config says `_meta.version`; the rig format has none (#143), so
+    the conversion leaves it out and is still held to everything else."""
+    config = v1("hard-feelings")
+    assert config["_meta"]["version"] == "1.0"
+    rig = convert(config, "hard-feelings")
+    assert "version" not in rig["meta"] and rig["meta"]["status"] == config["_meta"]["status"]
+    config["_meta"]["status"] = "other"
+    assert differences(config, rigfile.emit_rig(rigfile.parse_rig(rig))) == [
+        f"_meta: {rigfile.emit_rig(rigfile.parse_rig(rig))['_meta']!r}, was {config['_meta']!r}"]
+
+
 def test_a_track_that_may_be_stereo_is_not_taken_for_the_guitar():
     config = v1("electric-clean")
     config["tracks"][0]["inputs"] = [

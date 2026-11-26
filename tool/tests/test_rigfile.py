@@ -280,6 +280,88 @@ def test_the_command_refuses_a_bad_rig_with_every_problem(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# A rig's version number, dropped (#143)
+# --------------------------------------------------------------------------- #
+
+VERSIONED = """\
+# A rig saved before the format dropped its version number.
+kind: rig
+schema_version: 1
+name: old
+meta:
+  version: '1.0'   # MAJOR.MINOR, by a rule nothing enforced
+  status: stable
+channels:
+- name: board
+  input: guitar-in
+  width: mono
+  chain:
+  - name: drive
+    uri: http://drobilla.net/plugins/mda/Overdrive
+    parameters:
+      Drive: 0.5
+master:
+  output: monitor-out
+  chain: []
+"""
+
+
+def test_a_rig_file_that_still_has_a_version_loads_and_says_nothing(tmp_path, capsys, caplog, recwarn):
+    """Ignored silently, and kept out of the compiled config: nothing ever
+    read it, so there is nothing to tell anyone, and a note would be said at
+    every compile until the file's next save. The rest of `meta` is kept."""
+    path = tmp_path / "old.yaml"
+    path.write_text(VERSIONED)
+    rig = rigfile.load_rig(path)
+    assert rig.meta == {"status": "stable"}
+    config = emit_rig(rig)
+    assert config["_meta"] == {"name": "old", "status": "stable"}
+    assert capsys.readouterr() == ("", "")
+    assert caplog.records == [] and len(recwarn) == 0
+    # The same file without the line compiles to the very same config.
+    assert emit_rig(parse_rig(yaml.safe_load(VERSIONED.replace("  version: '1.0'   # MAJOR.MINOR, by a rule "
+                                                               "nothing enforced\n", "")))) == config
+
+
+def test_a_save_writes_the_file_without_its_version(tmp_path):
+    """In place and as a new name (Save and Save as are both `save_rig`): the
+    line goes, and only that line; a `meta` that held only a version goes too."""
+    from sushi_rig.save import save_rig
+
+    path = tmp_path / "old.yaml"
+    path.write_text(VERSIONED)
+    state = {"processors": {"drive": {"parameters": {"Drive": 0.5}}}, "tracks": {"board": ["drive"]}}
+    save_rig("old", path, state=state)
+    assert path.read_text() == VERSIONED.replace(
+        "  version: '1.0'   # MAJOR.MINOR, by a rule nothing enforced\n", "")
+
+    path.write_text(VERSIONED)
+    copy_ = save_rig("old-copy", path, state=state)
+    assert yaml.safe_load(copy_.read_text())["meta"] == {"status": "stable"}
+    assert path.read_text() == VERSIONED, "Save as leaves the rig it was made from as it was"
+
+    only = VERSIONED.replace("  status: stable\n", "")
+    path.write_text(only)
+    save_rig("old", path, state=state)
+    assert "meta" not in yaml.safe_load(path.read_text())
+    assert path.read_text() == only.replace("meta:\n  version: '1.0'   # MAJOR.MINOR, by a rule nothing "
+                                            "enforced\n", "")
+
+
+def test_a_new_rig_and_a_copied_channel_have_no_version():
+    """New rig writes no `meta`, and a channel copied from a rig that has a
+    version takes its chain and level, never the rig's `meta`."""
+    from sushi_rig import rigedit
+
+    source = yaml.safe_load(VERSIONED)["channels"][0]
+    request = {"name": "board", "input": "guitar-in", "width": "mono"}
+    raw = rigedit.new_rig("fresh", [rigedit.channel_entry(request, source)], "monitor-out")
+    assert "meta" not in raw and "version" not in json.dumps(raw).replace("schema_version", "")
+    assert raw["channels"][0]["chain"] == source["chain"]
+    parse_rig(raw)
+
+
+# --------------------------------------------------------------------------- #
 # Against a real Sushi
 #
 # The renders that need numpy are in test_rigfile_live.py, so a machine without

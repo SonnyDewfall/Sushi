@@ -3,7 +3,6 @@ schema_version: 1
 name: clean
 description: Electric guitar — compressor, overdrive, EQ, chorus, delay, a clean room and a big hall
 meta:
-  version: '1.0'
   status: stable
   source: config/src/electric_board.yaml
 host:
