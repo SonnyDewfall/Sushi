@@ -1922,9 +1922,9 @@ class Live:
             # Sushi 1.3.0 some nine hundred times (the probe in
             # tool/spikes/live_remove_track/) and mostly works, but not always: 3 runs in
             # 300 had Sushi stop at `delete_track`, neither applying nor
-            # confirming it, then ignore SIGTERM; and a command sent soon
-            # after connecting can be applied and never confirmed (elkpy's
-            # notice), which fails the step and restarts the rig unasked.
+            # confirming it, then ignore SIGTERM. (A command applied and never
+            # confirmed, elkpy's notice lost, was the other failure there; it
+            # is now confirmed by reading it back, #241, `live._wait`.)
             # The path stays, for a stand-in Sushi in the tests and for a
             # Sushi that can be shown to do it every time.
             remove_track=None,

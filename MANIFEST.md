@@ -7563,6 +7563,49 @@ checkout, setup-python and upload-artifact. Not checked from here:
 gitlab.freedesktop.org, x42-plugins.com and GitHub's release pages. Nothing
 was upgraded. *(2026-11-26)*
 
+**A change is confirmed by Sushi's notice or by reading it back (#241).**
+Against Sushi 1.3.0, 10 first commands in 150 on a new elkpy connection were
+applied and never confirmed (the probe in `tool/spikes/live_remove_track/`),
+and the agent makes a new connection for every request, so every live change
+is its connection's first command: a change that was made could come back
+`502` and a switch's step could restart the rig unasked. Read from elkpy
+1.3.0's source, there are two ways to lose the notice. (1) It comes before
+the caller's thread has registered the command's response
+(`validate_command_response` runs after the RPC returns; the notification
+thread's `command_responses.get` then finds nothing and drops it): possible on
+any command. `live.Confirmations`, the connection's `command_responses` now,
+keeps such a notice and sets the response when it is registered. (2) It comes
+before the notification thread's own subscription is up: Sushi never sends it,
+and nothing elkpy exposes says when the stream is up (waiting for the channel
+to be ready does not: the command channel is already up, elkpy's constructor
+made an RPC on it, and the stream's channel is not reachable). So every strict
+command reads its change back when no notice has come after
+`READBACK_AFTER` (0.25 s), and every 0.25 s after: the parameter's value within
+`verify.TOLERANCE`, the bypass, the chain's order, the processor or track
+there or gone, the CC mapping held or not. Sushi holding it is done; not
+holding it at the 5 s deadline is "not applied"; a parameter held at another
+value is "may or may not have been applied" (a stepped one is held at its
+step); a notice that says it failed is a failure whatever is read. A command
+that was applied is never reported as failed, and one that was not is never
+reported as done. Not a sleep: a notice that comes is taken at once, and the
+reading costs only the change whose notice was lost. A third way, found by
+CI: elkpy 1.4.0, which pip gives Python 3.12 (the rig container's; 1.4.0
+wants Python below 3.13, so 3.13 and 3.14 get 1.3.0), no longer subscribes to
+those notices unless asked (`auto_update_async_command_responses` now
+defaults to False), so there no strict command was ever confirmed by its
+notice; `live._controller` asks for it by name. 1.4.0 also ships Sushi's gRPC
+modules generated, and needs no grpcio-tools. Tested in
+`test_live_confirm.py`: elkpy's matching on stand-ins, every strict command
+applied-and-silent and neither, and the real elkpy against a gRPC server in the
+test that plays Sushi and loses the notice each way (each loss reproduced
+first with elkpy's own dict and timing), built from the generated modules the
+installed elkpy uses. That half needs elkpy, as `test_live_close.py`'s does;
+run here against elkpy 1.3.0 (Python 3.13) and 1.4.0 (a Python 3.12 venv, as
+the container has it), and with elkpy hidden for the other half. Not run against a real Sushi: whether Sushi's
+request ids are unique across clients (assumed, since a kept notice is matched
+by id), and the probe rerun with the read-back, are the checks left.
+*(2026-11-26)*
+
 **A stop's SIGINT is heard however the rig was started (#236).** A process
 started with SIGINT ignored (a background job of a non-interactive shell, a
 script or service wrapper, and pytest started that way) passed it to every
