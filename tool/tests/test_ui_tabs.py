@@ -1801,3 +1801,32 @@ def test_a_profile_arriving_under_a_drag_waits_for_the_drag_to_end(browser, serv
     expect(unit(p, "overdrive")).to_contain_text("GxTubeScreamer · profile")
     expect(slider(p, "overdrive Drive")).to_have_attribute("aria-valuetext", "0.82")
     page.close()
+
+
+def test_a_cards_all_shows_what_its_profile_hides_and_hides_it_again(rack):
+    """#139: the overdrive's profile hides its BYPASS (the host's switch is
+    the bypass). The open card's All shows it, drawn plainly under "Hidden by
+    the profile", and takes it away again; locked too, since it changes what
+    is shown and not the rig."""
+    lock = rack.locator("button.lock")
+    expect(lock).to_have_text("Locked")
+    name_of(rack, "overdrive").click()
+    card = unit(rack, "overdrive")
+    toggle = card.get_by_role("button", name="All", exact=True)
+    expect(toggle).to_have_attribute("aria-pressed", "false")
+    expect(card.get_by_text("Hidden by the profile")).to_have_count(0)
+    expect(card.get_by_role("button", name="overdrive BYPASS")).to_have_count(0)
+    toggle.click()
+    toggle = card.get_by_role("button", name="All", exact=True)
+    expect(toggle).to_have_attribute("aria-pressed", "true")
+    expect(card.get_by_text("Hidden by the profile")).to_be_visible()
+    expect(card.get_by_role("button", name="overdrive BYPASS")).to_be_visible()
+    lock.click()
+    lock.click()
+    expect(lock).to_have_text("Lock off · editing")
+    toggle = card.get_by_role("button", name="All", exact=True)
+    toggle.click()
+    expect(card.get_by_role("button", name="All", exact=True)).to_have_attribute("aria-pressed", "false")
+    expect(card.get_by_role("button", name="overdrive BYPASS")).to_have_count(0)
+    expect(unit(rack, "octave").get_by_role("button", name="All", exact=True)).to_have_count(0)
+

@@ -486,6 +486,58 @@ def test_a_card_without_a_profile_shows_every_parameter_read_only_ones_too(blank
                                ["Crispness", False], ["Formant Preserving", False], ["Wet-Dry Mix", False]]]
 
 
+def test_a_control_no_profile_judged_is_on_a_log_scale_where_its_range_is_positive_and_wider_than_ten(blank):
+    """#139's second gap: a plugin with no profile got linear knobs however
+    wide its range, where the retired Open Stage Control panel had put a wide
+    range on a log drag (its LOG_SCALE_DOMAIN_THRESHOLD, a top of 10 or more).
+    A log knob needs a bottom above zero, so the rule is a range above zero
+    whose top is more than ten times its bottom; a profile's own scale still
+    wins, linear where it says linear."""
+    out = rigjs(blank, """
+      const info = (min, max) => ({automatable: true, value: 0, min_domain_value: min, max_domain_value: max});
+      const plain = (min, max) => R.makeControl('x', info(min, max), null).scale;
+      const f = R.makeControl('Freq', info(20, 20000), null);
+      return {
+        scales: [plain(20, 20000), plain(0.016, 63), plain(100, 1000), plain(0, 1000), plain(-12, 12),
+                 plain(0, 1), plain(1, 10.5)],
+        mid: R.realOf(f, R.valueAt(f, 0.5)),
+        profiled: R.makeControl('Freq', info(20, 20000), {scale: 'linear'}).scale,
+        unjudged: R.makeControl('Freq', info(20, 20000), {label: 'Freq'}).scale,
+        notProfiled: R.unitPanel({Extra: info(20, 20000)}, {groups: [], parameters: []}).advanced[0].scale,
+        ratio: R.LOG_RANGE_RATIO,
+      };""")
+    assert out["scales"] == ["log", "log", "linear", "linear", "linear", "linear", "log"], \
+        "positive and wider than ten: log; ten exactly, reaching zero or crossing it: linear"
+    assert abs(out["mid"] - 632.4555) < 1e-3, "halfway is the geometric mean, as a profile's log is"
+    assert out["profiled"] == "linear" and out["unjudged"] == "linear", "a profile's entry keeps the profile's word"
+    assert out["notProfiled"] == "log", "a parameter the profile does not name is drawn as no profile would"
+    assert out["ratio"] == 10
+
+
+def test_a_card_keeps_what_its_profile_hides_for_its_all_drawn_plainly(blank, served):
+    """#139's first gap: a parameter a profile hides was out of reach from the
+    page. `unitPanel` keeps each hidden one the running plugin has and can be
+    set, drawn plainly: the plugin's own name, its unit and toggle from the
+    profile's facts, none of the profile's judgements."""
+    profile = rigjs(blank, "return (await (await fetch('/profiles')).json()).profiles[arg];", GXTS9)
+    info = copy.deepcopy(served.rig.info["overdrive"])
+    out = rigjs(blank, """
+      const profile = JSON.parse(JSON.stringify(arg.profile));
+      const p = R.unitPanel(arg.info, profile);
+      const shown = (c) => [c.name, c.label, c.scale, c.unit, c.profiled, c.visibility, c.readOnly];
+      // A read-only parameter the profile hides is not offered: it cannot be set.
+      const info = JSON.parse(JSON.stringify(arg.info));
+      info.BYPASS.automatable = false;
+      const plain = R.unitPanel(arg.info, null);
+      return {hidden: p.hidden.map(shown), readOnly: R.unitPanel(info, profile).hidden.length,
+              plain: plain.hidden, shownElsewhere: R.primaryControls(p).concat(p.advanced).map((c) => c.name)};""",
+                {"info": info, "profile": profile})
+    assert out["hidden"] == [["BYPASS", "BYPASS", "toggle", None, False, "primary", False]]
+    assert out["readOnly"] == 0
+    assert out["plain"] == [], "a card with no profile hides nothing"
+    assert "BYPASS" not in out["shownElsewhere"]
+
+
 def test_the_rack_keeps_the_send_and_return_apart_by_role_or_by_name(blank, served):
     live = served.rig.snapshot(served.rig.connect())
     plugins = served.rig.plugins(None)

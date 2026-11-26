@@ -72,7 +72,15 @@ their own kind: see [Tremolo, flanger, tape echo and shimmer](effects.md).
 
 A plugin
 that says **no profile: every parameter** under its name has not been tidied up
-for the page yet: it shows every control it has, in a plain list.
+for the page yet: it shows every control it has, in a plain list. A knob with
+a very wide range there, such as a frequency from 20 Hz to 20 kHz, turns
+evenly by ratio, so the low end is not squeezed into the first bit of the
+turn.
+
+A plugin with a profile shows the controls its profile chose. If the open
+plugin's profile hides some, an **All** button appears below its knobs: click
+it to show them too, under **Hidden by the profile**, by the plugin's own
+names. Click it again to hide them.
 
 ## Switch a plugin off and on
 

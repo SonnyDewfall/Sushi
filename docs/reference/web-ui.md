@@ -31,7 +31,15 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   plugin cards, each with its knobs: the profile's controls in its groups and
   labels for a plugin that has one (`tool/examples/profiles/`), every
   parameter in a plain list for one that does not. Values are in the plugin's
-  own range, never 0 to 1. A turned knob is sent at once. A profile may also
+  own range, never 0 to 1. A knob no profile judged (a plugin with no
+  profile, a parameter its profile does not name, one shown by **All**) turns
+  on a log scale where its range is above zero and its top more than ten
+  times its bottom (`R.plainScale`, `LOG_RANGE_RATIO`), as the retired Open
+  Stage Control panel's wide faders did; linear otherwise. An open card whose
+  profile hides parameters the plugin has and can set has an **All** toggle
+  (`aria-pressed`): on, they are drawn under "Hidden by the profile", plainly,
+  by the plugin's own names and in its units (`R.unitPanel`'s `hidden`,
+  `R.plainEntry`); allowed locked, since it changes only what is shown (#139). A turned knob is sent at once. A profile may also
   give a knob that sets several of the plugin's parameters at once (its
   `controls`, `profile.py`): the hall's **Mix**, 0 to 100 %, sets its dry
   level, early reflections and tail along an equal-power curve. A control

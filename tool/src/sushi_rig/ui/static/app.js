@@ -151,6 +151,7 @@ const state = {
   // at the strips' foot once the channel has gone.
   removeUi: { channel: null, rig: null, pending: null, result: null, done: null },
   open: new Set(),           // units opened, by name
+  all: new Set(),            // units whose All is on, showing what their profile hides (R.unitPanel's `hidden`), by name
   // The rack's tabs and rows (#135):
   tab: { rig: null, id: null },  // the tab the player chose (or the one remembered), and the rig it is for
   peeked: new Set(),         // bypassed units opened without switching them on, by name (R.unitRow)
@@ -2334,7 +2335,7 @@ function unitSlot(slot, track, unit, index) {
   // profiles came).
   const active = document.activeElement;
   const focused = active && slot.el.contains(active) ? active.dataset.focus || null : null;
-  const key = JSON.stringify([unit.uri, unit.profile, unit.panel, expanded, state.locked]);
+  const key = JSON.stringify([unit.uri, unit.profile, unit.panel, expanded, state.locked, state.all.has(unit.name)]);
   // A row with a knob being dragged is not rebuilt under the hand, as a
   // bypass does not minimise it (review of #135: profiles arriving past the
   // first draw's wait took the drag with the old row). What changed is drawn
@@ -3024,9 +3025,32 @@ function detail(unit, size, acts = null) {
       h("div", { class: "knobs" }, g.controls.map((c) => control(unit, c, size))))),
     panel.advanced.length ? h("section", { class: "group advanced" }, h("h3", {}, "More"),
       h("div", { class: "knobs" }, panel.advanced.map((c) => control(unit, c, "small")))) : null,
+    hiddenParts(unit),
     panel.missing.length ? h("p", { class: "missing", title: "In the profile but not on the running plugin" },
       `Missing: ${panel.missing.map((c) => c.label).join(", ")}`) : null,
     acts);
+}
+
+// A card's All (#139): what the profile hides, behind one toggle, each drawn
+// plainly in the plugin's own units and names (R.plainEntry), as the retired
+// Open Stage Control panel had a fader for every automatable parameter. Off
+// unless pressed, so the card stays the profile's; allowed locked, since it
+// changes what is shown and not the rig. Only on a card whose profile hides
+// something the running plugin has.
+function hiddenParts(unit) {
+  const hidden = unit.panel.hidden || [];
+  if (!hidden.length) return null;
+  const on = state.all.has(unit.name);
+  const count = `${hidden.length} parameter${hidden.length === 1 ? "" : "s"}`;
+  const toggle = h("button", {
+    class: "row-act all", "aria-pressed": String(on), "data-focus": "all",
+    title: on ? `Hide the ${count} the profile hides` : `Show the ${count} the profile hides, as the plugin names them`,
+    onclick: () => { if (on) state.all.delete(unit.name); else state.all.add(unit.name); render(); },
+  }, "All");
+  return h("section", { class: "group hidden-params" },
+    h("div", { class: "row-acts" }, toggle),
+    on ? [h("h3", {}, "Hidden by the profile"),
+      h("div", { class: "knobs" }, hidden.map((c) => control(unit, c, "small")))] : null);
 }
 
 function renderRack(regions, model, unsaved, status) {

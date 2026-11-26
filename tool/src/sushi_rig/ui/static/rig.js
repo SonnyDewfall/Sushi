@@ -71,19 +71,51 @@ export function monoNote(units, index) {
 
 // ---------------------------------------------------------------- values
 // Sushi normalises every parameter linearly over its domain and ignores the
-// LV2 logarithmic hint (panel.py, found on the rig), so a real value is
-// min + v * (max - min) whatever the profile's scale. The scale changes how a
-// drag maps to the value and how it is written, never this.
+// LV2 logarithmic hint (found on the rig, for the retired Open Stage Control
+// panel), so a real value is min + v * (max - min) whatever the profile's
+// scale. The scale changes how a drag maps to the value and how it is
+// written, never this.
 
 const isNumber = (x) => typeof x === "number" && Number.isFinite(x);
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
+
+// How much wider than its bottom a range must be for a control no profile
+// judged to turn on a log scale. The retired panel turned on its faders'
+// `logScale` at a top of 10 or more whatever the bottom (its
+// LOG_SCALE_DOMAIN_THRESHOLD: a graphic EQ band's ~0.016 to ~63, a gain to
+// 1000, whose useful range was a sliver at the bottom of a linear drag); a
+// log knob needs a bottom above zero, so here it is a range above zero whose
+// top is more than ten times its bottom.
+export const LOG_RANGE_RATIO = 10;
+
+// The scale a control is drawn on when no profile says one: a toggle for a
+// port that says it is one, a log scale for a positive range wider than
+// `LOG_RANGE_RATIO`, linear otherwise.
+export function plainScale(min, max, toggled) {
+  if (toggled) return "toggle";
+  if (isNumber(min) && isNumber(max) && min > 0 && max / min > LOG_RANGE_RATIO) return "log";
+  return "linear";
+}
+
+// What a profile entry says that is the plugin's own, not the profile's
+// judgement: its unit, whether it is whole-numbered or a toggle, and its
+// named values. A hidden parameter shown by a card's All is drawn from these
+// alone, "plainly", as a plugin with no profile would be, but in its units.
+export function plainEntry(entry) {
+  if (!entry) return null;
+  return { plain: true, unit: entry.unit || null, integer: !!entry.integer, toggled: !!entry.toggled };
+}
 
 export function makeControl(name, info, entry) {
   const min = info && isNumber(info.min_domain_value) ? info.min_domain_value : null;
   const max = info && isNumber(info.max_domain_value) ? info.max_domain_value : null;
   const hasRange = min !== null && max !== null && max > min;
   const choices = entry && Array.isArray(entry.scale_points) && entry.scale_points.length ? entry.scale_points : null;
-  let scale = (entry && entry.scale) || (entry && entry.toggled ? "toggle" : "linear");
+  // No profile, or a hidden parameter drawn plainly: the plain rule. A
+  // profile's own entry keeps the profile's scale (linear where it says none).
+  const plain = !entry || entry.plain;
+  let scale = plain ? plainScale(min, max, entry && entry.toggled)
+    : entry.scale || (entry.toggled ? "toggle" : "linear");
   const notes = [];
   // A log or dB drag needs a positive minimum; a profile is loaded unvalidated,
   // so one that says log over a range reaching zero is drawn linear, and says so.
@@ -102,12 +134,12 @@ export function makeControl(name, info, entry) {
     unit: (entry && entry.unit) || null,
     scale, control, min, max, hasRange, choices,
     integer: !!(entry && entry.integer),
-    group: entry ? (entry.group ?? null) : null,
-    visibility: (entry && entry.visibility) || "primary",
-    phone: entry && isNumber(entry.phone) ? entry.phone : null,
+    group: entry && !entry.plain ? (entry.group ?? null) : null,
+    visibility: (entry && !entry.plain && entry.visibility) || "primary",
+    phone: entry && !entry.plain && isNumber(entry.phone) ? entry.phone : null,
     readOnly: info ? info.automatable === false : false,
     missing: !info,
-    profiled: !!entry,
+    profiled: !!entry && !entry.plain,
     notes,
   };
 }
@@ -549,16 +581,23 @@ export function parseTyped(ctrl, text) {
 // the profile names that the running plugin lacks (`missing`), and what the
 // plugin has that the profile does not name (in `advanced`, marked). Without
 // one: every parameter Sushi reports, in its own order, read-only ones too.
+//
+// `hidden` is what the profile hides that the running plugin has and can be
+// set (automatable), each drawn plainly (`plainEntry`): what a card's All
+// shows (#139: the retired Open Stage Control panel had a fader for every
+// automatable parameter, and a hidden one was otherwise out of reach). A
+// control of several parameters the profile hides is not among them: it has
+// no parameter of its own, and its parameters are.
 export function unitPanel(params, profile) {
   params = params || {};
   if (!profile) {
     const controls = Object.entries(params).map(([n, info]) => makeControl(n, info, null));
-    return { mode: "plain", groups: [{ id: null, label: null, controls }], advanced: [], missing: [] };
+    return { mode: "plain", groups: [{ id: null, label: null, controls }], advanced: [], missing: [], hidden: [] };
   }
   const groups = profile.groups.map((g) => ({ id: g.id, label: g.label, controls: [] }));
   const other = { id: null, label: "Other", controls: [] };
   const byId = new Map(groups.map((g) => [g.id, g]));
-  const advanced = [], missing = [], listed = new Set();
+  const advanced = [], missing = [], hidden = [], listed = new Set();
   for (const entry of profile.parameters) {
     if (Array.isArray(entry.drives)) {
       // A control of several parameters: none of its own in Sushi.
@@ -570,7 +609,11 @@ export function unitPanel(params, profile) {
       continue;
     }
     listed.add(entry.name);
-    if (entry.visibility === "hidden") continue;
+    if (entry.visibility === "hidden") {
+      const info = params[entry.name];
+      if (info && info.automatable !== false) hidden.push(makeControl(entry.name, info, plainEntry(entry)));
+      continue;
+    }
     const ctrl = makeControl(entry.name, params[entry.name], entry);
     if (ctrl.missing) missing.push(ctrl);
     else if (entry.visibility === "advanced") advanced.push(ctrl);
@@ -583,7 +626,7 @@ export function unitPanel(params, profile) {
     advanced.push(ctrl);
   }
   if (other.controls.length) groups.push(other);
-  return { mode: "profile", groups: groups.filter((g) => g.controls.length), advanced, missing };
+  return { mode: "profile", groups: groups.filter((g) => g.controls.length), advanced, missing, hidden };
 }
 
 export function primaryControls(panel) {
