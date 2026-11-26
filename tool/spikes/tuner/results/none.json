@@ -1,0 +1,77 @@
+{
+ "plugin": null,
+ "period": 256,
+ "baseline": [
+  {
+   "compressor": {
+    "avg_us": 3.73,
+    "max_us": 48.82,
+    "avg_of_chunk_pct": 0.28
+   },
+   "track": {
+    "avg_us": 3.9,
+    "max_us": 49.02
+   },
+   "sushi_threads_cpu_pct": {
+    "sushi.bin/98": 1.5,
+    "sushi.bin/97": 1.5,
+    "sushi.bin/96": 0.7
+   },
+   "xruns": 0,
+   "engine": {
+    "avg_of_chunk_pct": 0.338,
+    "max_of_chunk_pct": 6.042
+   },
+   "sushi_cpu_pct": 3.9
+  },
+  {
+   "compressor": {
+    "avg_us": 3.59,
+    "max_us": 84.59,
+    "avg_of_chunk_pct": 0.269
+   },
+   "track": {
+    "avg_us": 3.75,
+    "max_us": 84.75
+   },
+   "sushi_threads_cpu_pct": {
+    "sushi.bin/97": 1.6,
+    "sushi.bin/98": 1.5,
+    "sushi.bin/96": 0.6
+   },
+   "xruns": 0,
+   "engine": {
+    "avg_of_chunk_pct": 0.33,
+    "max_of_chunk_pct": 6.39
+   },
+   "sushi_cpu_pct": 3.8
+  },
+  {
+   "compressor": {
+    "avg_us": 3.5,
+    "max_us": 368.93,
+    "avg_of_chunk_pct": 0.263
+   },
+   "track": {
+    "avg_us": 3.66,
+    "max_us": 369.33
+   },
+   "sushi_threads_cpu_pct": {
+    "sushi.bin/98": 1.5,
+    "sushi.bin/97": 1.4,
+    "sushi.bin/96": 0.6
+   },
+   "xruns": 0,
+   "engine": {
+    "avg_of_chunk_pct": 0.317,
+    "max_of_chunk_pct": 27.771
+   },
+   "sushi_cpu_pct": 3.6
+  }
+ ],
+ "sushi_exit": null,
+ "sushi_said": [
+  "SUSHI - Copyright 2017-2023 Elk Audio AB, Stockholm",
+  "SUSHI is licensed under the Affero GPL 3.0. Source code is available at github.com/elk-audio"
+ ]
+}
