@@ -29,7 +29,7 @@ has had its one-time volume fix (see [The audio interface](audio-interface.md)).
 4. On the right, under **RIGS**, click the rig you want. The big button under
    the list now reads **Start** and the rig's name.
 5. Click **Start …**. It takes about five seconds. When it is done, a line
-   appears saying **Started …, headless.**, the top left shows the rig's name,
+   appears saying **Started …**, the top left shows the rig's name,
    and beside it you see **Up** and how long, then **sound not measured**.
 6. Turn the monitors up and play.
 

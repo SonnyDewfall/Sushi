@@ -48,7 +48,7 @@ samples, 5.35 ms, at a quantum of 256 (`take.py`). Stems are written exactly as
 captured, never shifted on write; `take.yaml` has a place for each stem's
 measured offset (`latency_samples`) and states the consequence as a sentence
 under `alignment.note`, with what measured it under `alignment.measured_by`. A
-take made by RECORD, from the page or the panel, passes no offsets
+take made by RECORD from the page passes no offsets
 (`transport._finish`): its `measured_by` reads "not measured: the record button
 does not measure offsets yet" and its note says each processed stem's offset
 "was not measured, so they are exactly as captured and may need lining up by
@@ -128,9 +128,7 @@ Takes named `take-<date>-<time>`, the default before #134, are takes like any
 other: listed, checked and archived, and counted towards no rig's number.
 
 How the page's name field behaves, and that selecting the default on a tap is
-not yet tried on a real phone, is in [the web UI](web-ui.md); the panel's
-record bar names an unnamed take by the same rule
-([the v1 workflow](v1-workflow.md#the-panels-record-bar)).
+not yet tried on a real phone, is in [the web UI](web-ui.md).
 
 ## The capture engine
 
@@ -158,10 +156,10 @@ two-channel rig, guitar and vocal, has since been recorded from the page and
 its `master.wav` listened back (at Sonny's word; MANIFEST, 2026-11-14), but
 with no figures kept, so the accounting of an eight-column take is still not
 on record. Still not verified: a stereo dry tap.
-The listener constructs an engine for a `--rig` run with its panel (#57), and
-`sushi-rig recorder` for a headless one, which is how the web UI records
-([the agent](agent.md#recording-from-the-web-ui)); either says why it has none
-rather than doing nothing. A
+`sushi-rig recorder` constructs an engine for a `--rig` run, which is how the
+web UI records ([the agent](agent.md#recording-from-the-web-ui)), and says
+why it has none rather than doing nothing. (The Open Stage Control panel's
+listener did the same for its record bar, #57, until the panel was retired.) A
 Python callback was measured on the rig to keep up at quantums of 128 and 256,
 under load, with room to spare (the numbers are in `capture.py`), so this is the
 engine and not a stopgap before a native helper. It needs the `[capture]` extra
@@ -179,4 +177,3 @@ with the port it came from. A noise gate looks the same, so it is evidence, not 
 verdict. The engine's own `xruns`, block size changes and uncopyable blocks are
 under `capture.engine`.
 
-The panel's own record bar is described with [the v1 workflow](v1-workflow.md#the-panels-record-bar).

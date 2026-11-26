@@ -2,13 +2,12 @@
 
 This is the core the brief for issue #10 asks for: a deterministic bridge from
 "the sound is right now" to "a config file on disk", callable from anywhere —
-the CLI (`sushi-rig save <name>`) and the OSC listener (`listen.py`) are both
-thin callers around `save_any`, not separate implementations of it, and the
+the CLI (`sushi-rig save <name>`) is a thin caller around `save_any`, and the
 agent's `POST /rig/save` (the web UI's Save) calls `save_rig` with a capture
-it made itself under its live lock. Per the
-issue #12 decision, this bridge is meant to outlive whatever live tool is used
-for exploration, so it deliberately doesn't assume Open Stage Control is the
-only caller.
+it made itself under its live lock. Per the issue #12 decision, this bridge
+was meant to outlive whatever live tool is used for exploration, and it has:
+the Open Stage Control panel's OSC listener, its first caller, is retired
+(#139, #218).
 
 Composes existing pieces rather than reimplementing them: `live.capture()` for
 the live state, `spec.RigSpec.load()` for the rig structure, `emit.emit()` for
@@ -31,11 +30,11 @@ from .emit import EmitError, emit
 from .live import DEFAULT_GRPC_ADDRESS, capture
 from .spec import RigSpec
 
-# The name becomes a filename, and — via the OSC listener — arrives over
-# unauthenticated UDP. This is the actual security boundary: it blocks `../`,
+# The name becomes a filename, and arrives from a request (the agent's save
+# as, a channel's name). This is the actual security boundary: it blocks `../`,
 # absolute paths, hidden files and anything not plain lowercase/digits/-/_.
-# A panel's own input validation (which reuses this same pattern — see
-# panel.py) is UX, not a substitute for this.
+# The page's own check (which reuses this same pattern, rig.js
+# `checkRigName`) is UX, not a substitute for this.
 NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
@@ -43,8 +42,7 @@ class SaveError(ValueError):
     """A save request that must not proceed — bad name, unreadable rig, etc.
 
     Callers decide how to surface this: the CLI exits with the message, the
-    OSC listener reports it back to the panel's status widget. Either way the
-    failure must be visible, never silent.
+    agent answers it. Either way the failure must be visible, never silent.
     """
 
 
@@ -187,8 +185,7 @@ def save_rig(
     `edits` is the agent's account of the plugins it added and removed live
     (`agent.live_edits`, #32), which lets `fold_state` write a chain's
     plugins as they now run: an added one gets an entry, a removed one's
-    goes. Without it -- the CLI's `sushi-rig save` and the panel's SAVE,
-    which have no log -- a chain whose plugins are not the file's is
+    goes. Without it -- the CLI's `sushi-rig save`, which has no log -- a chain whose plugins are not the file's is
     refused, as a capture of a different rig or an edit nothing here saw: a
     plugin removed live used to be kept in the file with nothing said.
 

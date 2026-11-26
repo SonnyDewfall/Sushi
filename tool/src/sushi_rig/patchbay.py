@@ -49,7 +49,7 @@ TUNER_NODE = "PipeWire ALSA [fmit]/ALSA Capture [fmit]"
 TUNER_PORT = "ALSA Capture [fmit]:input_MONO"
 
 # Which role the tuner listens to. Not a port and not a position: #18's whole
-# point is that the amp, the tuner, the panel and the recorder all key off the
+# point is that the amp, the tuner and the recorder all key off the
 # same declared channel, so a third channel is a declaration rather than an edit
 # in five places.
 GUITAR_ROLE = "guitar-in"

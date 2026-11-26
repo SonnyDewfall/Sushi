@@ -21,17 +21,15 @@ Carla's OSC is write-only from where we sit — it has a feedback channel for
 registered clients, but that is a much larger thing to implement. On the Sushi
 side `capture` asks the rig what it is actually doing; here we can only report
 what we asked for. The two agree as long as one thing at a time touches Carla
-— the panel's listener in panel mode, the agent (amp_live.py) in headless
-mode, which refuses to write while the panel runs — but they are not the same
-guarantee and should not be described as if they were.
+— the agent (amp_live.py), now the Open Stage Control panel and its listener
+are retired — but they are not the same guarantee and should not be
+described as if they were.
 
 What runs the amp, and who changes it while it runs:
 
 - `prepare` writes a run's project and its patchbay; `up` starts Carla on it
   and replays the knobs (`rig._replay_amp`).
-- In panel mode the panel's faders reach Carla through the listener
-  (listen.py `_on_amp`), which remembers what it sent for SAVE.
-- In headless mode the agent does (amp_live.py: GET /amp, POST
+- The agent changes it while it runs (amp_live.py: GET /amp, POST
   /amp/parameter), and it changes the model by restarting Carla alone on a
   rewritten project (`supervisor.Supervisor.restart_amp`), with
   `carla_project` here.
@@ -74,7 +72,8 @@ DEFAULTS: dict[str, float] = {"Input Lvl": 0.0, "Output Lvl": 0.0, "Quality": 1.
 # Quality is deliberately absent: it selects between a lite and a full inference
 # path (above 0.5 is full), so it trades CPU against accuracy rather than
 # shaping tone. It is still saved and restored, just not put on a fader next to
-# controls that do change the sound.
+# controls that do change the sound: the page's amp card (amp_live.amp_view's
+# `panel`) draws a fader for these two only.
 PANEL_PARAMETERS = ("Input Lvl", "Output Lvl")
 
 CONFIG_KEY = "_amp"
@@ -243,44 +242,6 @@ def amp_from_config_file(config_path: Path) -> dict[str, Any] | None:
         return None
 
 
-def panel_amp(config_path: Path, root: Path | None = None) -> dict[str, Any] | None:
-    """What the panel needs to draw an amp tab, from a config's `_amp`.
-
-    Returns None when the config describes no amp, which is the signal for the
-    panel to have no amp tab at all rather than an empty one.
-
-    `root` is where a relative model path resolves from. It is optional only so
-    that callers without one still get a usable tab — but then the model cannot
-    be read, so the Quality control is left off rather than guessed at, and the
-    reason is said out loud. An earlier version guessed the root from the config
-    path and swallowed every failure, which meant an unreadable model made that
-    control vanish with no explanation at all.
-    """
-    described = amp_from_config_file(config_path)
-    if not described or not described.get("model"):
-        return None
-
-    # How many inference paths the model has. A control that picks between them
-    # is meaningless on a model that only has one, so the panel is told the
-    # count rather than assuming two.
-    tiers = 0
-    if root is not None:
-        try:
-            tiers = len(describe_model(resolve_model(described["model"], root))["tiers"])
-        except AmpError as exc:
-            # Not fatal — the panel is still worth drawing without the Quality
-            # control. But it must not be silent: `up` refuses to start on this,
-            # so a panel generated from a config that cannot start should say so.
-            print(f"warning: amp model unreadable, Quality control omitted — {exc}",
-                  file=sys.stderr)
-
-    return {
-        "model_name": Path(described["model"]).stem,
-        "parameters": dict(described.get("parameters") or {}),
-        "tiers": tiers,
-    }
-
-
 # The JACK client and ports Carla gives the amp. "NAM" is the <Name> in the
 # generated project, and Carla names its ports after it.
 AMP_NODE = "NAM"
@@ -310,8 +271,8 @@ def amp_patchbay(
     had one channel. With a microphone on a second channel, "input 0" is a
     position, and positions move: put the vocal track on bus 0 and the guitar
     on bus 1 and the amp would be reprofiling the singer. Issue #18's whole
-    point is that the amp, the tuner, the panel and the recorder all key off
-    the same declared channel.
+    point is that the amp, the tuner and the recorder all key off the same
+    declared channel.
 
     With no `guitar_port` the old positional rule still applies, because a rig
     with no machine file must keep working. `prepare` says so out loud when it

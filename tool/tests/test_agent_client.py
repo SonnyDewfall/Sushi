@@ -49,11 +49,11 @@ HEALTH = {"ok": True, "agent": {"supervisor": {"holds": None, "crashed": [], "no
 
 def test_each_command_becomes_the_route_and_body_the_cli_would_have_run():
     assert agent_client.lifecycle_request("up", namespace()) == ("/rig/up", {
-        "config_name": "guitar_vocal", "rig": False, "headless": False, "tuner": True, "amp": True})
+        "config_name": "guitar_vocal", "rig": False, "tuner": True, "amp": True})
     assert agent_client.lifecycle_request(
         "up", namespace(rig=True, headless=True, tuner=False, amp=False, amp_model="M.nam"),
-    ) == ("/rig/up", {"config_name": "guitar_vocal", "rig": True, "headless": True,
-                      "tuner": False, "amp": False, "amp_model": "M.nam"})
+    ) == ("/rig/up", {"config_name": "guitar_vocal", "rig": True,
+                      "tuner": False, "amp": False, "amp_model": "M.nam"}), "every run is headless: not sent"
     assert agent_client.lifecycle_request("down", namespace(force=True)) == ("/rig/down", {"force": True})
     assert agent_client.lifecycle_request("restart", namespace()) == ("/rig/restart", {})
     assert agent_client.lifecycle_request("restart", namespace(amp_on=True)) == ("/rig/restart", {"amp": True}), \
@@ -81,9 +81,9 @@ def test_up_no_visualiser_tap_on_the_command_line_reaches_up(direct, monkeypatch
 
 
 def test_the_answer_is_printed_as_the_cli_would_have_printed_it():
-    ok = {"ok": True, "output": "Rig up: x (panel mode)\n", "warnings": ["the tuner is deaf"]}
+    ok = {"ok": True, "output": "Rig up: x\n", "warnings": ["the tuner is deaf"]}
     assert agent_client.lifecycle_result(200, ok) == (
-        0, "Rig up: x (panel mode)\n", "warning: the tuner is deaf\n")
+        0, "Rig up: x\n", "warning: the tuner is deaf\n")
     refused = {"ok": False, "output": "", "reason": "a rig is already running: x"}
     assert agent_client.lifecycle_result(409, refused) == (1, "", "a rig is already running: x\n")
     code, _, problem = agent_client.lifecycle_result(400, {"ok": False, "reason": "invalid amp model 'a/b'"})
@@ -93,7 +93,7 @@ def test_the_answer_is_printed_as_the_cli_would_have_printed_it():
 
 def test_status_through_the_agent_says_what_status_says_and_the_crashes_too():
     running = {
-        "verdict": "running", "running": True, "message": "board (headless mode), up 5s",
+        "verdict": "running", "running": True, "message": "board, up 5s",
         "config": "/c/board.json", "rig": None, "pgid": 4000, "amp_model": None,
         "log_dir": "/logs", "children": {"sushi": {"pid": 4002, "alive": True},
                                          "fmit": {"pid": 4001, "alive": False}},
@@ -153,12 +153,13 @@ def test_restart_amp_with_no_agent_brings_the_amp_back_directly(monkeypatch):
 def test_with_no_agent_running_each_command_acts_directly_and_says_so(direct, monkeypatch, capsys):
     monkeypatch.setattr(agent_client, "probe", nothing_listening)
     monkeypatch.setattr(agent_client, "ask", lambda *a, **k: pytest.fail("asked an absent agent"))
+    # `--headless` is taken, and changes nothing, since every run is (#139).
     assert cli._main(["up", "guitar_vocal", "--headless", "--no-amp"]) == 0
     assert cli._main(["down", "--force"]) == 0
     assert cli._main(["restart"]) == 0
     assert cli._main(["status"]) == 0
     assert direct == [
-        ("up", "guitar_vocal", {"headless": True, "tuner": True, "amp": False, "amp_model": None, "rig": False,
+        ("up", "guitar_vocal", {"tuner": True, "amp": False, "amp_model": None, "rig": False,
                                 "machine": None, "visualiser_tap": True}),
         ("down", True), ("restart",), ("status",),
     ]
@@ -184,7 +185,7 @@ def test_with_the_agent_running_each_command_asks_it_and_says_so(direct, monkeyp
     assert cli._main(["status"]) == 0
     assert direct == [], "nothing was done directly"
     assert asked == [
-        ("POST", "/rig/up", {"config_name": "guitar_vocal", "rig": True, "headless": False,
+        ("POST", "/rig/up", {"config_name": "guitar_vocal", "rig": True,
                              "tuner": False, "amp": True}),
         ("POST", "/rig/down", {"force": False}),
         ("POST", "/rig/restart", {}),
@@ -291,7 +292,7 @@ def test_the_cli_against_a_served_agent(monkeypatch, capsys, direct, living_pid)
 
     async def runner(args):
         calls.append(list(args))
-        return Outcome(True, 0, "Stopping x (headless mode)...\nRig offline.\n", "")
+        return Outcome(True, 0, "Stopping x...\nRig offline.\n", "")
 
     agent = Agent(describe=lambda: dict(HEALTH["rig"]), run=runner)
     port = free_port()
@@ -327,7 +328,7 @@ def test_the_cli_against_a_served_agent(monkeypatch, capsys, direct, living_pid)
     assert calls == [["down"]]
     assert direct == []
     printed = capsys.readouterr()
-    assert printed.out == "Stopping x (headless mode)...\nRig offline.\nNo rig is running.\n"
+    assert printed.out == "Stopping x...\nRig offline.\nNo rig is running.\n"
     assert printed.err.count(f"asking the agent at http://127.0.0.1:{port}") == 2
 
 
@@ -428,5 +429,5 @@ def test_up_takes_a_machine_file_directly_and_never_through_the_agent(direct, mo
     assert "--machine is taken with --direct only" in str(refused.value.code) and direct == []
     monkeypatch.chdir(tmp_path)
     assert cli._main(["up", "board", "--rig", "--machine", "m.yaml", "--direct"]) == 0
-    assert direct == [("up", "board", {"headless": False, "tuner": True, "amp": True, "amp_model": None,
+    assert direct == [("up", "board", {"tuner": True, "amp": True, "amp_model": None,
                                        "rig": True, "machine": str(tmp_path / "m.yaml"), "visualiser_tap": True})]

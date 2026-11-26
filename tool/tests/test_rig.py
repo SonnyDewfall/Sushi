@@ -6,7 +6,7 @@ against real hardware, and are NOT covered here -- faking them would prove only
 that the fakes were called:
 
 - that a killed process group really does take `sushi.bin` and
-  open-stage-control's Electron helpers with it;
+  Carla and the recorder with it;
 - that SIGINT is what lets Sushi release its JACK ports cleanly;
 - that `up` leaves nothing holding the caller's stdout (the `| grep` hang);
 - the real children themselves: Sushi's gRPC coming up, Carla's OSC replay,
@@ -40,133 +40,10 @@ from sushi_rig.rig import (
     child_environment,
     format_uptime,
     plan_children,
-    resolve_rig_yaml,
-    rig_source_problem,
 )
 from sushi_rig import procs, rig, state as state_file
 from sushi_rig.state import liveness
 from pathlib import Path
-
-
-# --- which rig.yaml a config came from --------------------------------------
-
-
-V1_SOURCE = """\
-meta: {name: t, version: "1"}
-host: {samplerate: 48000}
-tracks:
-  - name: board
-    channels: 2
-    inputs: [{engine_bus: 0, track_bus: 0}]
-    outputs: [{engine_bus: 0, track_bus: 0}]
-    plugins:
-      - {name: comp, type: lv2, uri: "http://drobilla.net/plugins/mda/Dynamics"}
-"""
-
-V2_SOURCE = """\
-kind: rig
-schema_version: 1
-name: newer
-channels:
-  - {name: board, input: guitar-in, width: mono, chain: [{name: comp, uri: "http://drobilla.net/plugins/mda/Dynamics"}]}
-master: {output: monitor-out}
-"""
-
-BOARD_CONFIG = {"tracks": [{"name": "board", "plugins": [{"name": "comp"}]}]}
-
-
-def _root(tmp_path):
-    (tmp_path / "config" / "src").mkdir(parents=True)
-    (tmp_path / "config" / "rigs").mkdir()
-    return tmp_path
-
-
-def test_a_saved_variant_is_attributed_to_the_source_it_names(tmp_path):
-    """A variant records the yaml it was built from, because variants share a
-    hand-authored source rather than getting one of their own."""
-    root = _root(tmp_path)
-    (root / "config" / "src" / "acoustic.yaml").write_text(V1_SOURCE)
-    config = root / "acoustic_chorus.json"
-    config.write_text(json.dumps({**BOARD_CONFIG, "_meta": {"source": "config/src/acoustic.yaml"}}))
-    assert resolve_rig_yaml(config, root) == "config/src/acoustic.yaml"
-
-
-def test_a_hand_authored_config_is_sourced_from_the_file_of_its_own_name(tmp_path):
-    """The canonical configs carry no _meta.source; their source is the yaml of
-    the same name under config/src/, or config/rigs/ once they are v2 rigs."""
-    root = _root(tmp_path)
-    (root / "config" / "src" / "electric_board.yaml").write_text(V1_SOURCE)
-    (root / "config" / "rigs" / "newer.yaml").write_text(V2_SOURCE)
-    for name in ("electric_board", "newer"):
-        (root / f"{name}.json").write_text(json.dumps(BOARD_CONFIG))
-    assert resolve_rig_yaml(root / "electric_board.json", root) == "config/src/electric_board.yaml"
-    assert resolve_rig_yaml(root / "newer.json", root) == "config/rigs/newer.yaml"
-
-
-def test_a_source_that_does_not_describe_the_config_is_passed_over(tmp_path):
-    """The converted v2 rigs carry their v1 variant's provenance, so a config
-    emitted from one names electric_board's yaml as its source. A source is
-    taken only if every track and plugin the config names is in it; otherwise
-    SAVE would be refused on every press, or worse."""
-    root = _root(tmp_path)
-    (root / "config" / "src" / "electric_board.yaml").write_text(V1_SOURCE)
-    (root / "config" / "rigs" / "accustomed.yaml").write_text(V2_SOURCE.replace("newer", "accustomed"))
-    config = root / "accustomed.json"
-    config.write_text(json.dumps({
-        "_meta": {"source": "config/src/electric_board.yaml"},
-        "tracks": [{"name": "board", "plugins": [{"name": "comp"}, {"name": "board_send"}]},
-                   {"name": "master", "plugins": [{"name": "master_return"}]}],
-    }))
-    assert resolve_rig_yaml(config, root) == "config/rigs/accustomed.yaml"
-    assert rig_source_problem(config, root) is None
-
-
-def test_a_config_with_no_source_anywhere_gets_none_and_a_reason(tmp_path):
-    """It used to fall back to electric_board's yaml, so SAVE on guitar_vocal
-    wrote electric_board's chain with no settings and said saved."""
-    root = _root(tmp_path)
-    (root / "config" / "src" / "orphan.yaml").write_text(V1_SOURCE)
-    config = root / "orphan.json"
-    config.write_text(json.dumps({"tracks": [{"name": "vocal", "plugins": [{"name": "vocal_eq"}]}]}))
-    assert resolve_rig_yaml(config, root) is None
-    problem = rig_source_problem(config, root)
-    assert problem.startswith("SAVE is off for orphan")
-    assert "config/src/orphan.yaml has no vocal, vocal_eq" in problem
-    assert "config/rigs/orphan.yaml does not exist" in problem
-    assert resolve_rig_yaml(root / "missing.json", root) is None
-    broken = root / "broken.json"
-    broken.write_text("{not json")
-    assert resolve_rig_yaml(broken, root) is None
-
-
-def test_every_committed_config_has_a_source_to_save_from(frozen_root):
-    """guitar_vocal was the one that fell through to electric_board.
-
-    The frozen v1 configs and config/src/ sources, beside the frozen rigs
-    (rig_fixtures.py). For most configs the source that describes them is the
-    rig of their name, and the one in config/rigs/ stops describing its
-    config the day a plugin is removed from it and saved: SAVE is then off
-    for that v1 config and says so, which is right, and is not this test's
-    to fail on."""
-    configs = sorted((frozen_root / "config").glob("*.json"))
-    assert len(configs) == 11
-    for config in configs:
-        source = resolve_rig_yaml(config, frozen_root)
-        assert source is not None, (config.name, rig_source_problem(config, frozen_root))
-        assert (frozen_root / source).is_file()
-
-
-def test_the_listener_is_started_without_a_rig_when_there_is_none(plan_args):
-    root, config, _ = plan_args
-    listen = next(c for c in plan_children(root, config, None, headless=False, tuner=True)
-                  if c["name"] == "listen")
-    assert "--rig" not in listen["command"]
-    listen = next(c for c in plan_children(root, config, "config/src/x.yaml", headless=False, tuner=True)
-                  if c["name"] == "listen")
-    assert listen["command"][listen["command"].index("--rig") + 1] == "config/src/x.yaml"
-
-
-# --- v2 rigs: up --rig (#30's last slice) ------------------------------------
 
 
 from rig_fixtures import FROZEN_MACHINE, declaring, fake_lv2_system, stand_in_plugins  # noqa: E402
@@ -287,7 +164,7 @@ def test_up_hands_the_supervisor_the_machine_file_the_rig_was_compiled_against(u
         return 4242, ready_r
 
     monkeypatch.setattr(rig, "_fork_supervisor", fork)
-    assert rig.up("x", headless=True, amp=False, rig=True) == 0
+    assert rig.up("x", amp=False, rig=True) == 0
     assert seen[0].machine_file == MACHINE
 
 
@@ -315,13 +192,13 @@ def test_up_on_a_v2_rig_uses_its_compiled_config_and_patchbay(up_world, monkeypa
     })
     seen = {}
 
-    def plan(root, config, rig_yaml, **kw):
+    def plan(root, config, **kw):
         seen.update(config=config, patchbay=kw.get("patchbay"))
         return []
 
     monkeypatch.setattr(rig, "plan_children", plan)
     up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
-    assert rig.up("x", headless=True, amp=False, rig=True) == 0
+    assert rig.up("x", amp=False, rig=True) == 0
     assert seen == {"config": compiled, "patchbay": wired}
 
 
@@ -350,13 +227,13 @@ def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up
 
     monkeypatch.setattr("sushi_rig.amp.prepare", fake_prepare_amp)
 
-    def plan(root, config, rig_yaml, **kw):
+    def plan(root, config, **kw):
         seen["patchbay"] = kw.get("patchbay")
         return []
 
     monkeypatch.setattr(rig, "plan_children", plan)
     up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
-    assert rig.up("x", headless=True, amp=True, rig=True) == 0
+    assert rig.up("x", amp=True, rig=True) == 0
     assert seen == {"base": wired, "patchbay": rewired}
 
 
@@ -368,13 +245,13 @@ def test_up_says_an_amp_that_is_not_wired(up_world, monkeypatch, tmp_path, capsy
                 "patchbay": None, "warnings": ["THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link"]}
 
     monkeypatch.setattr("sushi_rig.amp.prepare", unwired)
-    monkeypatch.setattr(rig, "plan_children", lambda root, config, rig_yaml, **kw: [])
+    monkeypatch.setattr(rig, "plan_children", lambda root, config, **kw: [])
     up_world.say("READY", then_write=running_state())
-    assert rig.up(headless=True, amp=True) == 0
+    assert rig.up(amp=True) == 0
     assert "warning: THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link" in capsys.readouterr().err
 
     heard = []
-    rig.prepare_launch(headless=True, amp=True, warn=heard.append)
+    rig.prepare_launch(amp=True, warn=heard.append)
     assert heard == ["THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link"]
 
 
@@ -464,37 +341,12 @@ def test_a_running_tuner_the_patchbay_never_taps_is_said(tmp_path, monkeypatch):
     assert rig._unmade_link_problems(patchbay, {"sushi", "qpwgraph"}) == []
 
 
-def test_a_rig_run_with_a_panel_hands_its_file_to_the_listener(up_world, monkeypatch, tmp_path, capsys):
-    """SAVE is on for a rig run: the listener gets the rig file, and no
-    'SAVE is off' warning is printed."""
-    compiled = tmp_path / "x.json"
-    compiled.write_text(json.dumps({"tracks": [], "_meta": {"source": "config/rigs/x.yaml"}}))
-    wired = tmp_path / "x.qpwgraph"
-    wired.write_text("<patchbay/>")
-    monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
-        "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": [],
-        "machine": None,
-    })
-    monkeypatch.setattr(rig, "resolve_rig_yaml", lambda config, root: "config/rigs/x.yaml")
-    seen = {}
-
-    def plan(root, config, rig_yaml, **kw):
-        seen["rig_yaml"] = rig_yaml
-        return []
-
-    monkeypatch.setattr(rig, "plan_children", plan)
-    up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
-    assert rig.up("x", headless=False, amp=False, rig=True) == 0
-    assert seen["rig_yaml"] == "config/rigs/x.yaml"
-    assert "SAVE is off" not in capsys.readouterr().err
-
-
 def test_restart_brings_back_a_v2_rig_as_a_v2_rig():
     from sushi_rig.rig import restart_arguments
 
-    _, options = restart_arguments({"config_name": "x", "mode": "headless", "rig": "config/rigs/x.yaml"})
+    _, options = restart_arguments({"config_name": "x", "rig": "config/rigs/x.yaml"})
     assert options["rig"] is True
-    _, options = restart_arguments({"config_name": "x", "mode": "headless", "rig": None})
+    _, options = restart_arguments({"config_name": "x", "rig": None})
     assert options["rig"] is False
 
 
@@ -550,7 +402,7 @@ def test_state_without_a_group_or_a_pid_is_invalid():
         pytest.fail("not asked")
 
     assert liveness({"supervisor_pid": 42}, never, never) == "invalid"
-    assert liveness({"mode": "panel"}, never, never) == "invalid"
+    assert liveness({"config_name": "x"}, never, never) == "invalid"
 
 
 def test_a_group_that_is_not_the_supervisors_own_is_invalid():
@@ -582,74 +434,48 @@ def _names(children):
 
 @pytest.fixture
 def plan_args(tmp_path):
-    return tmp_path, tmp_path / "config" / "electric_board.json", "config/src/x.yaml"
+    return tmp_path, tmp_path / "config" / "electric_board.json"
 
 
-def test_panel_mode_starts_the_listener_and_sushi(plan_args):
-    root, config, rig_yaml = plan_args
-    names = _names(plan_children(root, config, rig_yaml, headless=False, tuner=True))
-    assert names == ["fmit", "qpwgraph", "listen", "sushi"]
-
-
-def test_headless_mode_omits_the_save_listener(plan_args):
-    """The listener exists to serve the panel's save and reorder buttons. With
-    no panel, nothing would ever talk to it."""
-    root, config, rig_yaml = plan_args
-    names = _names(plan_children(root, config, rig_yaml, headless=True, tuner=True))
+def test_a_run_starts_no_save_listener(plan_args):
+    """The listener served the Open Stage Control panel's save and reorder
+    buttons. The panel is retired (#139), so nothing would ever talk to it."""
+    root, config = plan_args
+    names = _names(plan_children(root, config, tuner=True))
     assert "listen" not in names
     assert names == ["fmit", "qpwgraph", "sushi"]
 
 
-def test_the_tuner_can_be_skipped_in_either_mode(plan_args):
-    """A live player wants a tuner, which is why it is not tied to the mode."""
-    root, config, rig_yaml = plan_args
-    for headless in (True, False):
-        names = _names(
-            plan_children(root, config, rig_yaml, headless=headless, tuner=False)
-        )
-        assert "fmit" not in names
+def test_the_tuner_can_be_skipped(plan_args):
+    root, config = plan_args
+    names = _names(plan_children(root, config, tuner=False))
+    assert "fmit" not in names
 
 
 def test_sushi_starts_last(plan_args):
     """The patchbay has to be up before Sushi appears, or its ports arrive with
     nothing ready to connect them."""
-    root, config, rig_yaml = plan_args
-    for headless in (True, False):
-        names = _names(
-            plan_children(root, config, rig_yaml, headless=headless, tuner=True)
-        )
-        assert names[-1] == "sushi"
-        assert names.index("qpwgraph") < names.index("sushi")
+    root, config = plan_args
+    names = _names(plan_children(root, config, tuner=True))
+    assert names[-1] == "sushi"
+    assert names.index("qpwgraph") < names.index("sushi")
 
 
 def test_only_the_audio_path_is_mandatory(plan_args):
     """fmit and qpwgraph failing should be reported, not abort the start —
-    neither is in the audio path. Sushi and the listener are."""
-    root, config, rig_yaml = plan_args
-    children = plan_children(root, config, rig_yaml, headless=False, tuner=True)
+    neither is in the audio path. Sushi is."""
+    root, config = plan_args
+    children = plan_children(root, config, tuner=True)
     optional = {c["name"] for c in children if c["optional"]}
     assert optional == {"fmit", "qpwgraph"}
-
-
-def test_the_listener_is_pointed_at_the_config_being_run(plan_args):
-    """Panel auto-refresh after a reorder regenerates from this config; pointing
-    it at the wrong one would rebuild the panel from a rig that isn't running."""
-    root, config, rig_yaml = plan_args
-    listener = next(
-        c for c in plan_children(root, config, rig_yaml, headless=False, tuner=True)
-        if c["name"] == "listen"
-    )
-    command = listener["command"]
-    assert command[command.index("--panel-config") + 1] == str(config)
-    assert command[command.index("--rig") + 1] == rig_yaml
 
 
 def test_commands_carry_no_shell_metacharacters(plan_args):
     """Every command is a list passed straight to exec, never a shell string —
     so a config or path containing a space or a quote cannot turn into
     something else on the way."""
-    root, config, rig_yaml = plan_args
-    for child in plan_children(root, config, rig_yaml, headless=False, tuner=True):
+    root, config = plan_args
+    for child in plan_children(root, config, tuner=True):
         assert isinstance(child["command"], list)
         assert all(isinstance(part, str) for part in child["command"])
 
@@ -696,12 +522,12 @@ def test_default_config_matches_what_the_old_script_launched():
 def test_the_amp_is_planned_only_when_a_project_exists(plan_args):
     """A config with no `_amp` section describes a rig with no amp, and should
     start one no more than --no-amp does."""
-    root, config, rig_yaml = plan_args
-    without = _names(plan_children(root, config, rig_yaml, headless=False, tuner=True))
+    root, config = plan_args
+    without = _names(plan_children(root, config, tuner=True))
     assert "amp" not in without
 
     with_amp = _names(plan_children(
-        root, config, rig_yaml, headless=False, tuner=True,
+        root, config, tuner=True,
         amp_project=root / "amp.carxp",
     ))
     assert "amp" in with_amp
@@ -710,10 +536,10 @@ def test_the_amp_is_planned_only_when_a_project_exists(plan_args):
 def test_a_missing_carla_does_not_stop_the_rig(plan_args):
     """Optional in the same sense the tuner is: the rig is perfectly playable
     without an amp, so Carla failing should be reported, not fatal."""
-    root, config, rig_yaml = plan_args
+    root, config = plan_args
     amp = next(
         c for c in plan_children(
-            root, config, rig_yaml, headless=False, tuner=True,
+            root, config, tuner=True,
             amp_project=root / "amp.carxp",
         ) if c["name"] == "amp"
     )
@@ -727,10 +553,10 @@ def test_the_amp_runs_under_pw_jack(plan_args):
     had a jackd to fall back on, so this was invisible until a new one didn't
     — the same class of hidden portability break `LV2_PATH` is kept narrow to
     catch."""
-    root, config, rig_yaml = plan_args
+    root, config = plan_args
     amp = next(
         c for c in plan_children(
-            root, config, rig_yaml, headless=False, tuner=True,
+            root, config, tuner=True,
             amp_project=root / "amp.carxp",
         ) if c["name"] == "amp"
     )
@@ -742,10 +568,10 @@ def test_the_dsp_children_ask_for_the_rigs_own_quantum(plan_args):
     "high latency" turned out to mean. A JACK client locks whatever the graph
     was at when it started, so the rig has to say the number rather than
     inherit it."""
-    root, config, rig_yaml = plan_args
+    root, config = plan_args
     children = {
         c["name"]: c for c in plan_children(
-            root, config, rig_yaml, headless=False, tuner=True,
+            root, config, tuner=True,
             amp_project=root / "amp.carxp",
         )
     }
@@ -760,10 +586,10 @@ def test_the_tuner_is_not_dragged_to_the_audio_quantum(plan_args):
     """It taps the input and does no DSP; it has no business being pinned to
     the audio path's buffer size. It does carry other environment of its own
     (see the autoconnect test below), so this is about the quantum alone."""
-    root, config, rig_yaml = plan_args
+    root, config = plan_args
     fmit = next(
         c for c in plan_children(
-            root, config, rig_yaml, headless=False, tuner=True,
+            root, config, tuner=True,
         ) if c["name"] == "fmit"
     )
     assert "PIPEWIRE_QUANTUM" not in fmit.get("env_set", {})
@@ -775,10 +601,10 @@ def test_the_tuner_does_not_auto_connect(plan_args):
     patchbay also wires it to the interface, the tuner bridged the two into one
     driver group and the whole rig ended up clocked by the webcam. Its routing
     belongs in the patchbay, where every other connection in this rig lives."""
-    root, config, rig_yaml = plan_args
+    root, config = plan_args
     fmit = next(
         c for c in plan_children(
-            root, config, rig_yaml, headless=False, tuner=True,
+            root, config, tuner=True,
         ) if c["name"] == "fmit"
     )
     assert fmit["env_set"]["PIPEWIRE_PROPS"] == "{ node.autoconnect = false }"
@@ -787,38 +613,20 @@ def test_the_tuner_does_not_auto_connect(plan_args):
 def test_the_amp_starts_after_sushi(plan_args):
     """Nothing depends on the ordering for correctness, but Sushi is the part
     worth getting up first if anything is slow."""
-    root, config, rig_yaml = plan_args
+    root, config = plan_args
     names = _names(plan_children(
-        root, config, rig_yaml, headless=False, tuner=True,
+        root, config, tuner=True,
         amp_project=root / "amp.carxp",
     ))
     assert names.index("sushi") < names.index("amp")
 
 
-def test_the_listener_is_told_the_amp_so_saves_can_record_it(plan_args):
-    """The save button writes the amp into the config it saves, and the only
-    record of the amp's values is what the listener was told — Carla cannot be
-    asked."""
-    root, config, rig_yaml = plan_args
-    listener = next(
-        c for c in plan_children(
-            root, config, rig_yaml, headless=False, tuner=True,
-            amp_project=root / "amp.carxp", amp_model="amp/models/M.nam",
-            amp_values={"Input Lvl": 3.0},
-        ) if c["name"] == "listen"
-    )
-    command = listener["command"]
-    assert command[command.index("--amp-model") + 1] == "amp/models/M.nam"
-    assert "Input Lvl=3.0" in command
-
-
-def test_headless_has_no_listener_to_tell(plan_args):
-    """Headless runs the amp but no panel and no listener, so there is nothing
-    to record values for — and nothing that would change them."""
-    root, config, rig_yaml = plan_args
+def test_a_run_with_an_amp_has_no_listener_to_tell(plan_args):
+    """A run with an amp starts no listener (the panel's, which recorded the
+    amp's values for its SAVE): the agent is the amp's one writer."""
+    root, config = plan_args
     names = _names(plan_children(
-        root, config, rig_yaml, headless=True, tuner=True,
-        amp_project=root / "amp.carxp", amp_model="amp/models/M.nam",
+        root, config, tuner=True, amp_project=root / "amp.carxp",
     ))
     assert "listen" not in names
     assert "amp" in names
@@ -833,29 +641,27 @@ def test_restart_brings_back_the_same_rig():
     from sushi_rig.rig import restart_arguments
 
     name, options = restart_arguments({
-        "config_name": "electric-chorus-2", "mode": "panel",
-        "tuner_requested": True, "amp_requested": True, "visualiser_tap_requested": True,
-        "children": {"fmit": 1, "sushi": 2, "amp": 3, "open-stage-control": 4, "vistap": 5},
+        "config_name": "electric-chorus-2", "tuner_requested": True, "amp_requested": True, "visualiser_tap_requested": True,
+        "children": {"fmit": 1, "sushi": 2, "amp": 3, "vistap": 5},
     })
     assert name == "electric-chorus-2"
     assert options == {
-        "headless": False, "tuner": True, "amp": True, "amp_model": None, "rig": False, "machine": None,
+        "tuner": True, "amp": True, "amp_model": None, "rig": False, "machine": None,
         "visualiser_tap": True,
     }
 
 
 def test_restart_preserves_the_choices_the_rig_was_started_with():
-    """A rig started --headless --no-amp --no-tuner --no-visualiser-tap must
-    not quietly gain a panel, an amp, a tuner and a tap on the way back."""
+    """A rig started --no-amp --no-tuner --no-visualiser-tap must not quietly
+    gain an amp, a tuner and a tap on the way back."""
     from sushi_rig.rig import restart_arguments
 
     _, options = restart_arguments({
-        "config_name": "x", "mode": "headless",
-        "tuner_requested": False, "amp_requested": False, "visualiser_tap_requested": False,
+        "config_name": "x", "tuner_requested": False, "amp_requested": False, "visualiser_tap_requested": False,
         "children": {"sushi": 1},
     })
     assert options == {
-        "headless": True, "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None,
+        "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None,
         "visualiser_tap": False,
     }
 
@@ -883,10 +689,10 @@ def test_restart_brings_a_rig_of_channels_back_on_the_machine_file_it_was_starte
     which a draft the web UI checked against the run's need not match."""
     from sushi_rig.rig import restart_arguments
 
-    _, options = restart_arguments({"config_name": "board", "mode": "headless", "rig": "config/rigs/board.yaml",
+    _, options = restart_arguments({"config_name": "board", "rig": "config/rigs/board.yaml",
                                     "machine": "/m/stage.yaml", "children": {"sushi": 1}})
     assert options["rig"] is True and options["machine"] == "/m/stage.yaml"
-    _, v1 = restart_arguments({"config_name": "board", "mode": "headless", "machine": "/m/stage.yaml",
+    _, v1 = restart_arguments({"config_name": "board", "machine": "/m/stage.yaml",
                                "children": {"sushi": 1}})
     assert v1["machine"] is None, "a v1 config is not compiled against one"
 
@@ -898,7 +704,7 @@ def test_restart_carries_the_amp_model_override():
     from sushi_rig.rig import restart_arguments
 
     _, options = restart_arguments({
-        "config_name": "x", "mode": "panel", "amp_requested": True,
+        "config_name": "x", "amp_requested": True,
         "amp_model": "amp/models/Other.nam",
         "amp_model_requested": "amp/models/Other.nam",
         "children": {"sushi": 1, "amp": 2},
@@ -913,7 +719,7 @@ def test_restart_does_not_pin_the_configs_own_model_as_an_override():
     from sushi_rig.rig import restart_arguments
 
     _, options = restart_arguments({
-        "config_name": "x", "mode": "panel", "amp_requested": True,
+        "config_name": "x", "amp_requested": True,
         "amp_model": "amp/models/FromConfig.nam", "amp_model_requested": None,
         "children": {"sushi": 1, "amp": 2},
     })
@@ -929,10 +735,9 @@ def test_an_amp_that_was_asked_for_but_failed_comes_back_asked_for():
     from sushi_rig.rig import restart_arguments
 
     _, options = restart_arguments({
-        "config_name": "x", "mode": "panel",
-        "tuner_requested": True, "amp_requested": True,
+        "config_name": "x", "tuner_requested": True, "amp_requested": True,
         "amp_model": "amp/models/M.nam", "amp_model_requested": "amp/models/M.nam",
-        "children": {"sushi": 1, "listen": 3},  # no fmit, no amp: both failed
+        "children": {"sushi": 1, "recorder": 3},  # no fmit, no amp: both failed
     })
     assert options["amp"] is True
     assert options["tuner"] is True
@@ -945,7 +750,7 @@ def test_a_state_file_from_before_requests_were_recorded_falls_back_to_children(
     from sushi_rig.rig import restart_arguments
 
     _, options = restart_arguments({
-        "config_name": "x", "mode": "panel", "children": {"sushi": 1, "amp": 2},
+        "config_name": "x", "children": {"sushi": 1, "amp": 2},
     })
     assert options["amp"] is True
     assert options["tuner"] is False
@@ -999,8 +804,7 @@ def test_env_unset_still_removes_what_a_child_must_not_see():
 
 def running_state(**over):
     state = {
-        "supervisor_pid": 4001, "pgid": 4001, "mode": "panel",
-        "config_name": "electric_board", "config": "/x/electric_board.json",
+        "supervisor_pid": 4001, "pgid": 4001, "config_name": "electric_board", "config": "/x/electric_board.json",
         "started_at": "2026-01-01T00:00:00+00:00",
         "children": {"sushi": 4002, "fmit": 4003}, "log_dir": "/x/logs",
         "amp_model": None, "tuner_requested": True, "amp_requested": False,
@@ -1272,7 +1076,7 @@ def test_status_marks_a_dead_child(world, monkeypatch, capsys):
     monkeypatch.setattr(rig, "pid_alive", lambda pid: pid != 4003)
     assert rig.status() == 0
     out = capsys.readouterr().out
-    assert "electric_board (panel mode)" in out
+    assert "electric_board, up " in out
     sushi = next(l for l in out.splitlines() if "sushi" in l)
     fmit = next(l for l in out.splitlines() if "fmit" in l)
     assert "(DEAD)" not in sushi
@@ -1338,9 +1142,9 @@ def test_describe_rig_is_status_as_data(world, monkeypatch):
     described = rig.describe_rig(now=now)
     assert described["verdict"] == "running" and described["running"] is True
     assert described["config_name"] == "electric_board"
-    assert described["mode"] == "panel"
+    assert "mode" not in described
     assert described["uptime_seconds"] == 120.0
-    assert described["message"] == f"electric_board (panel mode), up {format_uptime(120)}"
+    assert described["message"] == f"electric_board, up {format_uptime(120)}"
     assert described["children"]["sushi"]["alive"] is True
     assert described["children"]["fmit"] == {"pid": 4003, "alive": False}
     assert described["log_dir"] == state["log_dir"]
@@ -1392,7 +1196,7 @@ def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch
     visualiser tap all survive."""
     whole_plugins(tmp_path, monkeypatch)
     state_file.write_state(running_state(
-        mode="headless", amp_requested=True,
+        amp_requested=True,
         amp_model="amp/models/Other.nam", amp_model_requested="amp/models/Other.nam",
         visualiser_tap_requested=False,
         children={"sushi": 4002},  # the amp is not here: it failed to start
@@ -1402,7 +1206,7 @@ def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch
     monkeypatch.setattr(rig, "up", lambda name, **kw: calls.append((name, kw)) or 0)
     assert rig.restart() == 0
     assert calls == [("electric_board", {
-        "headless": True, "tuner": True, "amp": True,
+        "tuner": True, "amp": True,
         "amp_model": "amp/models/Other.nam", "rig": False, "machine": None, "visualiser_tap": False,
     })]
 
@@ -1463,7 +1267,7 @@ def test_up_refuses_when_a_live_rig_is_recorded(up_world, monkeypatch):
     monkeypatch.setattr(rig, "pgid_alive", lambda pgid: True)
     up_world.say("READY")
     with pytest.raises(rig.RigError, match="already running"):
-        rig.up(headless=True)
+        rig.up()
     assert up_world.forked == 0
     assert state_file.read_state() is not None, "a refusal must not clear a live rig's state"
 
@@ -1471,10 +1275,10 @@ def test_up_refuses_when_a_live_rig_is_recorded(up_world, monkeypatch):
 def test_up_clears_a_stale_state_file_and_carries_on(up_world, capsys):
     state_file.write_state(running_state(supervisor_pid=4001))  # pid_alive: False
     up_world.say("READY", then_write=running_state(supervisor_pid=4242, pgid=4242))
-    assert rig.up(headless=True, tuner=False, amp=False) == 0
+    assert rig.up(tuner=False, amp=False) == 0
     assert up_world.forked == 1
     assert state_file.read_state()["supervisor_pid"] == 4242, "the stale file was replaced"
-    assert "Rig up: electric_board (headless mode)" in capsys.readouterr().out
+    assert "Rig up: electric_board\n" in capsys.readouterr().out
 
 
 def test_up_refuses_on_a_crashed_rigs_leftovers_and_points_at_down(up_world, monkeypatch):
@@ -1485,7 +1289,7 @@ def test_up_refuses_on_a_crashed_rigs_leftovers_and_points_at_down(up_world, mon
     monkeypatch.setattr(rig, "pgid_alive", lambda pgid: True)  # pid_alive: False
     up_world.say("READY")
     with pytest.raises(rig.RigError, match="sushi-rig down"):
-        rig.up(headless=True, tuner=False, amp=False)
+        rig.up(tuner=False, amp=False)
     assert up_world.forked == 0
     assert state_file.read_state() is not None
 
@@ -1502,7 +1306,7 @@ def test_up_refuses_a_state_file_that_describes_no_rig_of_ours(up_world, monkeyp
     monkeypatch.setattr(rig, "pgid_alive", lambda pgid: True)
     up_world.say("READY")
     with pytest.raises(rig.RigError, match="does not describe a rig"):
-        rig.up(headless=True, tuner=False, amp=False)
+        rig.up(tuner=False, amp=False)
     assert up_world.forked == 0
     assert state_file.read_state() is not None
 
@@ -1513,7 +1317,7 @@ def test_up_refuses_when_something_already_holds_the_grpc_port(up_world, monkeyp
     monkeypatch.setattr(rig, "port_is_open", lambda host, port, *a, **k: port == 51051)
     up_world.say("READY")
     with pytest.raises(rig.RigError, match="127.0.0.1:51051"):
-        rig.up(headless=True)
+        rig.up()
     assert up_world.forked == 0
 
 
@@ -1541,7 +1345,7 @@ def test_up_refuses_a_rig_whose_plugins_are_not_all_in_plugins_naming_them_and_t
     declaring(multiarch, "pedal", missing)
     up_world.say("READY", then_write=running_state())
     with pytest.raises(SystemExit) as exit_info:
-        main(["up", "--direct", "--headless", "--no-tuner", "--no-amp"])
+        main(["up", "--direct", "--no-tuner", "--no-amp"])
     said = exit_info.value.code
     assert isinstance(said, str), "sys.exit with a message: exit status 1"
     assert said.startswith(f"{rig.DEFAULT_CONFIG_NAME} was not started: 1 plugin(s) it loads are not in "
@@ -1611,7 +1415,7 @@ def test_up_exits_nonzero_when_sushi_exits_during_startup(up_world):
 
     up_world.say("FAIL Sushi exited during startup — see /x/sushi.log")
     with pytest.raises(SystemExit) as exit_info:
-        main(["up", "--direct", "--headless", "--no-tuner", "--no-amp"])
+        main(["up", "--direct", "--no-tuner", "--no-amp"])
     assert exit_info.value.code == "Sushi exited during startup — see /x/sushi.log"
     assert up_world.killed == [4242]
 
@@ -1624,7 +1428,7 @@ def test_up_reports_a_fail_line_as_an_error_and_kills_the_group(up_world):
         then_write=running_state(supervisor_pid=4242, pgid=4242),
     )
     with pytest.raises(rig.RigError, match="Sushi exited during startup"):
-        rig.up(headless=True, tuner=False, amp=False)
+        rig.up(tuner=False, amp=False)
     assert up_world.killed == [4242], "whatever did start must not be left running"
     assert state_file.read_state() is None, "a failed start leaves no state"
 
@@ -1634,14 +1438,14 @@ def test_up_reports_a_supervisor_that_went_silent_as_a_failure(up_world):
     or crashed -- is still a failed start, not a cheerful prompt."""
     up_world.say()
     with pytest.raises(rig.RigError, match="failed to start"):
-        rig.up(headless=True, tuner=False, amp=False)
+        rig.up(tuner=False, amp=False)
     assert up_world.killed == [4242]
 
 
 def test_up_prints_warnings_and_returns_zero_on_ready(up_world, capsys):
     up_world.say("WARN amp exited during startup (status 1)", "WARN the tuner is deaf", "READY",
                  then_write=running_state(supervisor_pid=4242, pgid=4242))
-    assert rig.up(headless=True, tuner=False, amp=False) == 0
+    assert rig.up(tuner=False, amp=False) == 0
     printed = capsys.readouterr()
     assert "warning: amp exited during startup (status 1)" in printed.err
     assert "warning: the tuner is deaf" in printed.err
@@ -1653,7 +1457,7 @@ def test_up_does_not_wait_for_lines_after_ready(up_world):
     """READY ends the wait. The supervisor keeps the pipe's write end only until
     it closes it, but `up` must not depend on that."""
     up_world.say("READY", "FAIL too late to matter")
-    assert rig.up(headless=True, tuner=False, amp=False) == 0
+    assert rig.up(tuner=False, amp=False) == 0
 
 
 def test_up_tells_the_supervisor_what_was_asked_for(runtime, monkeypatch, tmp_path):
@@ -1676,11 +1480,10 @@ def test_up_tells_the_supervisor_what_was_asked_for(runtime, monkeypatch, tmp_pa
 
     monkeypatch.setattr(rig, "_supervise", supervise)
     monkeypatch.setattr(rig, "_fork_supervisor", fork)
-    assert rig.up(headless=True, tuner=False, amp=False, amp_model="M.nam") == 0
+    assert rig.up(tuner=False, amp=False, amp_model="M.nam") == 0
     assert got["tuner_requested"] is False
     assert got["amp_requested"] is False
     assert got["amp_model_requested"] == "M.nam", "the override as given, not as resolved"
-    assert got["headless"] is True
 
 
 # --- a real supervisor, children stubbed out ----------------------------------
@@ -1737,7 +1540,7 @@ def test_a_patchbay_that_will_not_stay_up_is_a_warning_not_a_failed_rig(
     }])
     monkeypatch.setattr(rig, "start_qpwgraph", lambda *a, **k: None)
 
-    assert rig.up(headless=True, tuner=False, amp=False) == 0
+    assert rig.up(tuner=False, amp=False) == 0
 
     printed = capsys.readouterr()
     assert "warning:" in printed.err and "patchbay" in printed.err
@@ -1763,6 +1566,6 @@ def test_a_child_that_cannot_start_fails_up_and_takes_the_group_down_promptly(
     }])
     started = time.monotonic()
     with pytest.raises(rig.RigError, match="sushi did not start"):
-        rig.up(headless=True, tuner=False, amp=False)
+        rig.up(tuner=False, amp=False)
     assert time.monotonic() - started < 3.0
     assert state_file.read_state() is None

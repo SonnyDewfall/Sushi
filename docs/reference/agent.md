@@ -19,7 +19,7 @@ curl localhost:8029/help/            # the user guide, docs/guide/, as HTML (#16
 curl localhost:8029/rigs             # the rigs of config/rigs/ a start or switch can name, and which is the running rig's
 curl localhost:8029/rig/load         # one pw-top sample of the rig's nodes: load, xruns, the block budget
 curl -N localhost:8029/events        # the pushed changes (#139): an event each time something changes, until Ctrl+C
-curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
+curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true}'
 curl -X POST localhost:8029/rig/down
 curl -X POST localhost:8029/rig/restart                             # refused (409 unsaved) if it would drop changes no save has written
 curl -X POST localhost:8029/rig/restart -d '{"discard": true}'      # ... so this drops them, as `sushi-rig restart --discard` does
@@ -75,8 +75,7 @@ curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why no
 
 The control plane every v2 feature needs: one process that owns the rig.
 **The agent is the supervisor.** `POST /rig/up` starts Sushi, the patchbay,
-the tuner and the amp, and unless headless the listener and the panel, as one
-process group the agent holds; it plans them with the same `plan_children`
+the tuner, the amp and the recorder, as one process group the agent holds; it plans them with the same `plan_children`
 and writes the same state file as `up` always has, so `status`, `restart` and
 `describe_rig` cannot tell which started a rig. `down` and `restart` act on
 what the agent holds. A child that exits with no `down` asking it to is
@@ -151,7 +150,7 @@ checkout's path filled in, enables it for `graphical-session.target` (by the
 link `systemctl --user enable` would make), and prints the `systemctl --user
 daemon-reload` and `start` to run; it never runs systemctl itself. The unit's
 comments say why each line is what it is: the graphical session because the
-patchbay, tuner and panel are desktop programs that inherit the agent's
+patchbay and tuner are desktop programs that inherit the agent's
 `DISPLAY`; `KillMode=process` so a service restart does not take the rig with
 it. `curl localhost:8029/doctor` checks the machine as the service sees it.
 **The unit has not yet been installed on a real machine** (its own header says
@@ -350,8 +349,8 @@ dependency.
 - **Shutdown.** Every stream ends when the agent stops, before aiohttp waits
   for its handlers, so a stop is not held up by open pages.
 
-What it cannot see is not pushed: the Open Stage Control panel and Sushi's own
-MIDI change Sushi without the agent, and a CLI run with no agent writes the
+What it cannot see is not pushed: Sushi's own MIDI mappings change Sushi
+without the agent, and a CLI run with no agent writes the
 state file alone. The page's poll stays at its second for those.
 
 Every answer that sets no `Cache-Control` of its own is `no-store`, so nothing
@@ -383,7 +382,7 @@ in a pool of their own, eight at a time; if a Sushi that never answers has them
 all, a request is `503` with the count rather than queued, and
 `GET /health` shows `agent.stuck_live_calls`. They are `409 busy` while a lifecycle command runs. Changes are
 made one at a time so each `previous` is true; reading `/live` does not wait for
-them and they do not wait for it, so a panel can poll it. Each request makes one
+them and they do not wait for it, so a page can poll it. Each request makes one
 connection to Sushi and does its reading and changing on it. A move is decided
 once, from one look at the chains, and what is sent is what was decided: a
 processor already at that end of its chain is `changed: false`, even if it only
@@ -408,7 +407,8 @@ rather than guess, with nothing applied or logged, and a `409` carries a `code`
 beside its `reason`: `busy`; `nothing_to_undo` (an empty log or one of undos
 only, said without a Sushi to ask); `stale`, when the rig is not as the entry
 assumes — a move's processor is not exactly where the move left it, a parameter
-or bypass was changed since (so an undo never overwrites a hand on the panel),
+or bypass was changed since (so an undo never overwrites a change made from
+outside the agent),
 the track an add went on is not as the add left it, the place a removed plugin
 came from is gone, or Sushi never said what to put back. A processor the rig has lost is `400`, as
 on the other routes. A refused entry is not skipped for an older one, so the
@@ -549,8 +549,7 @@ it ended, or ran within it. The level comes back when the edit fails part-way
 or raises, too. **A master volume set during the dip is not lost**: one through
 the agent (the page's MASTER fader is `POST /live/parameter`) waits for the live
 lock and lands after the level is back, its `previous` the player's level; one
-that reaches Sushi beside the agent (a MIDI mapping Sushi serves itself, the v1
-panel's OSC) is seen when the agent reads the gain again, since it is neither
+that reaches Sushi beside the agent (a MIDI mapping Sushi serves itself) is seen when the agent reads the gain again, since it is neither
 the floor nor the level from before, and is left as it is. Not seen: a change in
 the instant between that read and the agent's set, or one to exactly the floor
 or exactly the level it started at.
@@ -633,8 +632,8 @@ around an add and a remove, are shown against the fakes only.
 The neural amp runs in Carla, not Sushi, and
 Carla cannot be read back, so what the agent holds is **what it last sent**:
 `GET /amp` answers the model (its path and what the `.nam` declares) and each
-parameter with its value, range, unit and whether the panel puts it on a
-fader, with `known: "sent"` so nothing can present it as what Carla holds. It
+parameter with its value, range, unit and whether the amp card puts it on a
+fader (`panel`), with `known: "sent"` so nothing can present it as what Carla holds. It
 is seeded for each run of the rig from the running config's `_amp`, which `up`
 replays, and a parameter the config does not state is `null`, not a guessed
 default. `POST /amp/parameter {"name", "value"}` sends one parameter, in its
@@ -656,10 +655,9 @@ model does not come up, the previous one is put back, and the answer says
 whether that worked. The state file records the model, so `restart` keeps it.
 It needs a rig this agent started (`409 not_held` otherwise), and is refused
 while a lifecycle command runs, and while the state file does not name the rig
-the agent holds. **With the panel running, the panel owns the amp** (any mode
-but `headless`, as a switch and `restart` read it): its faders reach Carla through the listener, which keeps its own
-record for SAVE, so the agent says `known: "panel"` and writes nothing
-(`409 panel`) rather than keep a second record neither could trust. Run on the rig on 2026-11-02 from the web UI: the
+the agent holds. The agent is the only thing that writes to Carla: the Open
+Stage Control panel's faders, which once did too through its listener (and
+made the agent refuse, `409 panel`), are retired (#139). Run on the rig on 2026-11-02 from the web UI: the
 output level followed its fader with no crackle, and a model change was about
 1.2 seconds of silence (`tool/spikes/live_rig/RESULTS-ui-2026-11-02.md`,
 step 6). In the tests Carla is a stand-in (an in-memory one, and a real UDP and
@@ -691,8 +689,8 @@ is. A switch to another rig drops the request: see below.
 **Add amp** (#246's cause 1). A rig whose file has no `amp:` (one made on
 the New rig screen, or one whose amp was never written) gets none from a
 restart, Amp on or a save. `GET /amp`'s `409 no_amp` says `add_amp: true`
-and the `rig` when the running rig's file has no `amp:` (a rig of channels,
-run headless), whether or not the run asked for the amp: a different case
+and the `rig` when the running rig's file has no `amp:` (a rig of channels),
+whether or not the run asked for the amp: a different case
 from `amp_on`, which is a run with no amp on a file that has one. `POST
 /amp/add {"model", "rig"?, "discard"?}` writes `amp:` into the file, above
 its channels (`rigedit.with_amp`): NAM, `amp/models/<model>`, and each
@@ -710,7 +708,7 @@ the amp, and its `up` drops `--no-amp`). The answer carries the switch's
 (`args.amp_added`). Refused, nothing written: 400 for a body of the wrong
 shape, or a model that is not a file of amp/models (a path from this
 machine only, as `POST /amp/model`), cannot be read (`unreadable`) or was
-trained at another rate (`wrong_rate`); 409 `busy`, `no_rig`, `panel`,
+trained at another rate (`wrong_rate`); 409 `busy`, `no_rig`,
 `v1`, `changed` (`rig` is not the running rig), `has_amp` (the file has an
 `amp:` already: a model is changed with `POST /amp/model`), `rig_problem`,
 `plugins_missing`, and `unsaved` for live work no save has written, unless
@@ -737,8 +735,7 @@ What restarts: a different amp model, or an amp in one rig and not the other
 wired through it, only with the rig), a track added, removed or
 reordered or of another shape, a channel on another input, a different host
 config or MIDI map (`cc_mappings`, which Sushi loads only with the config), a
-program or property to set, a rig run with its panel (whose SAVE listener
-belongs to the rig being left) or with `--amp-model` or a model chosen through
+program or property to set, a rig run with `--amp-model` or a model chosen through
 `POST /amp/model`, a next rig with an amp while the running rig's Carla is not
 running (`amp_down`) or runs with its links not made (`amp_unwired`, from the
 wiring above; #246: with no amp step, a live switch used to keep a dead or
@@ -781,11 +778,9 @@ part-way puts the level back before it restarts. Its answer carries `dip`.
 
 ## Saving the running rig
 
-`POST /rig/save` is the web UI's Save, since
-the panel's SAVE listener runs only beside the panel and the page starts rigs
-headless. It captures the running Sushi under the agent's live lock (and the
+`POST /rig/save` is the web UI's Save. It captures the running Sushi under the agent's live lock (and the
 amp's), so no change lands between the capture and the log entry, and folds it
-into the running rig's file with the same `save_rig` the panel's SAVE uses:
+into the running rig's file with the same `save_rig` `sushi-rig save` uses:
 in place, keeping the file's comments, a send level moved live written back as
 the channel's `level:`. The amp is what the agent last sent Carla; a run with
 no amp leaves the file's `amp` alone. `{"name": ...}` is "save as": a new
@@ -820,15 +815,14 @@ the log, is still `409 not_saved`, as a capture of a different rig. What the
 file holds is known by track and name: a name removed and added back on the
 same track with the file's URI (an undone remove) is the file's own entry,
 comments and all; with another URI, a new entry in its place; on another
-track (removed from one channel, added to the next), an entry on that one. The
-panel's SAVE and `sushi-rig save` have no log, so they refuse any plugin added
+track (removed from one channel, added to the next), an entry on that one.
+`sushi-rig save` has no log, so they refuse any plugin added
 or removed live, saying only the agent's save can write it. Tested on copies
 of committed rigs: an add, a remove and a move saved into
 `config/rigs/accustomed.yaml` change exactly those entries. A save in place
 writes the file the rig runs from whatever it is called (`Guitar.Vocal.yaml`
 compiles, so it saves); only a name chosen for a new file is checked. Refused
-in panel mode (`409 panel`: the panel's faders reach the amp through the
-listener, so the agent does not know what the amp is at), for a v1 run (`409
+for a v1 run (`409
 v1`: `sushi-rig save` saves a config), and while a lifecycle command runs
 (`409 busy`). **The file is written, never committed**: committing in your
 checkout is your call, and the answer gives the commit it sits on, what git
@@ -898,8 +892,7 @@ the edit reloads the file and would drop them. Save, then edit. (Save
 itself would still work after an edit: a capture says nothing of a track the
 rig does not have yet, so the file keeps the new channel. It is the restart
 that would lose the work.) Counted, not netted out, so a knob turned and turned back still asks
-for a Save, which loses nothing. With the panel running it is refused too
-(`panel`): the agent cannot see the panel's changes. Another rig's file can
+for a Save, which loses nothing. Another rig's file can
 be edited whatever is playing. A write is refused while a lifecycle command
 runs (`409 busy`, as every route is), and holds the lifecycle lock itself
 and, for the running rig, the live lock, so no restart, switch or live change
@@ -930,8 +923,7 @@ naming the newest change, while the agent saw changes since the last save;
 `{"discard": true}` (`sushi-rig restart --discard`, or the page's second
 tap, "Restart anyway, dropping them") restarts anyway. Not refused when
 there is nothing to keep or no way to know: Sushi's process is gone (the
-work went with it, and recovery must not wait on a Save), or the rig runs
-with its panel, whose changes the agent cannot see. A stop and a switch to
+work went with it, and recovery must not wait on a Save). A stop and a switch to
 another rig still drop unsaved work, as they always have. Remote callers are treated as
 `POST /rig/save` treats them, no differently: a write needs no loopback peer,
 since Save writes the same files without one; the agent binds to localhost,
@@ -1027,8 +1019,7 @@ curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}' 
   "unchanged"` with nothing written (and never `which_controller`); `none`
   for a control no device the map could be for has is `409 no_control`.
   That restart reloads the file, so an assignment that needs it is refused
-  while the rig holds unsaved changes (`409 unsaved`) or runs with its panel
-  (`409 panel`), as a channel edit is ([above](#new-rigs-and-channel-edits));
+  while the rig holds unsaved changes (`409 unsaved`), as a channel edit is ([above](#new-rigs-and-channel-edits));
   one that plays at once loses nothing and is not, nor is one tried live
   (above): if it falls back, the restart it offers is itself refused until
   the work is saved or dropped. The page answers `unsaved` with **Save &
@@ -1203,7 +1194,7 @@ for, and refuses `changed` too if a newer one landed between its picks),
   putting it back offers a restart whatever the write did then. A switch
   back (a revert's, a channel load's) is **held as a revert is**: with
   unsaved live work (one a press could not undo still plays) it is **409
-  `unsaved`** (or `panel`), the step kept, until `"discard": true`; with
+  `unsaved`**, the step kept, until `"discard": true`; with
   `"restart": false`, one that would restart Sushi (`rigfile.diff` and the
   state's blockers, as the switch decides it, and the unsaved work a
   `discard` drops: a plugin it added, removed or moved, or a value whose
@@ -1217,7 +1208,7 @@ for, and refuses `changed` too if a newer one landed between its picks),
   not happened, which it cannot take back (the new rig is the running one).
 
 A step that cannot be put back (the file changed since, the bin entry gone
-or its name taken, a value changed from the panel, a live change whose log
+or its name taken, a value changed from outside the agent, a live change whose log
 entries were trimmed past the live log's limit, "too old", a Save as) is
 **409 `cant_undo`**, with `skipped` and `next`, and is dropped: the next
 press goes on to the one before; a press never passes over a step to undo
@@ -1264,7 +1255,7 @@ compiler's (`rig.compile_rig_draft`). The page lists the channels from
   where `rigfile.diff` can do it, by restart where not, the answer saying
   `how` and `why`. Its `op: "rig"` entry carries `args.load` and is the
   baseline: nothing is unsaved after it and undo stops there. Refused, each
-  before anything is written: `no_rig`, `panel`, `v1`, `changed` (`rig`
+  before anything is written: `no_rig`, `v1`, `changed` (`rig`
   given, the rig the page drew, and another running by the time the lock
   is won: a Program Change between), `no_source` (no such
   rig in config/rigs/, which is looked up by name and never made a path; no
@@ -1355,7 +1346,7 @@ rig, the compiler's.
   refused over or dropped), no `op: "rig"` is logged (the live steps stay
   Undo's) and no take is stopped; its Undo puts the file back and plays
   nothing (`apply: "none"`).
-- **Refused**, each before anything is written: `no_rig`, `panel`, `v1`,
+- **Refused**, each before anything is written: `no_rig`, `v1`,
   `changed` (`rig` given and another running), `no_channel`,
   **`last_channel`** (a rig needs one channel), `rig_problem`,
   `plugins_missing`, `unsaved` (unless `"discard": true`), `restarts`, and
@@ -1389,10 +1380,8 @@ clean 300 times in 300: the lead for making it live. The tests drive the live pa
 
 ## Recording from the web UI
 
-The panel's record bar belongs to its
-listener, and a headless rig has none, so `up --rig --headless` (what the page
-starts, and `--direct` too) starts **`sushi-rig recorder`** in the listener's
-place: a child of the rig, in its process group, under `pw-jack` with the rig's
+`up --rig` (what the page starts, and `--direct` too) starts **`sushi-rig
+recorder`**: a child of the rig, in its process group, under `pw-jack` with the rig's
 quantum, because the capture engine is a JACK client and the agent is not under
 `pw-jack` and must not be. The agent asks it over a Unix socket beside the state
 file (`recorder.sock`, mode 0600), so an agent started later, or one that never
@@ -1404,13 +1393,13 @@ take. `POST /record/start {"name"?}` names the take (with no name,
 `<rig>-<date>-take-<nn>`, which `GET /record` offers while idle as
 `default_name`: [Takes](takes.md#names)), sends the run's files from the state file
 as it is now and the amp as the agent last sent it (the amp a save writes), and
-the recorder plans the take then with `transport.record_session`, the
-listener's own: the same eight columns for guitar_vocal, the same refusals, a
+the recorder plans the take then with `transport.record_session`: eight
+columns for guitar_vocal, the plan's refusals, a
 take whose config is the one Sushi loaded for the rig running now (a live
 switch rewrites it) and whose rig.yaml is the rig file at RECORD.
 `POST /record/stop` answers `take check`'s verdict. Each start and stop is in
 `/live/log` (`op: "record"`), and undo passes over them. Refused, each with a
-`code`: no rig, the panel running (its record bar owns recording), a v1 run (a
+`code`: no rig, a v1 run (a
 take records each channel's own output, which only a rig of channels has), a
 take already running, none running, a run with no recorder or one whose
 recorder crashed, and a run the recorder cannot plan a take for, with its

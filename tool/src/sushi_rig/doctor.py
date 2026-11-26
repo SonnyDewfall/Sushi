@@ -627,7 +627,7 @@ def record_check(root: Path, rig: dict, state: dict | None, *,
     except (PlanError, CaptureError) as exc:
         return Check("record-ports", FAULT,
                      f"no take can be planned for the running rig: {'; '.join(exc.problems)}",
-                     "the record panel says the same; fix what it names and restart the rig")
+                     "the record bar says the same; fix what it names and restart the rig")
     except Exception as exc:  # noqa: BLE001 -- the recorder's own rule, and doctor goes on
         return Check("record-ports", FAULT,
                      f"planning a take of the running rig failed unexpectedly: {type(exc).__name__}: {exc}",

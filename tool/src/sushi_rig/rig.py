@@ -52,10 +52,8 @@ from .qpwgraph import QPWGRAPH_ATTEMPTS, start_qpwgraph
 from .state import clear_state, is_real_id, liveness, read_state, write_state
 
 DEFAULT_CONFIG_NAME = "electric_board"
-PANEL_FILE = "/tmp/sushi-rig-panel.json"
 GRPC_HOST = "127.0.0.1"
 GRPC_PORT = 51051
-OSC_SEND_PORT = 24024
 
 # Shutdown escalation. SIGINT first because that is what lets Sushi unhook its
 # JACK ports cleanly rather than leaving them held; the later signals exist for
@@ -97,7 +95,7 @@ def child_environment(
     """The environment one child is started with.
 
     Scoped per child rather than set on the supervisor, because the tuner and
-    the panel have no business being dragged to the audio path's buffer size.
+    the patchbay have no business being dragged to the audio path's buffer size.
 
     `env_set` is **assigned, not defaulted**: stating these values in the
     repository is the entire point, so an inherited one must not win. While
@@ -215,84 +213,6 @@ def restart_is_playing(state: dict[str, Any]) -> bool:
 # --- paths ------------------------------------------------------------------
 
 
-def resolve_rig_yaml(config_path: Path, root: Path | None = None) -> str | None:
-    """The rig source SAVE can save this config from, or None with a reason in
-    `rig_source_problem`.
-
-    A source is a candidate only if it describes the running config: every
-    track and plugin the config names is in the source's spec. The candidates,
-    in order: the config's `_meta.source` (written by `emit` and `save`), then
-    the file of the config's own name under `config/src/`, then under
-    `config/rigs/`. A candidate that does not fit is passed over, so a fact is
-    checked rather than a path guessed at. None means SAVE is refused with a
-    message.
-
-    It used to return `_meta.source` or fall back to electric_board's yaml,
-    unchecked. For any other config that meant SAVE captured the running rig,
-    `emit` dropped every processor the capture named that electric_board's spec
-    did not, and the file written under the player's name was electric_board's
-    chain with no settings, while the panel said "saved". Found by the audit,
-    on guitar_vocal. The check against the config is what stops the same thing
-    happening through a `_meta.source` that is merely wrong — the converted v2
-    rigs carry their v1 variant's provenance, for one.
-    """
-    source, _ = _rig_source(config_path, root)
-    return source
-
-
-def rig_source_problem(config_path: Path, root: Path | None = None) -> str | None:
-    """Why SAVE is off for this config, in a sentence, or None if it is on."""
-    _, problem = _rig_source(config_path, root)
-    return problem
-
-
-def _rig_source(config_path: Path, root: Path | None) -> tuple[str | None, str | None]:
-    from .rigfile import spec_of
-    from .stereo import is_copy
-
-    root = Path(root) if root is not None else checkout_root()
-    try:
-        config = json.loads(Path(config_path).read_text())
-    except (OSError, ValueError):
-        config = {}
-    if not isinstance(config, dict):
-        config = {}
-    # Without the compiler's copies to stereo (stereo.py): no rig source names
-    # them, and the spec below is compiled for routing only, without them.
-    named = {t.get("name") for t in (config.get("tracks") or []) if isinstance(t, dict)} | {
-        p.get("name") for t in (config.get("tracks") or []) if isinstance(t, dict)
-        for p in (t.get("plugins") or []) if isinstance(p, dict)
-        and not is_copy(str(p.get("name", "")), p.get("uid"))
-    }
-    stem = Path(config_path).stem
-    candidates = []
-    source = (config.get("_meta") or {}).get("source")
-    if isinstance(source, str) and source:
-        candidates.append(source)
-    candidates += [f"config/src/{stem}.yaml", f"config/rigs/{stem}.yaml"]
-    tried = []
-    for candidate in dict.fromkeys(candidates):
-        path = root / candidate
-        if not path.is_file():
-            tried.append(f"{candidate} does not exist")
-            continue
-        try:
-            spec = spec_of(path, routing_only=True)
-        except Exception as exc:  # noqa: BLE001 - a bad candidate is a reason, not a crash
-            tried.append(f"{candidate} cannot be read as a rig ({exc})")
-            continue
-        known = set(spec.plugin_names()) | {t.name for t in spec.tracks}
-        missing = sorted(named - known)
-        if missing:
-            tried.append(f"{candidate} has no {', '.join(missing)}")
-            continue
-        return candidate, None
-    return None, (
-        f"SAVE is off for {stem}: no rig source describes it ("
-        + "; ".join(tried) + "). Reorder and the amp controls still work"
-    )
-
-
 def prepare_rig(
     name: str,
     root: Path,
@@ -349,7 +269,7 @@ def prepare_rig(
         "source": source,
         "warnings": warnings,
         # What the config and patchbay were compiled against, for the state
-        # file: the listener's save check must compile against the same one.
+        # file: a restart, a switch and a take must compile against the same one.
         "machine": machine_file,
     }
 
@@ -390,8 +310,8 @@ def _compile_named_rig_unguarded(
     except RigFileError as exc:
         raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
     machine_file, machine, spec, compiled = _compile_loaded(loaded, path.name, root, machine_file)
-    # The provenance `emit` writes, so `resolve_rig_yaml` knows which file this
-    # run came from and `save` (when it can write a v2 rig) saves there.
+    # The provenance `emit` writes, so a take and a save know which file this
+    # run came from.
     meta = compiled.setdefault("_meta", {})
     if isinstance(meta, dict):
         meta["source"] = f"config/rigs/{name}.yaml"
@@ -501,7 +421,7 @@ def write_compiled(name: str, compiled: dict[str, Any], runtime: Path) -> Path:
     from .state import write_atomically
 
     # Whole or not at all: a running rig's config is rewritten while it plays
-    # (a pedal assigned live, #192), and the listener reads it.
+    # (a pedal assigned live, #192), and the agent and the recorder read it.
     write_atomically(config, json.dumps(compiled, indent=2) + "\n")
     return config
 
@@ -509,15 +429,10 @@ def write_compiled(name: str, compiled: dict[str, Any], runtime: Path) -> Path:
 def plan_children(
     root: Path,
     config: Path,
-    rig_yaml: str | None,
     *,
-    headless: bool,
     tuner: bool,
     amp_project: Path | None = None,
-    amp_model: str | None = None,
-    amp_values: dict[str, float] | None = None,
     patchbay: Path | None = None,
-    machine_file: Path | None = None,
     recorder_socket: Path | None = None,
 ) -> list[dict[str, Any]]:
     """The children to start, in order, as data.
@@ -526,18 +441,12 @@ def plan_children(
     while the page's visualiser listens, and `up` from the command line
     never does.
 
-    `recorder_socket`, for a headless run of a rig of channels, plans the
-    recorder (`sushi-rig recorder`, recorder_process.py) in the listener's
-    place, answering on that socket: what records a take from the web UI,
-    which starts rigs headless and so has no listener.
+    `recorder_socket`, for a run of a rig of channels, plans the recorder
+    (`sushi-rig recorder`, recorder_process.py), answering on that socket:
+    what records a take from the web UI.
 
-    `machine_file` is the one a v2 rig was compiled against, handed to the
-    listener so the record button taps the same inputs the patchbay wired.
-    The state file records it too, but is written after the children start,
-    so the listener cannot read it from there when it plans its takes.
-
-    Pure so the two personas' differences can be asserted without launching
-    anything. Each entry is `{name, command, optional}` — `optional` marks a
+    Pure so what is planned can be asserted without launching anything.
+    Each entry is `{name, command, optional}` — `optional` marks a
     child whose failure should be reported but not abort startup, which is the
     tuner and the patchbay: neither is in the audio path.
     """
@@ -586,48 +495,18 @@ def plan_children(
         "env_unset": ["SESSION_MANAGER"],
     })
 
-    if not headless:
-        # Serves the panel's save button, its reorder buttons and its record
-        # bar. Headless has no panel, so nothing would ever talk to it.
-        children.append({
-            "name": "listen",
-            "command": [
-                # Under pw-jack, for the reason Sushi and the amp are: the
-                # record bar's capture engine is a JACK client, and the system
-                # libjack finds no server on a PipeWire-only machine (see
-                # capture.py). Nothing else in the listener touches JACK.
-                "pw-jack",
-                str(root / "tool" / ".venv" / "bin" / "sushi-rig"), "listen",
-                # Without a source the listener still serves the reorder and
-                # amp buttons; SAVE and RECORD answer with why they cannot.
-                *(["--rig", rig_yaml] if rig_yaml else []),
-                *(["--machine", str(Path(machine_file).resolve())] if machine_file else []),
-                "--out-dir", "config",
-                "--archive-dir", "config/archive",
-                "--panel-config", str(config),
-                "--panel-out", PANEL_FILE,
-                "--sushi", "./sushi",
-            ],
-            "optional": False,
-            # The quantum Sushi runs at, which a take is planned for: the
-            # capture engine refuses a graph that grants another
-            # (`capture.check_granted`), and PipeWire applies this to a client
-            # only when it starts.
-            "env_set": {"PIPEWIRE_QUANTUM": f"{QUANTUM}/{RATE}"},
-        })
-        if amp_model:
-            # So the save button can write the amp into the config it saves.
-            children[-1]["command"] += ["--amp-model", amp_model]
-            for name, value in (amp_values or {}).items():
-                children[-1]["command"] += ["--amp-parameter", f"{name}={value}"]
-    elif recorder_socket is not None:
-        # Records takes for the agent (the web UI's record bar): the
-        # listener's job in panel mode, which headless has no listener for.
-        # Under pw-jack with the rig's quantum for the listener's reason: the
-        # capture engine is a JACK client. Optional, as the tuner is: a rig
-        # that cannot record still plays, and GET /record says why it cannot.
-        # It takes nothing about the run: each request names the run's files,
-        # since a live switch or a save-as changes them while it runs.
+    if recorder_socket is not None:
+        # Records takes for the agent (the web UI's record bar). Under
+        # pw-jack, for the reason Sushi and the amp are: the capture engine is
+        # a JACK client, and the system libjack finds no server on a
+        # PipeWire-only machine (see capture.py). With the quantum Sushi runs
+        # at, which a take is planned for: the capture engine refuses a graph
+        # that grants another (`capture.check_granted`), and PipeWire applies
+        # this to a client only when it starts. Optional, as the tuner is: a
+        # rig that cannot record still plays, and GET /record says why it
+        # cannot. It takes nothing about the run: each request names the
+        # run's files, since a live switch or a save-as changes them while it
+        # runs.
         children.append({
             "name": "recorder",
             "command": [
@@ -685,7 +564,7 @@ def format_uptime(seconds: float) -> str:
 # A rig is started by one of two supervisors: the one `up` forks (`_supervise`,
 # when no agent is running) and the agent's (`supervisor.py`, #29). Everything
 # they must agree on -- what the state file says, what a startup problem is
-# called, how the panel is made -- is decided here, once, so the two cannot
+# called -- is decided here, once, so the two cannot
 # drift into rigs that `status` and `restart` read differently.
 
 
@@ -710,7 +589,6 @@ def state_record(
     return {
         "supervisor_pid": supervisor_pid,
         "pgid": pgid,
-        "mode": "headless" if launch.headless else "panel",
         "config_name": launch.config_name,
         "config": str(launch.config),
         "started_at": started_at,
@@ -734,7 +612,7 @@ def state_record(
         # `restart` brings back the same kind; `status` says which.
         "rig": launch.rig_source,
         # The machine file that run was compiled against, None for a v1
-        # config. The listener's save check recompiles the rig and must
+        # config. A restart, a switch and a take recompile the rig and must
         # read the same file, not whatever this host's default is.
         "machine": _machine_record(launch.machine_file),
     }
@@ -766,59 +644,19 @@ def startup_exit_problem(name: str, returncode: int | None, logs: Path) -> str:
     return problem
 
 
-def panel_commands(root: Path, config: Path) -> tuple[list[str], list[str]]:
-    """The panel, as two commands: the one that generates it from the live
-    rig (run to completion once Sushi answers) and open-stage-control, which
-    serves it (a child of the rig). Not in `plan_children` because the first
-    needs a running Sushi, so it cannot be planned as a child is."""
-    generate = [
-        str(root / "tool" / ".venv" / "bin" / "sushi-rig"), "panel",
-        str(config), "--sushi", "./sushi", "-o", PANEL_FILE,
-    ]
-    serve = [
-        "open-stage-control", "--load", PANEL_FILE,
-        "--send", f"{GRPC_HOST}:{OSC_SEND_PORT}",
-    ]
-    return generate, serve
-
-
-def up_summary(config_name: str, headless: bool, state: dict[str, Any]) -> str:
+def up_summary(config_name: str, state: dict[str, Any]) -> str:
     """What `up` prints once the rig is up, from the state file it wrote."""
-    mode = "headless" if headless else "panel"
-    lines = [f"Rig up: {config_name} ({mode} mode)"]
+    lines = [f"Rig up: {config_name}"]
     for name, child_pid in (state.get("children") or {}).items():
         lines.append(f"  {name:10} pid {child_pid}")
-    if not headless:
-        lines += ["", "Panel: http://127.0.0.1:8080"]
     lines += ["", f"Logs: {state.get('log_dir')}", "Stop with: sushi-rig down"]
     return "\n".join(lines) + "\n"
-
-
-# How long `sushi-rig panel` may take to read the live rig and write the panel:
-# long enough for every parameter of a big rig over gRPC, and a bound so that
-# a hung one fails the start rather than holding it for ever. A guess, not a
-# measurement; both supervisors use it.
-PANEL_TIMEOUT = 60.0
 
 
 def sushi_ready(alive: Callable[[], bool] | None) -> bool:
     """Whether Sushi's gRPC answered within `GRPC_TIMEOUT`, giving up early
     once `alive` says our Sushi has exited."""
     return wait_for_grpc(GRPC_HOST, GRPC_PORT, GRPC_TIMEOUT, alive)
-
-
-def generate_panel(command: list[str], root: Path, env: dict[str, str]) -> tuple[int, str]:
-    """Run `sushi-rig panel` to completion: its exit status and stderr."""
-    try:
-        done = subprocess.run(
-            command, cwd=root, env=env, capture_output=True, text=True, check=False,
-            timeout=PANEL_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        return 1, f"'sushi-rig panel' did not finish within {PANEL_TIMEOUT:g}s"
-    except OSError as exc:
-        return 1, str(exc)
-    return done.returncode, done.stderr
 
 
 def link_problems(plan: list[dict[str, Any]], root: Path, running: set[str], rig_run: bool) -> list[str]:
@@ -886,7 +724,6 @@ def start_children(
     spawn: Callable[..., subprocess.Popen],
     start_qpwgraph: Callable[..., "subprocess.Popen | None"],
     sushi_ready: Callable[["Callable[[], bool] | None"], bool],
-    generate_panel: Callable[[list[str], Path, dict[str, str]], tuple[int, str]],
     link_problems: Callable[[list, Path, set, bool], list[str]],
     replay_amp: Callable[[dict[str, float]], None],
     on_start: Callable[[str, subprocess.Popen, Path], None] = lambda name, proc, log: None,
@@ -958,23 +795,6 @@ def start_children(
     if abandoned():
         return procs, problems, "abandoned"
 
-    if not launch.headless:
-        step("generating the panel (sushi-rig panel)")
-        generate, serve = panel_commands(root, launch.config)
-        code, err = generate_panel(generate, root, env)
-        if code != 0:
-            return procs, problems, f"could not generate the panel:\n{err.strip()}"
-        step("starting open-stage-control")
-        try:
-            osc = spawn(serve, cwd=root, env=env, log=logs / "panel.log")
-        except OSError as exc:
-            return procs, problems, f"open-stage-control did not start: {exc}"
-        # In `procs` too, so the liveness check below covers the panel. It
-        # was once the one child that check missed, being started outside
-        # the loop above.
-        if not started("open-stage-control", osc, logs / "panel.log"):
-            return procs, problems, "abandoned"
-
     # A child that starts and *then* exits was, until this check, silent.
     # Popen succeeding only means the binary existed; Carla dying a second
     # later for want of a JACK server left `up` printing READY and a rig
@@ -1023,7 +843,7 @@ def _supervise(launch: "Launch", *, ready_w: int) -> None:
     Runs only in the forked child. `os.setsid()` makes it session and process
     group leader, and every child spawned from here inherits that group — so
     `down` can reach the whole tree with one `killpg`, including Sushi's
-    re-exec'd `sushi.bin` and open-stage-control's Electron helpers.
+    re-exec'd `sushi.bin`.
 
     It stays alive purely to *own the group id*. If it exited and left the
     children orphaned, the recorded pgid would be a dead pid that Linux is free
@@ -1068,8 +888,7 @@ def _supervise(launch: "Launch", *, ready_w: int) -> None:
         # (the real-fork tests do) has it reach the routine.
         procs, problems, failure = start_children(
             launch, env=env, logs=logs, spawn=spawn_child, start_qpwgraph=start_qpwgraph,
-            sushi_ready=sushi_ready, generate_panel=generate_panel,
-            link_problems=link_problems, replay_amp=_replay_amp,
+            sushi_ready=sushi_ready, link_problems=link_problems, replay_amp=_replay_amp,
         )
         if failure is not None:
             report(f"FAIL {failure}")
@@ -1098,9 +917,9 @@ def _supervise(launch: "Launch", *, ready_w: int) -> None:
 
 
 def _machine_record(machine_file: Path | None) -> str | None:
-    """The machine file as the state file holds it. Absolute: the listener
-    reads it from its own working directory, and a path relative to where
-    `up` was run would fail every SAVE check there."""
+    """The machine file as the state file holds it. Absolute: the agent and
+    the recorder read it from their own working directories, and a path
+    relative to where `up` was run would fail there."""
     return str(machine_file.resolve()) if machine_file else None
 
 
@@ -1256,7 +1075,6 @@ class Launch:
     config_name: str
     config: Path
     children: list[dict[str, Any]]
-    headless: bool
     amp_model: str | None
     amp_values: dict[str, float]
     tuner_requested: bool
@@ -1272,7 +1090,6 @@ class Launch:
 def prepare_launch(
     config_name: str = DEFAULT_CONFIG_NAME,
     *,
-    headless: bool = False,
     tuner: bool = True,
     amp: bool = True,
     amp_model: str | None = None,
@@ -1365,23 +1182,6 @@ def prepare_launch(
     # whose plugins are not all in plugins/ is one Sushi cannot build.
     check_plugins(config, root, config_name, amp=amp, warn=warn, amp_model=amp_model)
 
-    rig_yaml = resolve_rig_yaml(config, root)
-    if not headless:
-        problem = rig_source_problem(config, root) if rig_yaml is None else None
-        if rig_yaml is not None and rig_yaml.startswith("config/rigs/") and not rig:
-            # A v1 run whose source is a rig of channels: SAVE would write the
-            # rig file while the v1 config it ran stays as it was, two files
-            # for one tone diverging. `up --rig` saves it as a rig. Said at
-            # start, not at the first press.
-            problem = (
-                f"SAVE is off for {config_name}: it was built from {rig_yaml}, a rig of "
-                f"channels. Run 'sushi-rig up --rig {config_name}' to play and save the "
-                "rig itself. Reorder and the amp controls still work"
-            )
-            rig_yaml = None
-        if problem:
-            warn(problem)
-
     # The amp is described in the config's `_amp` section, which Sushi ignores.
     # The Carla project is generated from it rather than kept as a file, because
     # the model changes with the config — that is the whole point of carrying it
@@ -1402,17 +1202,15 @@ def prepare_launch(
     amp_model_stored = prepared.get("model")
 
     children_plan = plan_children(
-        root, config, rig_yaml, headless=headless, tuner=tuner,
-        amp_project=amp_project, amp_model=amp_model_stored,
-        amp_values=amp_values, patchbay=amp_patch, machine_file=rig_machine,
+        root, config, tuner=tuner, amp_project=amp_project, patchbay=amp_patch,
         # A take is planned only for a rig of channels (transport.plan_for_run),
         # so a v1 run gets no recorder, and the agent says why (GET /record).
-        recorder_socket=recorder_socket() if headless and rig else None,
+        recorder_socket=recorder_socket() if rig else None,
     )
 
     return Launch(
         root=root, config_name=config_name, config=config, children=children_plan,
-        headless=headless, amp_model=amp_model_stored, amp_values=amp_values,
+        amp_model=amp_model_stored, amp_values=amp_values,
         tuner_requested=tuner, amp_requested=amp, amp_model_requested=amp_model,
         rig_source=rig_source, machine_file=rig_machine, visualiser_tap_requested=visualiser_tap,
     )
@@ -1421,7 +1219,6 @@ def prepare_launch(
 def up(
     config_name: str = DEFAULT_CONFIG_NAME,
     *,
-    headless: bool = False,
     tuner: bool = True,
     amp: bool = True,
     amp_model: str | None = None,
@@ -1452,7 +1249,7 @@ def up(
     either way; the agent starts one while the visualiser listens.
     """
     launch = prepare_launch(
-        config_name, headless=headless, tuner=tuner, amp=amp, amp_model=amp_model, rig=rig,
+        config_name, tuner=tuner, amp=amp, amp_model=amp_model, rig=rig,
         machine=machine, visualiser_tap=visualiser_tap,
     )
     pid, ready_r = _fork_supervisor(lambda ready_w: _supervise(launch, ready_w=ready_w))
@@ -1477,7 +1274,7 @@ def up(
         raise RigError(outcome or "the rig failed to start")
 
     state = read_state() or {}
-    print(up_summary(config_name, headless, state), end="")
+    print(up_summary(config_name, state), end="")
     _link_pedals_once(state)
     return 0
 
@@ -1538,9 +1335,8 @@ def down(
     """Stop the rig, then verify it is actually stopped.
 
     Signals the recorded process group, never a command-line pattern. That is
-    the whole point: `sushi.bin`, open-stage-control's Electron helpers and the
-    listener are all reachable as group members regardless of what they are
-    called, which is precisely what the old `pkill`/`killall` shutdown missed.
+    the whole point: `sushi.bin`, Carla and the recorder are all reachable as
+    group members regardless of what they are called, which is precisely what the old `pkill`/`killall` shutdown missed.
 
     The state file is trusted as identity, so it is checked before anything is
     signalled (see `liveness`). `force` skips the polite signals, and on a file
@@ -1602,7 +1398,7 @@ def down(
         )
 
     steps = ((signal.SIGKILL, 2.0),) if (force or verdict == "invalid") else SHUTDOWN_STEPS
-    print(f"Stopping {state.get('config_name')} ({state.get('mode')} mode)...", file=out)
+    print(f"Stopping {state.get('config_name')}...", file=out)
     try:
         gone = stop_group(pgid, steps)
     except PermissionError:
@@ -1640,15 +1436,6 @@ def _clear_state_of(pgid: Any) -> None:
         clear_state()
 
 
-def runs_panel(state: dict[str, Any]) -> bool:
-    """Whether the rig a state file describes runs with its panel (and the
-    panel's listener, which writes to Carla itself). Anything but an explicit
-    "headless" is the panel: `up`'s default, and the safe reading of a state
-    file that does not say. The one rule for `restart_arguments`, the live
-    switch's `state_blockers` and the agent's amp (amp_live.amp_problem). Pure."""
-    return state.get("mode") != "headless"
-
-
 def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """What `up` should be called with to bring back the rig `state` describes.
 
@@ -1677,7 +1464,6 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     rig = isinstance(state.get("rig"), str) and bool(state.get("rig"))
     machine = state.get("machine")
     return state.get("config_name", DEFAULT_CONFIG_NAME), {
-        "headless": not runs_panel(state),
         "tuner": tuner if isinstance(tuner, bool) else "fmit" in children,
         "amp": amp if isinstance(amp, bool) else "amp" in children,
         # Not read from `children`, as the tuner falls back to: a state file
@@ -1706,8 +1492,8 @@ def restart(amp: bool = False) -> int:
     seconds end to end.
 
     Takes its arguments from the state file rather than from the caller, which
-    is the point: after a crash you may well not remember the mode, the config
-    or whether the amp was running.
+    is the point: after a crash you may well not remember the config or
+    whether the amp was running.
     """
     state = read_state()
     if not state:
@@ -1795,7 +1581,6 @@ def describe_rig(
     children = state.get("children")
     described.update({
         "config_name": state.get("config_name"),
-        "mode": state.get("mode"),
         "config": state.get("config"),
         "pgid": state["pgid"],
         "started_at": state.get("started_at"),
@@ -1824,7 +1609,7 @@ def describe_rig(
         described["visualiser_tap"] = {"pid": record["pid"], "alive": vistap.recorded_alive(record),
                                        "owner_alive": vistap.owner_alive(record)}
     age = format_uptime(uptime) if uptime is not None else "unknown"
-    described["message"] = f"{described['config_name']} ({described['mode']} mode), up {age}"
+    described["message"] = f"{described['config_name']}, up {age}"
     return described
 
 

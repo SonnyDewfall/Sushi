@@ -47,8 +47,8 @@ Restart=on-failure
 RestartSec=2
 
 [Install]
-# Not default.target: the patchbay (qpwgraph), the tuner (fmit) and the panel
-# (open-stage-control) are desktop programs, and the children inherit the
+# Not default.target: the patchbay (qpwgraph) and the tuner (fmit) are
+# desktop programs, and the children inherit the
 # agent's environment. Started at login rather than with the session, the
 # agent would hand them no DISPLAY or WAYLAND_DISPLAY, and qpwgraph would exit
 # silently, as it is already known to (#14).

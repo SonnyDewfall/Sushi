@@ -7485,3 +7485,24 @@ time: the answer is kept by the file's path, size and `st_mtime_ns`
 run can change without the file. Tested: two polls parse once, and a write is
 parsed again. (3) Add amp's picker shares the model picker's CSS rules. Not run
 on the rig. *(2026-11-25)*
+
+**The Open Stage Control panel is retired (#139, #218).** The owner's call:
+"Let's retire it and fix forwards if stuff is missing." The page replaced it,
+so `up` no longer generates a panel (`panel.py`, `sushi-rig panel`), starts
+`open-stage-control`, or runs the OSC listener behind its SAVE, reorder, amp
+and record buttons (`listen.py`, `sushi-rig listen`, `transport.Transport`).
+Every run is what was called headless: `plan_children` plans no listener,
+`start_children` generates and serves nothing after Sushi answers, and the
+state file carries no `mode`. With nothing else writing to Carla or moving
+processors past the agent, the agent's `panel` refusals are gone (save,
+record, revert, channel edits, load, remove, Add amp, a switch's `panel`
+blocker, the amp's `known: "panel"` and `409 panel`), and so is
+`rig.runs_panel`. Kept for what was written before: `up --headless` and
+`"headless": true` are taken and change nothing, `"headless": false` is
+refused, and a state file an older `up` wrote with `"mode": "panel"` is read
+as any other (a panel run still playing at the upgrade should be restarted,
+since its listener would still write to Carla). `--direct` is not the
+panel's: it is the CLI acting with no agent (#29), and stays. Tests that
+existed only for the panel and the listener went with them; the record bar's
+session tests now drive `TakeSession` as the recorder does. Not run on the
+rig. *(2026-11-26)*

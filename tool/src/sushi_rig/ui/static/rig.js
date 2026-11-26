@@ -1110,8 +1110,8 @@ const trackOf = (live, processor) => {
 // only what came after it counts, an undo after it included (undo passes
 // over a save, so it puts back what the file does not have).
 //
-// The baseline is only what the agent saw. A change from the OSC panel, a
-// MIDI mapping inside Sushi, or a `sushi-rig save` since, is not in the log,
+// The baseline is only what the agent saw. A MIDI mapping inside Sushi, or a
+// `sushi-rig save` since, is not in the log,
 // and the log is lost when the agent restarts; `partial` says when the log
 // was trimmed past the rig's start, so the list may be short. Entries before
 // the last rig switch, or older than the rig's start (a restart reloads its
@@ -1429,10 +1429,9 @@ export function loadTiles(answer, up, xruns) {
 const VERBS = { start: "Starting", stop: "Stopping", switch: "Switching to", restart: "Restarting" };
 
 // The request for a lifecycle gesture. A start is a rig of channels
-// (config/rigs/, `rig: true`) and headless: the page replaces the OSC panel,
-// and a rig run with its panel cannot be switched live (#93).
+// (config/rigs/, `rig: true`).
 export function lifecycleCall(op, name, { discard = false, amp = false } = {}) {
-  if (op === "start") return { path: "/rig/up", json: { config_name: name, rig: true, headless: true } };
+  if (op === "start") return { path: "/rig/up", json: { config_name: name, rig: true } };
   if (op === "stop") return { path: "/rig/down", json: {} };
   if (op === "switch") return { path: "/rig/switch", json: { config_name: name } };
   // Offered after an edit of the running rig's file (the rig files below):
@@ -1575,7 +1574,7 @@ export function lifecycleOutcome(op, name, answer) {
       reason: answer.reason + (body.how === "restart" && why ? `. It restarted because ${why}` : "") };
   }
   if (op === "start") {
-    return answer.ok ? { ok: true, ...tagged(`Started ${name}`, `Started ${name}, headless.`) }
+    return answer.ok ? { ok: true, ...tagged(`Started ${name}`, `Started ${name}.`) }
       : { ok: false, title: `Not started: ${name}`, reason: answer.reason };
   }
   if (op === "restart") {
@@ -1660,7 +1659,7 @@ export const RETIRED_KEYS = ["sushi-rig.binned"];
 // ---------------------------------------------------------------- saving (S4)
 // POST /rig/save: the running rig into its own file of config/rigs, or "save
 // as" a new one, which then is the running rig. The agent decides what can be
-// saved and says why not (panel, v1, taken, a chain changed live...); these
+// saved and says why not (v1, taken, a chain changed live...); these
 // only say what the page offers and what an answer means.
 
 // A rig's name, as save.validate_name checks it (save.NAME_PATTERN): it
@@ -1709,12 +1708,11 @@ export function seenSince(health, logAnswer) {
 
 // What the Save buttons offer. Both are offered whenever a rig that can be
 // saved from here is up and nothing is running: the unsaved list is only
-// what the agent saw (not the panel's changes, nor pedals mapped in Sushi,
-// nor anything before the agent started, nor an amp change while GET /amp
-// failed), so an empty list is no proof the file holds what is playing. Not
-// offered, with why and how to save instead, for a v1 run (`rig.rig` null)
-// or one with its panel (any mode but "headless", as `rig.runs_panel`
-// reads it), both of which the agent refuses. `fmt` writes a time.
+// what the agent saw (not pedals mapped in Sushi, nor anything before the
+// agent started, nor an amp change while GET /amp failed), so an empty list
+// is no proof the file holds what is playing. Not offered, with why and how
+// to save instead, for a v1 run (`rig.rig` null), which the agent refuses.
+// `fmt` writes a time.
 export function saveView(health, unsaved, pending, logAnswer = null, fmt = (iso) => iso) {
   const agentUp = !!(health && health.ok);
   const rig = agentUp ? health.body.rig || {} : {};
@@ -1728,9 +1726,6 @@ export function saveView(health, unsaved, pending, logAnswer = null, fmt = (iso)
   else if (!file) {
     blocked = `${running} is a v1 config, not a rig of channels started with --rig, so it is not saved from here. `
       + "Save it on the rig with: sushi-rig save <name> --rig <its rig.yaml>";
-  } else if (rig.mode !== "headless") {
-    blocked = "The rig runs with its panel, which owns the amp, so the agent does not know what the amp is at: "
-      + "save with the panel's SAVE button, or start the rig from here (headless) to save from here.";
   }
   const since = seenSince(health, logAnswer);
   const off = !!blocked || !idle;
@@ -2162,9 +2157,8 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
     return { state: "failed", why: answer.reason };
   }
   const b = answer.body;
-  const panel = b.known === "panel";
   const down = !!(b.carla && b.carla.alive === false);
-  const writable = !panel && !down;
+  const writable = !down;
   const params = b.parameters || [];
   const faders = params.filter((p) => p.panel).map((p) => ({
     name: p.name, label: p.name, min: p.min, max: p.max, unit: p.unit,
@@ -2189,14 +2183,13 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
     why: m.why || null, declared: m.declared || null,
   }));
   let why = null;
-  if (panel) why = "The panel is running and owns the amp: change it there, or run the rig headless.";
-  else if (down) why = "Carla is not running, so the amp cannot be changed: restart the rig.";
+  if (down) why = "Carla is not running, so the amp cannot be changed: restart the rig.";
   else if (!b.held) why = "This agent did not start the running rig, so it cannot restart the amp alone: start the rig from here to change its model.";
   else if (locked) why = lockRefusal(true, "amp_model");
   else if (pending) why = `Loading ${modelName(pending)}…`;
   else if (models && !models.ok) why = `amp/models could not be listed: ${models.reason}`;
   return {
-    state: "up", known: b.known, note: b.known_note, panel, down, model, faders, shown,
+    state: "up", known: b.known, note: b.known_note, down, model, faders, shown,
     override: b.override || null,
     // Carla runs and its links are not made (#246): the guitar goes in dry.
     unwired: down ? null : wiringTag(b.wiring),
@@ -3730,7 +3723,7 @@ export function undoOutcome(answer) {
   }
   const refused = (text) => ({ ok: false, text, title: answer.reason, offer: null, ask: null });
   // Held, not refused (#235's review): the page asks, and presses again.
-  if (answer.code === "unsaved" || answer.code === "panel") return { ...refused("Drop changes?"), ask: "drop" };
+  if (answer.code === "unsaved") return { ...refused("Drop changes?"), ask: "drop" };
   if (answer.code === "restarts") return { ...refused("Restart?"), ask: "restart" };
   // Which step was dropped, on the page, not only in the title a phone
   // cannot show.

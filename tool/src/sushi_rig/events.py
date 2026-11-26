@@ -34,7 +34,7 @@ The agent publishes (`Hub.publish`) when:
 - the supervisor sees a child of the rig exit that no `down` asked for.
 
 What it cannot see is not pushed: a change made to Sushi from outside the
-agent (the Open Stage Control panel talks to Sushi itself), a state file
+agent (a MIDI mapping Sushi serves itself), a state file
 written by a CLI run with no agent. The poll stays, at its second, for
 those and for a stream that has dropped.
 

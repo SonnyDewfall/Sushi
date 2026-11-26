@@ -7,11 +7,11 @@ a real process group led by the real holder, so what these pin -- that the
 group is the holder's and not the agent's, that `down` takes every member,
 that an exit is seen and a stop is not taken for one, that the state file
 `status` reads is the one the agent wrote -- is the kernel's answer and not a
-mock's. Standing in: Sushi's gRPC, qpwgraph's retries, the patchbay check, the
-panel's generation and the amp's knobs, which need the rig's own programs.
+mock's. Standing in: Sushi's gRPC, qpwgraph's retries, the patchbay check and
+the amp's knobs, which need the rig's own programs.
 
-NOT covered, and not claimed: starting real Sushi, qpwgraph, fmit, Carla or
-open-stage-control this way, under PipeWire. That is the check MANIFEST.md
+NOT covered, and not claimed: starting real Sushi, qpwgraph, fmit or Carla
+this way, under PipeWire. That is the check MANIFEST.md
 describes.
 
 Everything a test starts is killed by its recorded process group at the end,
@@ -97,11 +97,10 @@ def world(runtime, tmp_path, monkeypatch):
     config = root / "config" / "t.json"
     config.write_text("{}")
 
-    def launch(name="t", *, headless=True, tuner=True, children=None, **over):
-        plan = children if children is not None else plan_children(
-            root, config, None, headless=headless, tuner=tuner)
+    def launch(name="t", *, tuner=True, children=None, **over):
+        plan = children if children is not None else plan_children(root, config, tuner=tuner)
         fields = dict(
-            root=root, config_name=name, config=config, children=plan, headless=headless,
+            root=root, config_name=name, config=config, children=plan,
             amp_model=None, amp_values={}, tuner_requested=tuner, amp_requested=False,
             amp_model_requested=None, rig_source=None, machine_file=None,
         )
@@ -110,12 +109,12 @@ def world(runtime, tmp_path, monkeypatch):
 
     state = {"launch": launch}
 
-    def prepare(config_name, *, headless, tuner, amp, amp_model, rig, warn, visualiser_tap):
+    def prepare(config_name, *, tuner, amp, amp_model, rig, warn, visualiser_tap):
         # The tap asked for is recorded as asked for; whether it is planned is
         # the test's (a plan of its own, through `launch(children=...)`).
-        asked.append(dict(config_name=config_name, headless=headless, tuner=tuner, amp=amp,
+        asked.append(dict(config_name=config_name, tuner=tuner, amp=amp,
                           amp_model=amp_model, rig=rig, visualiser_tap=visualiser_tap))
-        return state["launch"](config_name, headless=headless, tuner=tuner,
+        return state["launch"](config_name, tuner=tuner,
                                visualiser_tap_requested=visualiser_tap)
 
     def start_qpwgraph(child, root, env, logs, process_group=None):
@@ -124,7 +123,7 @@ def world(runtime, tmp_path, monkeypatch):
 
     made = World(
         prepare=prepare, spawn=spawner, start_qpwgraph=start_qpwgraph,
-        sushi_ready=lambda alive: True, generate_panel=lambda command, root, env: (0, ""),
+        sushi_ready=lambda alive: True,
         link_problems=lambda plan, root, running, rig_run: [],
         replay_amp=lambda values: None, shutdown_steps=QUICK_STEPS, watch_interval=0.05,
         link_tap=lambda config: [],
@@ -162,7 +161,7 @@ async def settle_until(condition, seconds: float = 5.0) -> None:
 
 @pytest.mark.parametrize("body, command", [
     ({"config_name": "guitar_vocal"}, "up"),
-    ({"config_name": "x", "rig": True, "headless": True, "tuner": False, "amp": False,
+    ({"config_name": "x", "rig": True, "tuner": False, "amp": False,
       "amp_model": "Some Amp.nam"}, "up"),
     ({"config_name": "x", "visualiser_tap": False}, "up"),
     (None, "down"),
@@ -181,7 +180,7 @@ def test_the_steps_the_agent_plans_are_read_back_as_they_were_meant(body, comman
         body = body or {}
         assert options == {
             "config_name": body["config_name"], "rig": body.get("rig", False),
-            "headless": body.get("headless", False), "tuner": body.get("tuner", True),
+            "tuner": body.get("tuner", True),
             "amp": body.get("amp", True), "amp_model": body.get("amp_model"), "machine": None,
             "visualiser_tap": body.get("visualiser_tap", True),
         }
@@ -197,7 +196,7 @@ def test_a_machine_file_the_agent_carries_is_read_back_as_up_s_machine():
     agent = pytest.importorskip("sushi_rig.agent")
     args = agent.lifecycle_arguments("up", {"config_name": "x", "rig": True}, machine="/m/stage.yaml")
     assert args == ["up", "x", "--rig", "--machine", "/m/stage.yaml"]
-    assert parse_lifecycle(args) == ("up", {"config_name": "x", "rig": True, "headless": False, "tuner": True,
+    assert parse_lifecycle(args) == ("up", {"config_name": "x", "rig": True, "tuner": True,
                                             "amp": True, "amp_model": None, "machine": "/m/stage.yaml",
                                             "visualiser_tap": True})
     with pytest.raises(agent.AgentError, match="an absolute path"):
@@ -207,7 +206,7 @@ def test_a_machine_file_the_agent_carries_is_read_back_as_up_s_machine():
 
 
 @pytest.mark.parametrize("args", [
-    [], ["shell"], ["up"], ["up", "--headless"], ["up", "x", "--force"], ["up", "x", "--amp-model"],
+    [], ["shell"], ["up"], ["up", "--headless"], ["up", "x", "--headless"], ["up", "x", "--force"], ["up", "x", "--amp-model"],
     ["down", "--headless"], ["restart", "now"], ["restart", "--amp", "--amp"], ["restart", "--no-amp"],
 ])
 def test_anything_else_is_not_a_lifecycle_step(args):
@@ -234,7 +233,7 @@ def test_up_starts_what_plan_children_plans_in_one_group_the_agent_holds(world, 
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        outcome = await supervisor.up("t", headless=True)
+        outcome = await supervisor.up("t")
         assert outcome.ok, outcome
         held = supervisor.held
         groups = {os.getpgid(child.proc.pid) for child in held.children.values()}
@@ -247,10 +246,10 @@ def test_up_starts_what_plan_children_plans_in_one_group_the_agent_holds(world, 
 
     outcome = run(go())
     planned = [c["command"][0] for c in plan_children(
-        world.root, world.root / "config" / "t.json", None, headless=True, tuner=True)]
+        world.root, world.root / "config" / "t.json", tuner=True)]
     assert world.spawner.commands() == [sys.executable, *planned], "the holder, then the plan, in order"
-    assert "Rig up: t (headless mode)" in outcome.stdout
-    assert world.asked == [dict(config_name="t", headless=True, tuner=True, amp=True,
+    assert "Rig up: t\n" in outcome.stdout
+    assert world.asked == [dict(config_name="t", tuner=True, amp=True,
                                 amp_model=None, rig=False, visualiser_tap=True)]
 
 
@@ -260,7 +259,7 @@ def test_the_state_file_the_agent_writes_round_trips_through_status(world, capsy
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         recorded = state_file.read_state()
         described = rig.describe_rig()
         rig.status()
@@ -272,34 +271,18 @@ def test_the_state_file_the_agent_writes_round_trips_through_status(world, capsy
     assert set(recorded) == set(rig.state_record(
         world.state["launch"](), supervisor_pid=2, pgid=2, children={}, log_dir=Path("l"),
         started_at="s"))
-    assert recorded["mode"] == "headless" and recorded["tuner_requested"] is False
+    assert "mode" not in recorded and recorded["tuner_requested"] is False
     assert described["verdict"] == "running"
     assert set(described["children"]) == {"qpwgraph", "sushi"}
     assert all(child["alive"] for child in described["children"].values())
     printed = capsys.readouterr().out
-    assert printed.startswith("t (headless mode), up ")
+    assert printed.startswith("t, up ")
     assert f"  group      {recorded['pgid']}" in printed
     assert "(DEAD)" not in printed
     assert recorded["visualiser_tap_requested"] is True, "what was asked for, as the tuner's is"
     assert rig.restart_arguments(recorded) == ("t", {
-        "headless": True, "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None,
+        "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None,
         "visualiser_tap": True})
-
-
-def test_panel_mode_generates_the_panel_and_holds_open_stage_control_too(world):
-    supervisor = Supervisor(world.world, say=lambda m: None)
-
-    async def go():
-        assert (await supervisor.up("t", headless=False)).ok
-        names = set(supervisor.held.children)
-        recorded = state_file.read_state()
-        await supervisor.down()
-        return names, recorded
-
-    names, recorded = run(go())
-    assert {"listen", "sushi", "open-stage-control"} <= names
-    assert "open-stage-control" in recorded["children"]
-    assert recorded["mode"] == "panel"
 
 
 def test_a_second_up_is_refused_by_the_state_file_the_agent_wrote(world, monkeypatch):
@@ -310,8 +293,8 @@ def test_a_second_up_is_refused_by_the_state_file_the_agent_wrote(world, monkeyp
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        first = await supervisor.up("t", headless=True, tuner=False, amp=False)
-        second = await supervisor.up("t", headless=True, tuner=False, amp=False)
+        first = await supervisor.up("t", tuner=False, amp=False)
+        second = await supervisor.up("t", tuner=False, amp=False)
         await supervisor.down()
         return first, second
 
@@ -348,7 +331,7 @@ def test_an_up_through_the_agent_whose_plugins_are_not_all_in_plugins_is_refused
 
     async def go():
         async with TestClient(TestServer(agent.app())) as client:
-            up = await client.post("/rig/up", json={"config_name": "t", "headless": True, "tuner": False,
+            up = await client.post("/rig/up", json={"config_name": "t", "tuner": False,
                                                     "amp": False})
             answer = up.status, await up.json()
             agent._executor.shutdown(wait=True)
@@ -381,7 +364,7 @@ def test_a_child_that_crashes_is_reported_and_not_restarted(world):
     supervisor = Supervisor(world.world, say=lines.append)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         (world.root / "go").touch()  # the crash, once the rig is up
         await settle_until(lambda: supervisor.crashed)
         await asyncio.sleep(0.3)  # long enough for a restart, if there were one
@@ -404,7 +387,7 @@ def test_a_child_killed_from_outside_is_a_crash_named_by_its_signal(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         os.kill(supervisor.held.children["sushi"].proc.pid, signal.SIGKILL)
         await settle_until(lambda: supervisor.crashed)
         crashed = list(supervisor.crashed)
@@ -428,7 +411,7 @@ def test_a_crash_shows_in_health(world):
 
     async def go():
         async with TestClient(TestServer(agent.app())) as client:
-            up = await client.post("/rig/up", json={"config_name": "t", "headless": True})
+            up = await client.post("/rig/up", json={"config_name": "t"})
             assert up.status == 200, await up.text()
             (world.root / "go").touch()  # the crash, once the rig is up
             await settle_until(lambda: supervisor.crashed)
@@ -463,7 +446,7 @@ def test_an_optional_child_that_dies_at_start_is_a_warning_and_a_crash(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        outcome = await supervisor.up("t", headless=True)
+        outcome = await supervisor.up("t")
         crashed = list(supervisor.crashed)
         await supervisor.down()
         return outcome, crashed
@@ -482,14 +465,14 @@ def test_down_stops_every_member_and_is_not_a_crash(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         pgid = supervisor.held.pgid
         outcome = await supervisor.down()
         return pgid, outcome
 
     pgid, outcome = run(go())
     assert outcome.ok, outcome
-    assert outcome.stdout == "Stopping t (headless mode)...\nRig offline.\n"
+    assert outcome.stdout == "Stopping t...\nRig offline.\n"
     assert not pgid_alive(pgid)
     assert all(proc.poll() is not None for proc in world.spawner.started)
     assert supervisor.crashed == [] and supervisor.held is None
@@ -512,7 +495,7 @@ def test_a_down_abandoned_at_the_time_limit_leaves_the_rig_watched(world, monkey
 
     async def go():
         try:
-            assert (await supervisor.up("t", headless=True)).ok
+            assert (await supervisor.up("t")).ok
             monkeypatch.setattr(supervisor_module.rig_module, "down", hangs)
             supervisor.timeout = 0.3
             outcome = await supervisor.run(["down"])
@@ -537,7 +520,7 @@ def test_down_stops_the_held_rig_even_with_its_state_file_gone(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         pgid = supervisor.held.pgid
         state_file.clear_state()
         return pgid, await supervisor.down()
@@ -556,7 +539,7 @@ def test_restart_brings_back_what_was_asked_for_in_a_new_group(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False, amp=False)).ok
+        assert (await supervisor.up("t", tuner=False, amp=False)).ok
         first = supervisor.held.pgid
         outcome = await supervisor.restart()
         second = supervisor.held.pgid
@@ -566,10 +549,10 @@ def test_restart_brings_back_what_was_asked_for_in_a_new_group(world):
     first, second, outcome = run(go())
     assert outcome.ok, outcome
     assert first != second and not pgid_alive(first)
-    assert outcome.stdout.startswith("Restarting t...\nStopping t (headless mode)...\nRig offline.\n")
-    assert "Rig up: t (headless mode)" in outcome.stdout
+    assert outcome.stdout.startswith("Restarting t...\nStopping t...\nRig offline.\n")
+    assert "Rig up: t\n" in outcome.stdout
     assert world.asked[0] == world.asked[1] == dict(
-        config_name="t", headless=True, tuner=False, amp=False, amp_model=None, rig=False, visualiser_tap=True)
+        config_name="t", tuner=False, amp=False, amp_model=None, rig=False, visualiser_tap=True)
 
 
 def test_restart_with_the_amp_on_brings_the_amp_to_a_run_started_without_it(world):
@@ -578,7 +561,7 @@ def test_restart_with_the_amp_on_brings_the_amp_to_a_run_started_without_it(worl
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False, amp=False)).ok
+        assert (await supervisor.up("t", tuner=False, amp=False)).ok
         assert (await supervisor.restart()).ok
         outcome = await supervisor.run(["restart", "--amp"])
         await supervisor.down()
@@ -588,7 +571,7 @@ def test_restart_with_the_amp_on_brings_the_amp_to_a_run_started_without_it(worl
     assert outcome.ok, outcome
     assert [a["amp"] for a in world.asked] == [False, False, True]
     assert world.asked[2] == dict(
-        config_name="t", headless=True, tuner=False, amp=True, amp_model=None, rig=False, visualiser_tap=True)
+        config_name="t", tuner=False, amp=True, amp_model=None, rig=False, visualiser_tap=True)
 
 
 def test_a_restart_whose_up_would_refuse_is_refused_before_down_and_the_rig_plays_on(world, monkeypatch, tmp_path):
@@ -610,7 +593,7 @@ def test_a_restart_whose_up_would_refuse_is_refused_before_down_and_the_rig_play
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False, amp=False)).ok
+        assert (await supervisor.up("t", tuner=False, amp=False)).ok
         held = supervisor.held
         shutil.rmtree(bundle)
         outcome = await supervisor.restart()
@@ -640,7 +623,7 @@ def test_the_rig_outlives_the_agent_and_the_next_agent_stops_it(world):
     first = Supervisor(world.world, say=lines.append)
 
     async def start_then_leave():
-        assert (await first.up("t", headless=True)).ok
+        assert (await first.up("t")).ok
         pgid = first.held.pgid
         await first.release()
         return pgid
@@ -684,7 +667,7 @@ def test_a_holder_that_dies_alone_is_a_problem_and_the_children_are_still_judged
     supervisor = Supervisor(world.world, say=lines.append)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         holder = supervisor.held.holder
         os.kill(holder.pid, signal.SIGKILL)
         await settle_until(lambda: supervisor.problems)
@@ -716,7 +699,7 @@ def test_a_required_child_that_cannot_start_fails_up_and_takes_the_group_down(wo
     world.spawner.refuse.add("pw-jack")  # Sushi's command
     supervisor = Supervisor(world.world, say=lambda m: None)
 
-    outcome = run(supervisor.up("t", headless=True))
+    outcome = run(supervisor.up("t"))
     assert not outcome.ok and "sushi did not start" in outcome.reason
     assert all(proc.poll() is not None for proc in world.spawner.started), "what did start was stopped"
     assert state_file.read_state() is None and supervisor.held is None
@@ -726,7 +709,7 @@ def test_a_required_child_that_cannot_start_fails_up_and_takes_the_group_down(wo
 def test_a_sushi_that_never_answers_fails_up_with_where_to_look(world):
     world.world = dataclasses.replace(world.world, sushi_ready=lambda alive: False)
     supervisor = Supervisor(world.world, say=lambda m: None)
-    outcome = run(supervisor.up("t", headless=True))
+    outcome = run(supervisor.up("t"))
     assert not outcome.ok
     assert "Sushi's gRPC never came up on 127.0.0.1:51051" in outcome.reason
     assert "sushi.log" in outcome.reason
@@ -753,7 +736,7 @@ def test_a_bug_while_starting_still_stops_what_started(world):
     world.world = dataclasses.replace(world.world, link_problems=broken)
     supervisor = Supervisor(world.world, say=lambda m: None)
     with pytest.raises(KeyError):
-        run(supervisor.up("t", headless=True))
+        run(supervisor.up("t"))
     assert world.spawner.started and all(proc.poll() is not None for proc in world.spawner.started)
     assert state_file.read_state() is None
 
@@ -771,7 +754,7 @@ def test_a_held_rig_is_held_in_a_group_the_holder_keeps_through_the_polite_signa
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         sushi = supervisor.held.children["sushi"].proc
         await settle_until(deaf.exists)
         outcome = await supervisor.down()
@@ -799,13 +782,13 @@ def test_a_preparation_that_hangs_is_abandoned_with_what_was_running(world):
 
     async def go():
         try:
-            return await supervisor.run(["up", "t", "--headless"])
+            return await supervisor.run(["up", "t"])
         finally:
             release.set()  # before the loop closes, which waits for its threads
 
     outcome = run(go())
     assert outcome.abandoned
-    assert "'up t --headless' did not finish within 0.3s" in outcome.reason
+    assert "'up t' did not finish within 0.3s" in outcome.reason
     assert "preparing the rig (rig.prepare_launch" in outcome.reason
     assert "Nothing had been started." in outcome.reason
     assert world.spawner.asked == [] and supervisor.doing is None
@@ -825,7 +808,7 @@ def test_a_start_that_hangs_is_abandoned_and_what_it_started_is_stopped(world):
 
     async def go():
         try:
-            outcome = await supervisor.run(["up", "t", "--headless"])
+            outcome = await supervisor.run(["up", "t"])
             pgid = world.spawner.started[0].pid
             return outcome, pgid
         finally:
@@ -860,7 +843,7 @@ def test_a_hung_up_is_a_504_and_frees_the_lock_for_the_next_request(world):
     async def go():
         try:
             async with TestClient(TestServer(agent.app())) as client:
-                up = await client.post("/rig/up", json={"config_name": "t", "headless": True})
+                up = await client.post("/rig/up", json={"config_name": "t"})
                 body = await up.json()
                 down = await client.post("/rig/down")
                 return up.status, body, down.status
@@ -884,7 +867,7 @@ def test_a_start_whose_group_will_not_stop_keeps_it_held_and_says_which_pids_are
     supervisor = Supervisor(world.world, say=lines.append)
 
     async def go():
-        outcome = await supervisor.up("t", headless=True)
+        outcome = await supervisor.up("t")
         described = supervisor.describe()
         pgid = supervisor.held.pgid if supervisor.held else None
         again = await supervisor.down()  # the real escalation, through rig.down
@@ -912,7 +895,7 @@ def test_a_child_that_exits_during_a_failed_start_is_the_failures_not_a_crash(wo
     world.world = dataclasses.replace(world.world, sushi_ready=never)
     lines: list[str] = []
     supervisor = Supervisor(world.world, say=lines.append)
-    outcome = run(supervisor.up("t", headless=True))
+    outcome = run(supervisor.up("t"))
     assert not outcome.ok
     assert "Sushi's gRPC never came up" in outcome.reason
     assert "fmit exited with status 1 while starting; see " in outcome.reason
@@ -927,14 +910,14 @@ def test_restart_brings_back_the_rig_the_state_file_names_after_a_live_switch(wo
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         state_file.write_state({**state_file.read_state(), "config_name": "u"})
         outcome = await supervisor.restart()
         await supervisor.down()
         return outcome
 
     outcome = run(go())
-    assert outcome.ok and outcome.stdout.startswith("Restarting u...\nStopping u (headless mode)...")
+    assert outcome.ok and outcome.stdout.startswith("Restarting u...\nStopping u...")
     assert [a["config_name"] for a in world.asked] == ["t", "u"]
 
 
@@ -994,12 +977,11 @@ def amp_world(world, runtime):
             world.replay_fails -= 1
             raise RuntimeError("Carla's OSC server never came up")
 
-    def launch(name="t", *, headless=True, tuner=False, **over):
-        plan = plan_children(world.root, world.root / "config" / "t.json", None, headless=headless, tuner=tuner,
-                             amp_project=project, amp_model="amp/models/Old.nam", amp_values={"Output Lvl": 6.0})
+    def launch(name="t", *, tuner=False, **over):
+        plan = plan_children(world.root, world.root / "config" / "t.json", tuner=tuner, amp_project=project)
         fields = dict(
             root=world.root, config_name=name, config=world.root / "config" / "t.json", children=plan,
-            headless=headless, amp_model="amp/models/Old.nam", amp_values={"Output Lvl": 6.0},
+            amp_model="amp/models/Old.nam", amp_values={"Output Lvl": 6.0},
             tuner_requested=tuner, amp_requested=True, amp_model_requested=None, rig_source=None,
             machine_file=None)
         fields.update(over)
@@ -1030,7 +1012,7 @@ def test_the_amp_alone_is_restarted_on_a_new_project_in_the_held_group(amp_world
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         held = supervisor.held
         before = {name: child.proc.pid for name, child in held.children.items()}
         await settle_until(lambda: world.child_pids(before["amp"]))
@@ -1075,7 +1057,7 @@ def test_a_new_model_that_does_not_come_up_puts_the_previous_one_back(amp_world)
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         world.replay_fails = 1
         result = await supervisor.restart_amp(
             "<new project/>", {"Output Lvl": 3.0}, model="amp/models/New.nam", override="New.nam")
@@ -1109,7 +1091,7 @@ def test_a_carla_that_exits_on_its_new_model_is_said_and_the_previous_one_comes_
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         result = await supervisor.restart_amp("<new/>", {}, model="amp/models/New.nam", override="New.nam")
         crashed = list(supervisor.crashed)
         await supervisor.down()
@@ -1127,7 +1109,7 @@ def test_an_amp_that_comes_back_on_neither_model_is_a_problem_said_loudly(amp_wo
     supervisor = Supervisor(world.world, say=lines.append)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         world.replay_fails = 2
         result = await supervisor.restart_amp("<new/>", {}, model="amp/models/New.nam", override="New.nam")
         await asyncio.sleep(0.2)
@@ -1152,11 +1134,11 @@ def test_the_amp_is_restarted_only_in_a_rig_this_agent_holds_and_that_has_one(am
 
     no_amp = world.state["launch"]
     world.state["launch"] = lambda name="t", **kw: dataclasses.replace(
-        no_amp(name, **kw), children=plan_children(world.root, world.root / "config" / "t.json", None,
-                                                   headless=True, tuner=False))
+        no_amp(name, **kw), children=plan_children(world.root, world.root / "config" / "t.json",
+                                                   tuner=False))
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         result = await supervisor.restart_amp("<new/>", {}, model="m", override="m")
         await supervisor.down()
         return result
@@ -1193,7 +1175,7 @@ def test_post_amp_model_restarts_carla_alone_through_the_agent(amp_world, tmp_pa
 
     async def go():
         async with TestClient(TestServer(agent.app())) as client:
-            assert (await client.post("/rig/up", json={"config_name": "t", "headless": True})).status == 200
+            assert (await client.post("/rig/up", json={"config_name": "t"})).status == 200
             sushi = supervisor.held.children["sushi"].proc.pid
             knob = await client.post("/amp/parameter", json={"name": "Output Lvl", "value": 2.0})
             assert knob.status == 200, await knob.text()
@@ -1225,7 +1207,7 @@ def test_after_a_live_switch_the_new_model_is_recorded_into_the_switched_rig_not
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         switched = {**state_file.read_state(), "config_name": "u", "config": "/run/rigs/u.json",
                     "rig": "config/rigs/u.yaml", "switched_at": "later"}
         state_file.write_state(switched)
@@ -1248,7 +1230,7 @@ def test_a_restart_that_could_not_be_recorded_or_put_back_is_refused_with_carla_
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         pid = supervisor.held.children["amp"].proc.pid
         if how == "gone":
             state_file.clear_state()
@@ -1281,7 +1263,7 @@ def test_the_restart_reads_and_writes_its_files_off_the_event_loop(amp_world, mo
         monkeypatch.setattr(supervisor_module, name, watched)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         # The watch names a rig by reading the state file when a child exits
         # (`_running_name`), as it always has; the old Carla's exit is one.
         # That is the watch's read, not the restart's, and is set aside here.
@@ -1340,7 +1322,7 @@ def test_up_never_starts_a_tap(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         await asyncio.sleep(0.2)
         report = supervisor.tap_report()
         await supervisor.down()
@@ -1356,7 +1338,7 @@ def test_a_tap_is_started_for_a_page_linked_checked_and_held_in_the_rigs_group(w
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         answer = await supervisor.tap("page-a")
         tap = supervisor.held.children["vistap"].proc
         group = os.getpgid(tap.pid) == supervisor.held.pgid
@@ -1381,7 +1363,7 @@ def test_two_pages_share_one_tap_and_it_stops_by_pid_after_the_linger_with_no_cr
     supervisor = Supervisor(world.world, say=lines.append)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         assert (await supervisor.tap("a")).ok and (await supervisor.tap("b")).ok
         tap = supervisor.held.children["vistap"].proc
         await supervisor.tap_release("a")
@@ -1412,7 +1394,7 @@ def test_a_lease_not_renewed_runs_out_and_the_tap_is_stopped(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         assert (await supervisor.tap("a")).ok
         tap = supervisor.held.children["vistap"].proc
         ticks.now += 29
@@ -1432,7 +1414,7 @@ def test_a_trip_stops_the_tap_at_once_unless_another_page_holds_it(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         assert (await supervisor.tap("a")).ok and (await supervisor.tap("b")).ok
         tap = supervisor.held.children["vistap"].proc
         first = await supervisor.tap_release("a", at_once=True)
@@ -1453,7 +1435,7 @@ def test_a_tap_that_cannot_be_linked_is_refused_stopped_and_no_crash(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         answer = await supervisor.tap("a")
         await asyncio.sleep(0.3)  # several watches, to see an exit if one were taken for a crash
         children, crashed, report = set(supervisor.held.children), list(supervisor.crashed), supervisor.tap_report()
@@ -1474,7 +1456,7 @@ def test_a_tap_with_no_realtime_thread_is_refused_and_stopped_by_its_pid(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         answer = await supervisor.tap("a")
         report = supervisor.tap_report()
         await supervisor.down()
@@ -1494,7 +1476,7 @@ def test_no_visualiser_tap_and_no_rig_held_are_refusals_that_start_nothing(world
 
     async def go():
         nothing = await supervisor.tap("a")
-        assert (await supervisor.up("t", headless=True, tuner=False, visualiser_tap=False)).ok
+        assert (await supervisor.up("t", tuner=False, visualiser_tap=False)).ok
         off = await supervisor.tap("a")
         await supervisor.down()
         return nothing, off
@@ -1513,7 +1495,7 @@ def test_a_tap_that_stops_while_held_is_a_crash_with_the_sound_unaffected_and_is
     supervisor = Supervisor(world.world, say=lines.append)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         assert (await supervisor.tap("a")).ok
         go_file.touch()
         await settle_until(lambda: supervisor.crashed)
@@ -1537,7 +1519,7 @@ def test_an_exit_on_purpose_is_never_a_crash_whenever_the_sweep_sees_it(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True)).ok
+        assert (await supervisor.up("t")).ok
         child = supervisor.held.children["fmit"]
         child.on_purpose = True
         child.proc.kill()
@@ -1555,7 +1537,7 @@ def test_the_agents_end_stops_the_tap_by_its_pid_and_leaves_the_rig_playing(worl
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         assert (await supervisor.tap("a")).ok
         tap = supervisor.held.children["vistap"].proc
         sushi = supervisor.held.children["sushi"].proc
@@ -1576,7 +1558,7 @@ def test_restart_takes_the_tap_and_starts_none(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         assert (await supervisor.tap("a")).ok
         tap = supervisor.held.children["vistap"].proc
         assert (await supervisor.restart()).ok
@@ -1625,7 +1607,7 @@ def test_a_tap_is_linked_by_pw_link_from_the_master_and_started_realtime(world, 
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         answer = await supervisor.tap("a")
         await supervisor.down()
         return answer
@@ -1653,7 +1635,7 @@ def test_the_tap_routes_answer_as_the_supervisor_does_and_only_this_machine(worl
         async with TestClient(TestServer(agent.app())) as client:
             refused = await client.post("/visualiser/tap", json={"page": "a"})
             refused = (refused.status, await refused.json())
-            up = await client.post("/rig/up", json={"config_name": "t", "headless": True, "tuner": False})
+            up = await client.post("/rig/up", json={"config_name": "t", "tuner": False})
             assert up.status == 200, await up.text()
             ok = await client.post("/visualiser/tap", json={"page": "a"})
             ok = (ok.status, await ok.json())
@@ -1693,7 +1675,7 @@ def test_the_load_counts_the_taps_nodes_only_while_it_runs(world):
     described = {"running": True, "children": {"sushi": {"pid": 1, "alive": True}}}
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         before = agent._load_children(described)
         assert (await supervisor.tap("a")).ok
         during = agent._load_children(described)
@@ -1711,7 +1693,7 @@ def test_no_visualiser_tap_reaches_prepare_and_restart_keeps_it(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, visualiser_tap=False)).ok
+        assert (await supervisor.up("t", visualiser_tap=False)).ok
         assert (await supervisor.restart()).ok
         await supervisor.down()
 
@@ -1728,7 +1710,7 @@ def test_a_lease_left_from_a_tap_that_crashed_does_not_hold_up_the_next(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         assert (await supervisor.tap("a")).ok
         go_file.touch()
         await settle_until(lambda: supervisor.crashed)
@@ -1764,7 +1746,7 @@ def test_a_tap_that_exits_once_linked_is_refused_as_not_started_and_is_no_crash(
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         answer = await supervisor.tap("a")
         await asyncio.sleep(0.3)  # watches, which would take the exit for a crash
         crashed = list(supervisor.crashed)
@@ -1793,7 +1775,7 @@ def test_the_tap_reads_no_file_on_the_loop(world, monkeypatch):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         monkeypatch.setattr(supervisor_module, "read_state", watched)
         assert (await supervisor.tap("a")).ok
         await supervisor.tap_release("a", at_once=True)
@@ -1811,7 +1793,7 @@ def test_a_tap_is_recorded_beside_the_state_file_while_it_runs(world):
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.up("t", tuner=False)).ok
         assert (await supervisor.tap("a")).ok
         pid, pgid = supervisor.held.children["vistap"].proc.pid, supervisor.held.pgid
         during = vistap.read_record()
@@ -1852,7 +1834,7 @@ def test_a_tap_an_earlier_agent_left_is_stopped_by_its_pid_at_the_next_agents_st
         vistap.write_record(left.pid, left.pid, owner=gone.pid)  # its agent is gone
         described = rig.describe_rig(
             {"supervisor_pid": left.pid, "pgid": left.pid, "children": {}, "started_at": "x",
-             "config_name": "t", "mode": "headless"},
+             "config_name": "t"},
             alive=lambda pid: True, group_alive=lambda pgid: True)
         supervisor = Supervisor(world.world, say=lambda m: None)
         run(supervisor.tidy_orphan_tap())

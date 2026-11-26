@@ -97,14 +97,12 @@ The amp runs in Carla, not Sushi, and what the agent knows of it is what it
 last sent (amp_live.py), so the card says "values are what was last sent,
 not read back", and a value never sent is "not sent", not a default. The
 rack's card (above the channels, since the amp is in front of the board)
-has the model and what it declares, faders for the panel's two parameters,
+has the model and what it declares, faders for its two level parameters,
 Quality shown and not on a fader (amp.PANEL_PARAMETERS says why), and a
 model picker that is a two-step change: choose, then a confirm that says the
 sound cuts out for a moment, since a model change restarts Carla. The lock
 refuses a model change, as it refuses structure. On the stage, only the
-model's name and the output level, and only while the lock is off. With the
-panel running the faders and the picker are off and say why: the panel owns
-the amp then.
+model's name and the output level, and only while the lock is off.
 
 /live is not asked while the rig is down (#111): it can only answer 503
 then, and a 503 a second was a console error a second, 110 of them in one
@@ -117,8 +115,7 @@ failure it is.
 A picker lists config/rigs/ (the rack's left column, as the mockups' S1 has
 it; on the stage screen only while the lock is off, since a Stop within a
 thumb's reach on stage is what the lock is for). A start is always a rig of
-channels and headless, because this page replaces the OSC panel and a rig run
-with its panel can only be switched by restart. Stop takes a second tap
+channels. Stop takes a second tap
 within eight seconds, because it cuts the sound. While a lifecycle command
 runs, from this page or another, nothing is offered (the agent would answer
 409 busy) and what is running is said. A switch says how it was made, live
@@ -130,8 +127,8 @@ Below the unsaved changes in the rack, never on the stage screen. Save
 writes the running rig's own file (POST /rig/save) and is offered whenever
 a rig that can be saved from here is up, not only while the unsaved list
 has something: that list is what the agent saw, so with nothing seen it
-says "no changes seen since" when. A v1 run, or one with its panel, is not
-offered and is told how to save instead. Save as… asks for a name, checked before sending by the
+says "no changes seen since" when. A v1 run is not offered and is told how
+to save instead. Save as… asks for a name, checked before sending by the
 rule the agent saves by (`checkRigName`, save.NAME_PATTERN), and the new rig
 becomes the running one. The agent writes and never commits: the answer is
 shown with the file written, that it is not committed and the commit it
@@ -172,9 +169,8 @@ name a take already has (GET /record's `names`) says the earlier take will
 move to the archive. The elapsed time is the recorder's (`elapsed`, by its clock),
 counted on by this page's clock between answers (`elapsedNow`), so it keeps
 moving if a poll is slow and a phone with a wrong clock still shows the
-take's length. Why recording is off is said on the bar: no rig, the panel
-running (whose record bar owns it), a v1 run, the recorder missing or
-crashed, or the recorder's own reason.
+take's length. Why recording is off is said on the bar: no rig, a v1 run,
+the recorder missing or crashed, or the recorder's own reason.
 
 A stop says the take's name, its folder and `take check`'s verdict
 (`recordOutcome`): whole, which goes after `NOTICE_MS`, or the number of

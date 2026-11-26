@@ -426,8 +426,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
 - **Start, stop and switch (v0.1, #111).** The rigs of `config/rigs/` in a
   list (the rack's right column; on the stage screen a dropdown since #182, and
   Start and Stop there only while the lock is
-  off): pick one and Start it (a rig of channels, headless, since the page
-  replaces the panel), Switch to it, or Stop the one that is up, which takes a
+  off): pick one and Start it (a rig of channels), Switch to it, or Stop the one that is up, which takes a
   second tap because it cuts the sound: **Stop?**, **Yes** or **No**. A switch says whether it was made live
   or by restart, and why. While a command runs, from this page or another,
   nothing else is offered and what is running is said; a refusal shows the
@@ -438,9 +437,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   and a model picker that asks **Restart amp?** (**Yes**, **No**), since
   the sound cuts out for a moment, refused while locked. Values are labelled as what was last sent,
   never as read back. On the stage screen, only the model's name and the
-  output level, and only while the lock is off, as Start and Stop are. With
-  the panel running, the faders and picker are off and say the panel owns the
-  amp. **Amp not wired** (#246) on the card, the links missing in its title,
+  output level, and only while the lock is off, as Start and Stop are.
+  **Amp not wired** (#246) on the card, the links missing in its title,
   when Carla runs and `GET /amp`'s `wiring` says the guitar's link into NAM,
   or NAM's into Sushi, is not made (`wiringTag`). A rig started with
   `--no-amp` whose file has an amp shows **Amp on** on the card (behind the
@@ -462,8 +460,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   is offered whenever a rig that can be saved from here is up, since the
   count on it is only what the agent saw (its title says since when, and
   that a count of none is not proof the file holds what is playing); for a
-  v1 run or one with its panel both buttons are off and say how to save
-  instead. Save as… asks for a name, checks it by
+  v1 run both buttons are off and say how to save instead. Save as… asks for a name, checks it by
   the rule the agent saves by (lowercase letters, digits, `-` and `_`) before
   sending, and writes a new rig that becomes the running one. The answer says
   what was written, that it is **not committed** (the agent never commits) and
@@ -718,7 +715,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   **and with a real text-zoom setting**: Chromium has none, so the tests
   emulate one (`text-size-adjust` under phone emulation). A name
   already taken says the earlier take moves to `_archive/`. Why recording is
-  off is said on the bar (no rig, the panel, a v1 run, no recorder, or the
+  off is said on the bar (no rig, a v1 run, no recorder, or the
   recorder's own reason). A stop's box names the take, its folder and `take
   check`'s verdict: whole, or the number of problems and the first, a take
   with problems in the refusal colour and as an alert (until #189 a take
@@ -810,8 +807,8 @@ the agent answers pages that ask for `/live` together with one read of Sushi
 ([the agent](agent.md#pushed-changes)). Measured against the fake rig, three
 pages, two seconds each: 40 footswitch presses cost 6 reads of the rig (27
 before this bound), 40 knob changes 18. The poll stays,
-at its second: for what the agent cannot see (the Open Stage Control panel
-and Sushi's own MIDI change Sushi without it), and as the fallback when the
+at its second: for what the agent cannot see (Sushi's own MIDI mappings
+change Sushi without it), and as the fallback when the
 stream is down. The browser opens the stream again by itself after the agent
 restarts or the network drops, and the page polls as it does, so what it
 missed meanwhile shows; a stream the agent refused (too many open, 503) is
@@ -1167,8 +1164,8 @@ Not done yet, and said on screen where it shows: the sound (nothing measures
 it, so an up rig reads "sound not measured" and is never green, #49);
 the lock is the page's own, since the agent has no performance lock yet (#29);
 "unsaved" counts only changes made through the agent since the rig came up or
-was last saved through it, so a change from the OSC panel, or a `sushi-rig
-save` since, is not reflected. Of the
+was last saved through it, so a change by a MIDI mapping Sushi serves, or a
+`sushi-rig save` since, is not reflected. Of the
 canvas's Save, the commit (with its message), "throw all away" and the rig
 file shown on screen are not built; of its history, Revert is the whole of
 it, by the player's choice (2026-11-06). Of its Record, the

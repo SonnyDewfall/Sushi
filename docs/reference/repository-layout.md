@@ -55,10 +55,10 @@ then.
 │
 ├── tool/                       ── TOOL: the `sushi-rig` package
 │   ├── pyproject.toml
-│   ├── src/sushi_rig/            47 modules and __init__, one job each:
+│   ├── src/sushi_rig/            45 modules and __init__, one job each:
 │   │                             spec, rigfile, rigedit, convert, emit, dump, probe,
-│   │                             probes, profile, plugins, library, live, panel,
-│   │                             listen, save, saves, state, procs, rig, supervisor,
+│   │                             probes, profile, plugins, library, live,
+│   │                             save, saves, state, procs, rig, supervisor,
 │   │                             qpwgraph, patchbay, machine, amp, amp_live, top,
 │   │                             doctor, verify, render, nulltest, signals, analysis,
 │   │                             selftest, take, transport, recorder,

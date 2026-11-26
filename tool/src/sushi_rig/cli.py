@@ -13,11 +13,8 @@ import json
 import sys
 from pathlib import Path
 
-from .dump import dump_plugins
 from .emit import emit
 from .live import DEFAULT_GRPC_ADDRESS
-from .listen import DEFAULT_LISTEN_PORT, DEFAULT_STATUS_HOST, DEFAULT_STATUS_PORT
-from .panel import build_osc_panel
 from .rig import DEFAULT_CONFIG_NAME
 from .spec import RigSpec
 
@@ -61,21 +58,6 @@ def _config_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
 
     out_dir = args.out_dir or checkout_root() / "config"
     return out_dir, args.archive_dir or out_dir / "archive"
-
-
-def _amp_parameters(pairs: list[str]) -> dict[str, float]:
-    """Parse repeated `--amp-parameter NAME=VALUE` into a dict.
-
-    Names carry spaces ("Input Lvl"), so splitting on the first `=` only.
-    """
-    values: dict[str, float] = {}
-    for pair in pairs:
-        name, _, raw = pair.partition("=")
-        try:
-            values[name] = float(raw)
-        except ValueError:
-            sys.exit(f"bad --amp-parameter {pair!r}: expected NAME=VALUE")
-    return values
 
 
 _FROM_HELP = (
@@ -941,8 +923,8 @@ _DIRECT_HELP = (
 
 def main(argv: list[str] | None = None) -> int:
     """Run one command. A missing elkpy ends the process with its message, as it
-    always has here; `live.py` raises it instead, so that the listener and the
-    agent, which must outlive it, can report it and carry on.
+    always has here; `live.py` raises it instead, so that the agent, which must
+    outlive it, can report it and carry on.
     """
     from .live import ElkpyMissing
 
@@ -995,39 +977,6 @@ def _main(argv: list[str] | None = None) -> int:
     p.add_argument("-o", "--out", type=Path, default=Path("state.json"))
 
     p = sub.add_parser(
-        "panel",
-        help="Open Stage Control panel from a config, using live values from a running Sushi",
-    )
-    p.add_argument("config", type=Path)
-    p.add_argument("--sushi", help=_SUSHI_HELP)
-    p.add_argument(
-        "--address",
-        default=DEFAULT_GRPC_ADDRESS,
-        help="the running Sushi to read current parameter values from — "
-        "must already be running this same config",
-    )
-    p.add_argument(
-        "--osc-port",
-        type=int,
-        default=24024,
-        help="Sushi's OSC receive port (--osc-rcv-port), just to print the matching "
-        "open-stage-control --send value — not written into the panel file",
-    )
-    p.add_argument(
-        "--listener-port",
-        type=int,
-        default=DEFAULT_LISTEN_PORT,
-        help="port the save button targets — must match 'sushi-rig listen --port'",
-    )
-    p.add_argument(
-        "--record-bar",
-        action="store_true",
-        help="add RECORD and STOP under the save bar. Until there is a capture "
-        "engine they only say so; for checking the layout on the rig",
-    )
-    p.add_argument("-o", "--out", type=Path, default=Path("panel.json"))
-
-    p = sub.add_parser(
         "probe",
         help="what an LV2 plugin declares about itself — parameters, ranges, "
         "and whether it can be driven from a config at all",
@@ -1073,8 +1022,8 @@ def _main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser(
         "up",
-        help="start the whole rig — patchbay, tuner, Sushi, the amp, and (by "
-        "default) the control panel — then return to the prompt",
+        help="start the whole rig — patchbay, tuner, Sushi, the amp and the recorder "
+        "— then return to the prompt; the web page (sushi-rig agent) is its control surface",
     )
     p.add_argument(
         "config_name",
@@ -1089,12 +1038,10 @@ def _main(argv: list[str] | None = None) -> int:
         "at start, with a patchbay generated from it and the machine file rather "
         "than the committed one, so each channel's input reaches its own chain",
     )
-    p.add_argument(
-        "--headless",
-        action="store_true",
-        help="no panel and no save listener — for playing through the rig "
-        "rather than authoring a tone",
-    )
+    # Every run is headless since the Open Stage Control panel was retired
+    # (#139): the flag is taken, so a command written before still runs, and
+    # changes nothing.
+    p.add_argument("--headless", action="store_true", help=argparse.SUPPRESS)
     p.add_argument(
         "--no-tuner", dest="tuner", action="store_false", help="skip fmit"
     )
@@ -1349,9 +1296,10 @@ def _main(argv: list[str] | None = None) -> int:
         help="serve the rig over HTTP on localhost: health, status, doctor, up/down/restart (#29)",
     )
     # Localhost first (#29): opening it to the LAN is the operator's call.
-    # 8029 is the issue's number, and clear of the panel's 8080. The defaults
-    # live in agent_client.py rather than agent.py so that `sushi-rig status`,
-    # which looks for the agent there, does not import asyncio for two numbers.
+    # 8029 is the issue's number, and clear of 8080, which Open Stage Control
+    # served the retired panel on. The defaults live in agent_client.py rather
+    # than agent.py so that `sushi-rig status`, which looks for the agent
+    # there, does not import asyncio for two numbers.
     from .agent_client import DEFAULT_HOST, DEFAULT_PORT
 
     # #181: what `--host 0.0.0.0` is for, said as what it is for, and the
@@ -1433,84 +1381,12 @@ def _main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser(
         "recorder",
-        help="record takes for the agent on request: what `up --rig --headless` starts, under "
+        help="record takes for the agent on request: what `up --rig` starts, under "
         "pw-jack, so the web UI can record (recorder_process.py)",
     )
     p.add_argument(
         "--socket", type=Path,
         help="the Unix socket to answer on [default: recorder.sock beside the state file]",
-    )
-
-    p = sub.add_parser(
-        "listen",
-        help="run an OSC listener that saves a config on request (for the panel's save button)",
-    )
-    p.add_argument(
-        "--rig", type=Path,
-        help="rig.yaml every save is built from. Without it SAVE is refused with a "
-        "message, which is what `up` does for a config whose source it cannot find",
-    )
-    p.add_argument(
-        "--machine", type=Path,
-        help="machine file the rig was compiled against, which names the inputs a "
-        "take taps dry [default: machines/<this hostname>.yaml]",
-    )
-    p.add_argument(
-        "--takes-dir", type=Path,
-        help="where the record bar's takes go [default: ~/sushi-rig-takes]",
-    )
-    p.add_argument("--out-dir", type=Path, help=_OUT_DIR_HELP)
-    p.add_argument("--archive-dir", type=Path, help=_ARCHIVE_DIR_HELP)
-    p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS, help="Sushi's gRPC address")
-    p.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help=(
-            "address to listen on — defaults to loopback-only. The listener writes "
-            "config files and starts recordings on receipt of unauthenticated UDP, "
-            "so any address but loopback exposes that to the network"
-        ),
-    )
-    p.add_argument("--port", type=int, default=DEFAULT_LISTEN_PORT)
-    p.add_argument(
-        "--status-host",
-        default=DEFAULT_STATUS_HOST,
-        help="where to send save-outcome messages — open-stage-control's OSC input",
-    )
-    p.add_argument("--status-port", type=int, default=DEFAULT_STATUS_PORT)
-
-    # Supplying these turns on panel auto-refresh: after a move, the panel is
-    # regenerated and open-stage-control is told to reload it, so the tabs end
-    # up in the rig's new order. Optional — without them a move still works, it
-    # just leaves the tabs showing the old order.
-    p.add_argument(
-        "--panel-config",
-        type=Path,
-        help="config to regenerate the panel from after a chain reorder",
-    )
-    p.add_argument(
-        "--panel-out",
-        type=Path,
-        help="panel file to rewrite and reload (the one open-stage-control loaded)",
-    )
-    p.add_argument(
-        "--sushi",
-        help="Sushi binary, used to re-dump plugin parameters when regenerating "
-        "[default: ./sushi in the rig checkout, the one `up` runs]",
-    )
-
-    # The amp runs outside Sushi and cannot be captured from it, so the save
-    # button can only record what it was told. See sushi_rig/amp.py.
-    p.add_argument(
-        "--amp-model",
-        help="model path to record in a saved config's _amp section",
-    )
-    p.add_argument(
-        "--amp-parameter",
-        action="append",
-        default=[],
-        metavar="NAME=VALUE",
-        help="starting value for an amp control, repeatable",
     )
 
     args = parser.parse_args(argv)
@@ -1540,31 +1416,6 @@ def _main(argv: list[str] | None = None) -> int:
         from .live import capture
 
         write_json(args.out, capture(args.address))
-    elif args.command == "panel":
-        from .live import get_live_bypass_state, get_live_parameter_info
-        from .amp import panel_amp
-        from .probe import units_for_config
-        from .paths import checkout_root
-
-        dump = dump_plugins(args.config, _sushi_bin(args))
-        live_info = get_live_parameter_info(args.address)
-        bypass_info = get_live_bypass_state(args.address)
-        write_json(
-            args.out,
-            build_osc_panel(
-                dump,
-                live_info,
-                args.listener_port,
-                bypass_info,
-                units_for_config(args.config),
-                panel_amp(args.config, checkout_root()),
-                record_bar=args.record_bar,
-            ),
-        )
-        print(
-            f"open with: open-stage-control --load {args.out} "
-            f"--send 127.0.0.1:{args.osc_port}"
-        )
     elif args.command == "probe":
         from .probe import probe, summarise
 
@@ -1771,7 +1622,7 @@ def _main(argv: list[str] | None = None) -> int:
         try:
             if args.command == "up":
                 return up(
-                    args.config_name, headless=args.headless,
+                    args.config_name,
                     tuner=args.tuner, amp=args.amp,
                     amp_model=args.amp_model, rig=args.rig, visualiser_tap=args.visualiser_tap,
                     machine=str(args.machine.resolve()) if args.machine is not None else None,
@@ -1787,44 +1638,6 @@ def _main(argv: list[str] | None = None) -> int:
         from .recorder_process import main as recorder_main
 
         return recorder_main(args.socket)
-    elif args.command == "listen":
-        from .listen import serve
-        from .transport import NoEngine, record_session
-
-        # Planned once, at the start: what a take records follows from the run,
-        # which does not change under a running listener. Said in its log
-        # either way, so a refusal is found before the first press.
-        # One dict for the listener and the session: the listener updates it
-        # as the amp moves, and each take's config carries what it holds then.
-        amp_parameters = _amp_parameters(args.amp_parameter)
-        session = record_session(
-            args.rig, args.panel_config, machine_file=args.machine, takes_dir=args.takes_dir,
-            amp_model=args.amp_model, amp_parameters=amp_parameters,
-        )
-        # stderr, unbuffered: stdout is block-buffered into listen.log, and the
-        # SIGTERM `down` sends would lose a line still in the buffer.
-        if isinstance(session, NoEngine):
-            print(f"sushi-rig listen: RECORD is off — {session.message}", file=sys.stderr)
-        else:
-            stems = ", ".join(f"{stem.filename} from {stem.port}" for stem, _ in session.plan.stems)
-            print(f"sushi-rig listen: RECORD records {stems} into {session.plan.takes_dir}",
-                  file=sys.stderr)
-        serve(
-            args.rig,
-            *_config_dirs(args),
-            address=args.address,
-            host=args.host,
-            port=args.port,
-            status_host=args.status_host,
-            status_port=args.status_port,
-            panel_config=args.panel_config,
-            panel_out=args.panel_out,
-            sushi_bin=_sushi_bin(args),
-            amp_model=args.amp_model,
-            amp_parameters=amp_parameters,
-            session=session,
-        )
-
     return 0
 
 

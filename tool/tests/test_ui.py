@@ -718,16 +718,17 @@ def test_the_page_checks_a_name_by_the_rule_the_agent_saves_by(blank, name):
 
 def test_save_is_offered_whenever_a_rig_saveable_from_here_is_up(blank):
     """Not only while the unsaved list has something: it is what the agent
-    saw, and the panel, pedals mapped in Sushi, or an agent restarted since
-    leave the rig differing from its file with nothing listed (review,
-    2026-11-02). A v1 run and one with its panel are not offered, with how."""
+    saw, and pedals mapped in Sushi, or an agent restarted since, leave the
+    rig differing from its file with nothing listed (review, 2026-11-02). A
+    v1 run is not offered, with how. A state that says nothing of a mode, or
+    an older one that says panel, is offered: the panel is retired (#139)."""
     def view(rig, busy=None, items=1, pending=None, log=None, agent_started="2026-11-02T09:00:00+00:00"):
         health = {"ok": True, "body": {"rig": rig, "agent": {"busy": busy, "started_at": agent_started}}}
         return rigjs(blank, "return R.saveView(arg.health, {items: new Array(arg.items).fill({})}, arg.pending, arg.log);",
                      {"health": health, "items": items, "pending": pending, "log": log})
 
     up = {"running": True, "config_name": "electric_board", "rig": "config/rigs/electric_board.yaml",
-          "mode": "headless", "started_at": "2026-11-02T10:00:00+00:00"}
+          "started_at": "2026-11-02T10:00:00+00:00"}
     v = view(up)
     assert (v["save"]["label"], v["save"]["disabled"], v["saveAs"]["disabled"]) == ("Save to electric_board", False, False)
     assert "not committed" in v["note"]
@@ -754,10 +755,10 @@ def test_save_is_offered_whenever_a_rig_saveable_from_here_is_up(blank):
     assert v["save"]["disabled"] and v["saveAs"]["disabled"]
     assert v["note"] == ("guitar_vocal is a v1 config, not a rig of channels started with --rig, so it is not saved "
                          "from here. Save it on the rig with: sushi-rig save <name> --rig <its rig.yaml>")
-    for mode in ("panel", None):
+    for mode in ("panel", "headless"):
         v = view({**up, "mode": mode})
-        assert v["save"]["disabled"] and v["saveAs"]["disabled"]
-        assert "save with the panel's SAVE button" in v["note"]
+        assert not v["save"]["disabled"] and not v["saveAs"]["disabled"]
+        assert "panel" not in v["note"]
 
 
 def test_a_saves_answer_says_what_was_written_and_what_git_says_of_the_file(blank):
@@ -1503,11 +1504,11 @@ def test_xruns_are_counted_per_node_so_one_missing_then_back_adds_nothing(blank)
     assert steps == [[0, 0], [0, 0], [0, 0], [3, 3], [3, 0], [4, 1]]
 
 
-def test_a_start_is_a_headless_rig_of_channels_and_a_switch_names_its_rig(blank):
+def test_a_start_is_a_rig_of_channels_and_a_switch_names_its_rig(blank):
     calls = rigjs(blank, """return [R.lifecycleCall('start', 'electric-delay'), R.lifecycleCall('stop', 'x'),
                                     R.lifecycleCall('switch', 'accustomed')];""")
     assert calls == [
-        {"path": "/rig/up", "json": {"config_name": "electric-delay", "rig": True, "headless": True}},
+        {"path": "/rig/up", "json": {"config_name": "electric-delay", "rig": True}},
         {"path": "/rig/down", "json": {}},
         {"path": "/rig/switch", "json": {"config_name": "accustomed"}},
     ]
@@ -1571,7 +1572,7 @@ def test_what_a_lifecycle_answer_says_how_and_why_a_switch_was_made(blank):
     assert said[2] == {"ok": False, "title": "Not switched to accustomed (by restart)",
                        "reason": "up failed; electric_board was brought back. It restarted because amp: x"}
     assert said[3] == {"ok": False, "title": "Not switched to accustomed", "reason": "busy: 'up' is still running"}
-    assert said[4]["text"] == "Started electric_board, headless. Warnings: a patchbay link was not made"
+    assert said[4]["text"] == "Started electric_board. Warnings: a patchbay link was not made"
     assert said[5] == {"ok": False, "title": "Not started: electric_board", "reason": "error: a rig is already running"}
     assert said[6]["text"] == "Stopped electric_board."
 
@@ -1631,7 +1632,7 @@ def rack_page(browser, served):
     return page
 
 
-def test_a_rig_is_started_from_the_picker_headless_and_busy_is_shown_meanwhile(browser):
+def test_a_rig_is_started_from_the_picker_and_busy_is_shown_meanwhile(browser):
     from ui_fake import UiLifecycle
 
     world = UiLifecycle(up=None)
@@ -1646,8 +1647,8 @@ def test_a_rig_is_started_from_the_picker_headless_and_busy_is_shown_meanwhile(b
         expect(p.locator(".rig-busy")).to_have_text("Starting electric_board…")
         expect(p.get_by_role("button", name="Start electric_board")).to_be_disabled()
         expect(p.locator(".rig-name")).to_have_text("electric_board")  # the agent's busy line meanwhile
-        expect(p.locator(".notice")).to_have_attribute("title", re.compile(re.escape("Started electric_board, headless.")), timeout=8000)
-        assert world.calls == [["up", "electric_board", "--rig", "--headless"]]
+        expect(p.locator(".notice")).to_have_attribute("title", re.compile(re.escape("Started electric_board.")), timeout=8000)
+        assert world.calls == [["up", "electric_board", "--rig"]]
         expect(p.locator(".rig.up")).to_have_text("electric_boardup now")
         expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"])
         expect(p.locator(".unit")).to_have_count(3)
@@ -1669,7 +1670,7 @@ def test_a_refused_start_shows_the_agents_reason_and_nothing_starts(browser):
         expect(alert).to_contain_text("Not started: electric-delay")
         expect(alert).to_have_attribute("title", re.compile(re.escape("error: no machine file for this host (test)")))
         expect(p.locator(".rig-name")).to_have_text("Rig down")
-        assert world.calls == [["up", "electric-delay", "--rig", "--headless"]]
+        assert world.calls == [["up", "electric-delay", "--rig"]]
         page.close()
 
 
@@ -1868,7 +1869,6 @@ def test_the_amp_card_has_faders_for_the_panels_parameters_and_quality_shown_bes
 
 
 @pytest.mark.parametrize("over, options, why", [
-    ({"known": "panel"}, {}, "The panel is running and owns the amp"),
     ({"carla": {"pid": 4244, "alive": False}}, {}, "Carla is not running"),
     ({"held": False}, {}, "did not start the running rig"),
     ({}, {"locked": True}, "Locked: changing the amp's model cuts the sound"),
@@ -2081,16 +2081,6 @@ def test_a_model_change_that_failed_says_so_and_whether_the_old_one_is_back(brow
     expect(alert).to_contain_text("Amp model not changed: Edge")
     expect(alert).to_have_attribute("title", re.compile(re.escape("Carla exited as it started (status 1); the previous model was brought back")))
     expect(p.locator(".amp-card .amp-model")).to_have_text("Clean Room")
-    page.close()
-
-
-def test_with_the_panel_running_the_amp_card_writes_nothing_and_says_why(browser, amp_served):
-    amp_served.amp.mode = "panel"
-    page = amp_rack(browser, amp_served)
-    p = page.page
-    expect(p.get_by_role("slider", name="amp Output Lvl")).to_be_disabled()
-    expect(p.locator(".amp-card .sub")).to_have_attribute("title", re.compile("the panel's faders may have moved them since"))
-    expect(p.get_by_role("combobox", name="Amp model")).to_have_attribute("title", re.compile("The panel is running and owns the amp"))
     page.close()
 
 
@@ -2512,19 +2502,6 @@ def test_a_name_the_rule_refuses_is_said_before_sending_and_a_taken_one_by_the_a
     page.close()
 
 
-def test_in_panel_mode_save_is_not_offered_and_says_how_to_save(browser, save_served):
-    save_served.save.state["mode"] = "panel"
-    page = save_rack(browser, save_served)
-    p = page.page
-    turn_drive_down(p)
-    expect(p.get_by_role("button", name="Save to electric_board")).to_be_disabled()
-    expect(p.get_by_role("button", name="Save as…")).to_be_disabled()
-    expect(p.locator(".save-note")).to_contain_text("The rig runs with its panel")
-    expect(p.locator(".save-note")).to_have_attribute("title", re.compile("save with the panel's SAVE button"))
-    assert drive_of(rig_file(save_served)) is None
-    page.close()
-
-
 def test_a_refusal_from_the_agent_is_shown_with_its_reason(browser, save_served):
     """What the page cannot know ahead: a chain changed live (a plugin
     removed), which the agent refuses with why."""
@@ -2576,7 +2553,7 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
         R.recordBar({ok: false, reason: "x"}, null, "", null),
         R.recordBar({ok: true, body: {rig: {running: false}, agent: {}}}, null, "", null),
         R.recordBar(arg.busy, idle, "", null),
-        R.recordBar(up, {ok: true, body: {state: "unavailable", reason: "the rig runs with its panel (test)"}}, "", null),
+        R.recordBar(up, {ok: true, body: {state: "unavailable", reason: "no take can be planned for this run (test)"}}, "", null),
         R.recordBar(up, idle, "", null),
         R.recordBar(up, idle, "Riff Idea", null),
         R.recordBar(up, idle, "riff", null),
@@ -2590,7 +2567,7 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
     off = [v for v in views[:4]]
     assert [v["reason"] for v in off] == [
         "The agent is not answering.", "No rig is running to record.", "restart is running: recording waits for it.",
-        "the rig runs with its panel (test)"]
+        "no take can be planned for this run (test)"]
     assert all(v["record"]["disabled"] and v["stop"]["disabled"] for v in off), "nothing to press"
     idle = views[4]
     assert (idle["state"], idle["record"], idle["stop"]["disabled"]) == ("idle", {"label": "Record", "disabled": False}, True)
@@ -3308,7 +3285,6 @@ def test_text_the_browser_enlarges_past_its_computed_size_is_measured_as_it_is_d
 
 
 @pytest.mark.parametrize("change, said", [
-    (lambda s: s.save.state.update(mode="panel"), "whose record bar owns recording"),
     (lambda s: s.save.state.update(rig=None), "is a v1 config, not a rig of channels"),
     (lambda s: setattr(s.recorder.link, "down", "no recorder is listening (test)"), "the recorder is not answering"),
 ])

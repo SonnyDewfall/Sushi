@@ -297,5 +297,6 @@ reprofiling the singer.
 
 Plugin names carry their channel (`guitar_eq`, `vocal_eq`) because Sushi's
 processor names are global rather than per track — two plugins called `eq` are
-refused outright — and because those names are the panel's tab labels, so the
-prefix is what says which channel a tab belongs to.
+refused outright — and because those names are what a plugin is called on the
+page, in the log and in a capture, so the prefix is what says which channel a
+plugin belongs to.

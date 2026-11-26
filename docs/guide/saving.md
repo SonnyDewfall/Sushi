@@ -120,9 +120,8 @@ and none of those reaches it.
 - **A box headed "Not saved" or "Not saved as …".** The agent refused; the box
   gives the reason. A name that another rig already has is refused.
 - **The buttons are greyed out.** The line under them says why. Usually no rig
-  is running. If it says the rig is a "v1 config" or runs "with its panel", the
-  rig was started from a terminal in an older way: stop it and start it from
-  the page.
+  is running. If it says the rig is a "v1 config", the rig was started from a
+  terminal in an older way: stop it and start it from the page.
 - **A box headed "Not reverted".** Nothing was changed; the box says why. If it
   mentions unsaved changes the page had not counted, it offers
   **Revert anyway, dropping them**.

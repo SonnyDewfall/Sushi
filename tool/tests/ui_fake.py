@@ -498,11 +498,11 @@ def describe_up(started: datetime, name: str = "electric_board", amp_model: str 
     Carla when `amp_model` names what it plays."""
     def describe():
         return {
-            "verdict": "running", "running": True, "config_name": name, "mode": "headless",
+            "verdict": "running", "running": True, "config_name": name,
             "pgid": 4242, "started_at": started.isoformat(), "uptime_seconds": (datetime.now(timezone.utc) - started).total_seconds(),
             "amp_model": amp_model, "rig": name,
             "children": {"amp": {"pid": 4244, "alive": amp_alive}} if amp_model else {},
-            "message": f"{name} (headless mode)",
+            "message": f"{name}, up",
         }
     return describe
 
@@ -546,7 +546,6 @@ class UiAmp:
         self.override = None
         self.config = {"tracks": [], "_amp": {"plugin": "nam", "model": self.MODEL,
                                               "parameters": {"Input Lvl": 0.0, "Output Lvl": -3.0, "Quality": 1.0}}}
-        self.mode = "headless"
         self.alive = True
         # False: the rig was started with --no-amp, so no Carla runs (#246).
         self.requested = True
@@ -560,7 +559,7 @@ class UiAmp:
     def state(self):
         rig = self.lifecycle.rig
         return {
-            "supervisor_pid": 4242, "pgid": 4242, "mode": self.mode, "config_name": rig,
+            "supervisor_pid": 4242, "pgid": 4242, "config_name": rig,
             "config": f"/fake/{rig}.json", "started_at": self.lifecycle.started.isoformat(),
             "amp_model": self.model if self.requested else None, "amp_requested": self.requested,
             "amp_model_requested": self.override,
@@ -659,7 +658,7 @@ class UiSave:
                                      text=True).stdout.strip()
         rig = lifecycle.rig or "electric_board"
         self.state = {
-            "supervisor_pid": 4242, "pgid": 4242, "mode": "headless", "config_name": rig,
+            "supervisor_pid": 4242, "pgid": 4242, "config_name": rig,
             "config": f"/fake/rigs/{rig}.json", "rig": f"config/rigs/{rig}.yaml",
             "started_at": lifecycle.started.isoformat(), "amp_requested": False, "amp_model": None,
             "children": {"sushi": 4243},
@@ -797,7 +796,7 @@ class UiSave:
         if self.lifecycle.rig is None:
             return self.lifecycle.describe()
         return {**describe_up(self.lifecycle.started, self.state["config_name"])(),
-                "mode": self.state["mode"], "rig": self.state["rig"], "config": self.state["config"],
+                "rig": self.state["rig"], "config": self.state["config"],
                 **({"machine": self.state["machine"]} if self.pedals else {})}
 
     def close(self):
@@ -1069,7 +1068,7 @@ class UiLifecycle:
             if self.rig is not None:
                 return Outcome(False, 1, "", f"error: a rig is already running ({self.rig}); 'sushi-rig down' first\n")
             self.rig, self.started = args[1], datetime.now(timezone.utc).replace(microsecond=0)
-            return Outcome(True, 0, f"{self.rig} up (headless mode)\n", self._warned())
+            return Outcome(True, 0, f"Rig up: {self.rig}\n", self._warned())
         if args[0] == "down":
             if self.rig is None:
                 return Outcome(False, 1, "", "error: no rig is running\n")
@@ -1081,7 +1080,7 @@ class UiLifecycle:
             self.started = datetime.now(timezone.utc).replace(microsecond=0)
             if self.on_restart:
                 self.on_restart()
-            return Outcome(True, 0, f"{self.rig} restarted (headless mode)\n", self._warned())
+            return Outcome(True, 0, f"{self.rig} restarted\n", self._warned())
         return Outcome(False, 2, "", f"error: the fake does not know {args[0]!r}\n")
 
     def _warned(self) -> str:
@@ -1108,7 +1107,7 @@ class UiLifecycle:
         else:
             _, why = how
             self.started = datetime.now(timezone.utc).replace(microsecond=0)
-            answer.update(how="restart", why=why, command=["up", name, "--rig", "--headless"], output="")
+            answer.update(how="restart", why=why, command=["up", name, "--rig"], output="")
             entry = self.agent._record("rig", {"rig": name, "how": "restart", "why": [w["code"] for w in why]}, previous)
         self.rig = name
         if self.on_switch:

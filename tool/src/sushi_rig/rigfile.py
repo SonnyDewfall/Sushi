@@ -1590,8 +1590,8 @@ def fold_state(
     A capture naming a processor that is neither the file's nor explained by
     `edits` is refused, as `emit` refuses it: a capture of a different rig.
     So is a chain lacking one of the file's plugins with no remove of it in
-    `edits`. Without `edits` (the CLI's `sushi-rig save`, the panel's SAVE:
-    no log), any plugin added or removed live is refused that way.
+    `edits`. Without `edits` (the CLI's `sushi-rig save`: no log), any
+    plugin added or removed live is refused that way.
     """
     rig = parse_rig(copy.deepcopy(raw))  # refuse what load_rig would refuse
     captured = captured or {}
@@ -1768,7 +1768,7 @@ def pin_monitor_path(config: dict[str, Any]) -> dict[str, Any]:
     """Each send last in its chain, and the return first in the master and
     the limiter last (#137).
 
-    The panel can move any processor and a capture saves the order it finds,
+    A gRPC client can move any processor and a capture saves the order it finds,
     and `emit` appends a plugin the capture does not mention at the end of its
     chain. Any of those can leave a send part way up a chain, which feeds the
     monitors from the middle of it: the player hears the guitar without its

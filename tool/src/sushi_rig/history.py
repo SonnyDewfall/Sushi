@@ -43,7 +43,7 @@ one press puts back one gesture.
 
 **What cannot be undone** is said, not hidden: `Agent` answers an entry it
 cannot reverse (the file changed since, the bin entry gone, a knob turned
-from the panel) with `cant_undo` and drops it, so the next press goes on to
+by a MIDI mapping Sushi serves) with `cant_undo` and drops it, so the next press goes on to
 the one before, as the live undo's `skip` always did.
 
 **A rig switch ends the live entries**, and so do `up`, `down` and

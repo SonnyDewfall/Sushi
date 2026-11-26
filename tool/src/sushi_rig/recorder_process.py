@@ -2,18 +2,17 @@
 
 A take records through a JACK client (`capture.CaptureEngine`), which has to
 run under `pw-jack` with the rig's `PIPEWIRE_QUANTUM`: the system libjack
-finds no server on a PipeWire-only machine (capture.py). In panel mode the
-listener is that process, which is why `up` starts it as `pw-jack ... sushi-rig
-listen`. Headless, which is how the web UI runs the rig, there is no listener,
-and the agent is not under `pw-jack` and must not be: it serves HTTP, holds
+finds no server on a PipeWire-only machine (capture.py). The Open Stage
+Control panel's OSC listener was that process once; it is retired (#139,
+#218). The agent is not under `pw-jack` and must not be: it serves HTTP, holds
 the rig's group, and outlives the rig. So recording is a process of its own,
 `sushi-rig recorder`, and the agent speaks to it.
 
 ## A child of the rig, started with it
 
-The recorder is planned by `rig.plan_children` for a headless run of a rig of
-channels (`up --rig --headless`, which is what the page starts), and started
-into the rig's process group with the rest, in the listener's place. Chosen
+The recorder is planned by `rig.plan_children` for a run of a rig of channels
+(`up --rig`, which is what the page starts), and started into the rig's
+process group with the rest. Chosen
 over starting it at the first RECORD and keeping it, because:
 
 - **It is supervised for nothing.** A held child that exits is a crash in
@@ -25,13 +24,12 @@ over starting it at the first RECORD and keeping it, because:
   not hold.
 - **It stops with the rig.** `down` signals the group, SIGINT first, and the
   recorder finishes a take on SIGINT (`serve`), so a rig stopped from the CLI,
-  or by an agent killed mid-take, still leaves a finished take, as the
-  listener's `Transport.close` does in panel mode.
+  or by an agent killed mid-take, still leaves a finished take.
 - **It costs nothing until a take.** It opens no JACK client until RECORD
   (`CaptureEngine.start`); between takes it is a Python waiting on a socket.
 
 `up --direct` plans it too, since `plan_children` is the one planner, so a
-headless rig of channels started from the CLI records from the page as well.
+rig of channels started from the CLI records from the page as well.
 
 ## A Unix socket in the runtime dir
 
@@ -50,9 +48,8 @@ The recorder holds no idea of which rig is running: a live switch (#93) and
 a save-as (S4) change that while it runs. Each request names the run's files
 (`Run`: the rig file, the compiled config Sushi loaded, the machine file,
 the takes folder, the checkout) from the state file as the agent reads it,
-and a take is planned at its RECORD by `transport.record_session`, exactly as
-the listener plans one: the same ports (`transport.rig_stems`), the same
-refusals, the same `TakeSession`. So a take carries the config as it is live
+and a take is planned at its RECORD by `transport.record_session`: the ports
+`transport.rig_stems` gives, its refusals, a `TakeSession`. So a take carries the config as it is live
 at RECORD, with the amp as the agent last sent it (`amp`, written by
 `amp.write_amp` as SAVE writes it, #117) and the rig file as it is at RECORD
 (#110). A status plans from the same files with `transport.plan_for_run` to
@@ -95,8 +92,7 @@ REQUEST_LIMIT = 64 * 1024
 # A start opens a JACK client, waits `capture.SETTLE_S` for the quantum on the
 # first take, makes and reads back every link (`LINK_RETRY_S`); a stop drains
 # the writer to disk. Guesses with room in them: nothing here has run against
-# a live PipeWire, and how long a stop takes on the rig is for it to measure
-# (transport.Transport.close says the same of the listener's).
+# a live PipeWire, and how long a stop takes on the rig is for it to measure.
 STATUS_TIMEOUT = 3.0
 START_TIMEOUT = 20.0
 STOP_TIMEOUT = 20.0
@@ -243,8 +239,7 @@ class RecorderCore:
     `engine(sample_rate, quantum)` makes the capture engine, as
     `transport.record_session` takes it: `capture.CaptureEngine` by default.
     One engine is kept per rate and quantum, so the graph's quantum is read on
-    the first take only (`CaptureEngine`'s docstring), as the listener's one
-    engine does. `session_for` is `record_session`; `clock` times a take
+    the first take only (`CaptureEngine`'s docstring). `session_for` is `record_session`; `clock` times a take
     (monotonic) and `now` says when it began."""
 
     def __init__(
@@ -402,8 +397,8 @@ class RecorderCore:
     def stop(self, by: str = "request") -> dict[str, Any]:
         """Finish the running take, and say how it came out: `seconds`, and
         `take check`'s `problems` (empty when whole), read back from the
-        folder. Idle afterwards whatever happened, as `Transport.on_stop` is:
-        a session that raised on stop has stopped as far as it can. Refused
+        folder. Idle afterwards whatever happened: a session that raised on
+        stop has stopped as far as it can. Refused
         (`not_recording`) when no take runs."""
         from .take import take_summary
         from .transport import TransportError
@@ -632,8 +627,8 @@ def serve(path: Path, core: RecorderCore, *, poll: float = 0.2) -> int:
 
 
 def main(path: Path | None = None) -> int:
-    """`sushi-rig recorder`: the process `up` starts for a headless rig of
-    channels, under `pw-jack`. Says at its start whether JACK-Client loads,
+    """`sushi-rig recorder`: the process `up` starts for a rig of channels,
+    under `pw-jack`. Says at its start whether JACK-Client loads,
     so a machine without it is found in recorder.log before anyone presses
     RECORD (and GET /record says it too)."""
     from .capture import CaptureError, load_jack

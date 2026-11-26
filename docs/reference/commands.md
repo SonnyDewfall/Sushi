@@ -20,15 +20,14 @@ on the web UI instead ([user guides](../guide/README.md)).
 | `machine check`, `patchbay check`, `patchbay generate` | the machine file and the patchbay made from it | [The machine file](machine-file.md) |
 | `take check`, `take repair` | check a take's folder, or mend one cut off by a crash | [Takes](takes.md) |
 | `probes` | where selftest would inject and listen for a rig | [Environment](environment.md#selftest-and-its-probes) |
-| `save`, `panel`, `listen`, `push`, `capture` | the v1 loop: capture a running Sushi and write a config, with or without the OSC panel | [The v1 workflow](v1-workflow.md) |
-| `recorder` | the process a headless rig starts so the web UI can record; not run by hand | [The agent](agent.md#recording-from-the-web-ui) |
+| `save`, `push`, `capture` | the v1 loop: capture a running Sushi and write a config (`panel` and `listen`, the Open Stage Control panel's, are retired) | [The v1 workflow](v1-workflow.md) |
+| `recorder` | the process a rig of channels starts so the web UI can record; not run by hand | [The agent](agent.md#recording-from-the-web-ui) |
 
 ## Running the rig
 
 ```bash
-sushi-rig up --rig electric-clean --headless   # a rig of channels, config/rigs/<name>.yaml: what the web UI starts
-sushi-rig up                # v1: tuner, patchbay, Sushi, the amp, and a generated panel
-sushi-rig up --headless     # the same rig with no panel — for playing, not tweaking
+sushi-rig up --rig electric-clean  # a rig of channels, config/rigs/<name>.yaml: what the web UI starts
+sushi-rig up                # v1: tuner, patchbay, Sushi and the amp, from config/electric_board.json
 sushi-rig up electric-clean # any config/<name>.json; defaults to electric_board
 sushi-rig status            # what is running, and where its logs are
 sushi-rig top               # live CPU load per component, and whether xruns are climbing
@@ -37,7 +36,10 @@ sushi-rig down              # stop everything, and verify it stopped
 ```
 
 `up` also takes `--no-amp`, `--no-tuner`, and `--amp-model "Some Model.nam"` to
-audition a different amp capture without editing the config.
+audition a different amp capture without editing the config. It starts no
+control panel: the web page, served by `sushi-rig agent`, is the rig's control
+surface, and every run is what used to be called headless (`--headless` is
+still taken, and changes nothing).
 
 `up --no-visualiser-tap` means the rig's output is never offered to the web
 page's visualiser (#195). `up` itself never starts the visualiser's tap: the
@@ -101,8 +103,8 @@ time budget for one block and the rig will drop audio. Xruns are reported as a
 change rather than a total, since the cumulative count never resets.
 
 `down` signals the rig's **process group**: `sushi.bin` (Sushi re-execs itself
-out of a randomly-named AppImage mount), open-stage-control's Electron helpers
-and the listener are all group members, so none of them need a pattern to match
+out of a randomly-named AppImage mount), Carla and the recorder are all group
+members, so none of them need a pattern to match
 and none get left behind. It then checks, and tells you if anything survived.
 
 Running `./sushi -c <config>` by hand, outside these commands, needs `LV2_PATH`
@@ -135,9 +137,8 @@ hardware, no JACK — and compares the running rig against the file, naming ever
 parameter, bypass and chain-order difference. It uses a free port and its own
 process group, so it is safe to run while you are playing.
 
-The two cheap checks run automatically after `emit` and after the panel's SAVE.
-The deep one stays explicit: five seconds on every SAVE would be felt while
-dialling in a tone.
+The two cheap checks run automatically after `emit`. The deep one stays
+explicit: five seconds on every save would be felt while dialling in a tone.
 
 ## Checking a config loads
 

@@ -64,7 +64,7 @@ A master volume set while the dip is under way is not lost:
 - from the page, or anything else through the agent, it waits for the live
   lock the edit holds, and lands after the level is back, as the newest;
 - from anywhere that reaches Sushi directly (a MIDI mapping Sushi serves
-  itself, the v1 panel's OSC), the agent reads the gain again when the edit
+  itself, a gRPC client of its own), the agent reads the gain again when the edit
   is done, and a value that is neither the floor it set nor the level it
   read is someone else's, newer than the dip: it is left as it is
   (`restore_to`). What it cannot see is a change in the instant between that

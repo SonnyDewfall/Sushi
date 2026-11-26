@@ -390,22 +390,6 @@ def test_a_routing_only_compile_needs_no_table_and_makes_no_copies(tmp_path, mon
     assert [p.name for p in rigfile.spec_of(path, routing_only=True).tracks[0].plugins][:2] == ["comp", "x"]
 
 
-def test_saves_source_check_reads_a_running_config_with_copies_against_a_routing_only_spec(tmp_path):
-    """SAVE's check that a rig file describes the running config: the config
-    has the copies, the routing-only spec does not, and that is no mismatch."""
-    import json
-
-    from sushi_rig.rig import rig_source_problem
-
-    (tmp_path / "config" / "rigs").mkdir(parents=True)
-    raw = rig([{"name": "comp", "uri": COMP}])
-    (tmp_path / "config" / "rigs" / "r.yaml").write_text(yaml.safe_dump(raw))
-    running = tmp_path / "r.json"
-    running.write_text(json.dumps(rigfile.emit_rig(rigfile.parse_rig(raw))))
-    assert "comp_to_stereo" in running.read_text()
-    assert rig_source_problem(running, tmp_path) is None
-
-
 def test_the_refusals_for_a_copy_read_as_one_sentence():
     move = decide_move(CHAINS, IDS, "comp_to_stereo", 1, UIDS)
     assert move.why == "'comp_to_stereo' is 'comp''s copy to stereo, which moves with 'comp': move that instead"

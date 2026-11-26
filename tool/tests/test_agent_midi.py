@@ -40,7 +40,7 @@ RIGS = ["clean", "guitar_vocal", "lead"]
 PORT_NAME = "MPD218:MPD218 Port A"
 
 RIG_UP = dict(UP, config_name="guitar_vocal", rig="config/rigs/guitar_vocal.yaml")
-STATE = {"config_name": "guitar_vocal", "mode": "headless", "rig": "config/rigs/guitar_vocal.yaml",
+STATE = {"config_name": "guitar_vocal", "rig": "config/rigs/guitar_vocal.yaml",
          "tuner_requested": False, "amp_requested": True, "amp_model_requested": "Other.nam"}
 
 
@@ -345,7 +345,7 @@ def test_a_program_change_switches_rigs_with_the_restart_the_agent_runs():
         await settle(agent)
         # The same options `restart` would bring back, read from the state
         # file; the amp model override belonged to the last rig and is not kept.
-        assert runner.calls == [["down"], ["up", "lead", "--rig", "--headless", "--no-tuner"]]
+        assert runner.calls == [["down"], ["up", "lead", "--rig", "--no-tuner"]]
         assert port.closed.is_set(), "the old rig's listener stopped with its down"
         await until(lambda: len(world.ports) == 2 and agent._midi["state"] == "listening")
         assert agent._midi["rig"] == "lead", "and the new rig's listener came up with its up"
@@ -480,8 +480,8 @@ def test_get_rig_has_no_programs_when_the_rig_does_not_switch_by_them():
 
 
 def test_switch_steps_are_down_then_up_with_what_restart_would_bring_back():
-    assert switch_steps(STATE, "lead") == [["down"], ["up", "lead", "--rig", "--headless", "--no-tuner"]]
-    no_amp = {"config_name": "x", "mode": "panel", "tuner_requested": True, "amp_requested": False}
+    assert switch_steps(STATE, "lead") == [["down"], ["up", "lead", "--rig", "--no-tuner"]]
+    no_amp = {"config_name": "x", "tuner_requested": True, "amp_requested": False}
     assert switch_steps(no_amp, "x") == [["down"], ["up", "x", "--rig", "--no-amp"]]
     # Into another rig the run's --no-amp is not carried (#246): it was, and
     # the owner switched to a rig with an amp and heard none.
@@ -493,9 +493,9 @@ def test_switch_steps_are_down_then_up_with_what_restart_would_bring_back():
 def test_a_switch_by_restart_keeps_the_visualiser_tap_declined():
     """`--no-visualiser-tap` is kept in the state file, as `--no-tuner` is,
     and the next rig comes up without the tap too."""
-    off = {"config_name": "x", "mode": "headless", "tuner_requested": True, "amp_requested": True,
+    off = {"config_name": "x", "tuner_requested": True, "amp_requested": True,
            "visualiser_tap_requested": False}
-    assert switch_steps(off, "clean") == [["down"], ["up", "clean", "--rig", "--headless", "--no-visualiser-tap"]]
+    assert switch_steps(off, "clean") == [["down"], ["up", "clean", "--rig", "--no-visualiser-tap"]]
     assert "--no-visualiser-tap" not in switch_steps({**off, "visualiser_tap_requested": True}, "clean")[1]
 
 
@@ -727,8 +727,8 @@ def test_a_switch_whose_up_fails_brings_the_previous_rig_back():
         await until(lambda: len(runner.calls) == 3)
         await settle(agent)
         assert runner.calls == [
-            ["down"], ["up", "lead", "--rig", "--headless", "--no-tuner"],
-            ["up", "guitar_vocal", "--rig", "--headless", "--no-tuner"],
+            ["down"], ["up", "lead", "--rig", "--no-tuner"],
+            ["up", "guitar_vocal", "--rig", "--no-tuner"],
         ]
         await until(lambda: agent._midi["state"] == "listening")
         assert agent._midi["rig"] == "guitar_vocal", "and its pedals with it"
@@ -961,7 +961,7 @@ def test_b_steps_to_the_next_rig_by_the_switch_path_and_is_logged_with_its_switc
         press(world.named[FBV_PORT], 21)  # b, on guitar_vocal: the next is lead
         await until(lambda: len(runner.calls) == 2)
         await settle(agent)
-        assert runner.calls == [["down"], ["up", "lead", "--rig", "--headless", "--no-tuner"]]
+        assert runner.calls == [["down"], ["up", "lead", "--rig", "--no-tuner"]]
         (entry,) = await log(client)
         assert entry["op"] == "rig" and entry["source"] == "midi" and entry["control"] == "b"
         assert entry["args"]["rig"] == "lead" and "program" not in entry["args"]
@@ -1010,7 +1010,7 @@ def test_a_press_while_a_switch_is_running_is_refused_not_queued():
         await asyncio.sleep(0.1)
         await settle(agent)
         assert world.checked == ["lead"], "one switch: the second press was not queued behind it"
-        assert runner.calls == [["down"], ["up", "lead", "--rig", "--headless", "--no-tuner"]]
+        assert runner.calls == [["down"], ["up", "lead", "--rig", "--no-tuner"]]
 
     served(agent, test)
 

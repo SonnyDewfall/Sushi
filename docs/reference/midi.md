@@ -154,8 +154,8 @@ Why the send's bypass, of the three ways Sushi 1.3.0 could do it:
   switch or an untyped CC follows its value, muted at 64 and above), and works
   only with the agent running.
 - A gain processor of the compiler's before each send: it would be heard, but
-  it is a processor in every chain that the save, the live switch, the panel
-  and the page would each have to know is the compiler's, as the copies to
+  it is a processor in every chain that the save, the live switch and the page
+  would each have to know is the compiler's, as the copies to
   stereo are.
 - The master's return: it is the sum of every channel, so it cannot mute one.
 

@@ -1,14 +1,14 @@
 """Where commands look for things when told nothing.
 
-`verify` and `nulltest` already defaulted to the checkout's `./sushi`; `emit`,
-`panel` and `listen` used a bare `sushi` from PATH, and `save` and `listen`
-wrote to `../config` relative to wherever they were run. Both are resolved from
+`verify` and `nulltest` already defaulted to the checkout's `./sushi`; `emit`
+(and `panel` and `listen`, since retired) used a bare `sushi` from PATH, and
+`save` (and `listen`) wrote to `../config` relative to wherever they were run. Both are resolved from
 `paths.checkout_root()` now, so a command does the same thing from any directory.
 """
 
 import argparse
 
-from sushi_rig import cli, listen, save
+from sushi_rig import cli, save
 from sushi_rig.paths import checkout_root
 
 
@@ -57,39 +57,8 @@ def test_save_resolves_its_directories_from_the_checkout_not_the_cwd(
     assert seen["archive_dir"] == checkout_root() / "config" / "archive"
 
 
-def test_listen_resolves_its_directories_and_sushi_from_the_checkout(
-    tmp_path, monkeypatch
-):
-    seen = {}
-
-    def fake_serve(rig, out_dir, archive_dir, **kwargs):
-        seen.update(out_dir=out_dir, archive_dir=archive_dir, **kwargs)
-
-    monkeypatch.setattr(listen, "serve", fake_serve)
-    monkeypatch.chdir(tmp_path)
-    assert cli.main(["listen", "--rig", "rig.yaml"]) == 0
-    assert seen["out_dir"] == checkout_root() / "config"
-    assert seen["archive_dir"] == checkout_root() / "config" / "archive"
-    assert seen["sushi_bin"] == str(checkout_root() / "sushi")
-
-
-def test_up_passes_listen_explicit_values_so_the_new_defaults_do_not_touch_it(tmp_path):
-    """`rig.plan_children` runs `listen` from the checkout root with these, so
-    changing the defaults changes nothing for `sushi-rig up`."""
-    from sushi_rig.rig import plan_children
-
-    children = plan_children(
-        tmp_path, tmp_path / "config" / "x.json", "config/src/x.yaml",
-        headless=False, tuner=False,
-    )
-    command = next(c for c in children if c["name"] == "listen")["command"]
-    assert command[command.index("--out-dir") + 1] == "config"
-    assert command[command.index("--archive-dir") + 1] == "config/archive"
-    assert command[command.index("--sushi") + 1] == "./sushi"
-
-
 def test_a_missing_elkpy_ends_the_cli_with_its_message_as_it_always_did(monkeypatch, tmp_path):
-    """`live.py` raises it so the listener and the agent can outlive it; the
+    """`live.py` raises it so the agent can outlive it; the
     command line is where it becomes an exit."""
     import pytest
 

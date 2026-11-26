@@ -49,7 +49,7 @@ def log_dir() -> Path:
 
 
 def recorder_socket() -> Path:
-    """Where the recorder of a headless rig run listens (`recorder_process.py`),
+    """Where the recorder of a rig run listens (`recorder_process.py`),
     a Unix socket beside the state file: the agent finds it there whichever
     agent, or `up`, started the rig, since the rig outlives the agent."""
     return runtime_dir() / "recorder.sock"

@@ -87,14 +87,14 @@ def test_nodes_are_listed_in_signal_order():
     """The amp is in front of Sushi and the tuner only taps the input, so
     reading top to bottom should follow the guitar rather than the order the
     supervisor happened to start things in."""
-    children = {"fmit": 1, "qpwgraph": 2, "listen": 3, "sushi": 4, "amp": 5}
+    children = {"fmit": 1, "qpwgraph": 2, "recorder": 3, "sushi": 4, "amp": 5}
     names = [n["name"] for n in rig_nodes(parse_pw_top(PW_TOP), children)]
     assert names.index("NAM") < names.index("sushi") < names.index("fmit")
 
 
 def test_children_that_do_no_dsp_contribute_nothing():
-    """The listener, the panel and the patchbay process no audio."""
-    for child in ("listen", "qpwgraph", "open-stage-control"):
+    """The recorder and the patchbay are not in the audio path."""
+    for child in ("recorder", "qpwgraph"):
         assert child not in CHILD_NODES
 
 
@@ -290,7 +290,7 @@ def test_a_row_with_no_timing_is_kept_unmeasured_and_drives_nothing():
 
 
 def test_the_load_report_is_the_rigs_nodes_their_budget_and_what_is_missing():
-    report = load_report(parse_pw_top(PW_TOP), {"sushi": 1, "amp": 2, "listen": 3})
+    report = load_report(parse_pw_top(PW_TOP), {"sushi": 1, "amp": 2, "recorder": 3})
     assert [(n["name"], n["child"], n["load"], n["xruns"]) for n in report["nodes"]] == [
         ("NAM", "amp", 0.23, 2), ("Carla", "amp", 0.0, 0), ("sushi", "sushi", 0.03, 0)]
     assert report["nodes"][2]["busy_ms"] == pytest.approx(0.675, abs=1e-3)

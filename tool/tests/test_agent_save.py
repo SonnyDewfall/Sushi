@@ -58,13 +58,13 @@ AMP_CONFIG = {"tracks": [], "_amp": {"plugin": "nam", "model": "amp/models/First
 
 class World:
     """The state file, `describe_rig`'s answer and the running config, for a
-    rig of channels up headless from config/rigs/electric_board.yaml, with
+    rig of channels up from config/rigs/electric_board.yaml, with
     an amp unless `amp` is False."""
 
-    def __init__(self, root, *, mode="headless", amp=True, rig="config/rigs/electric_board.yaml"):
+    def __init__(self, root, *, amp=True, rig="config/rigs/electric_board.yaml"):
         self.root = root
         self.state = {
-            "supervisor_pid": 10, "pgid": 10, "mode": mode, "config_name": "electric_board",
+            "supervisor_pid": 10, "pgid": 10, "config_name": "electric_board",
             "config": "/run/rigs/electric_board.json", "started_at": "2026-11-02T10:00:00+00:00",
             "amp_model": "amp/models/First.nam" if amp else None, "amp_requested": amp,
             "amp_model_requested": None, "children": {"sushi": 11, **({"amp": 12} if amp else {})},
@@ -82,9 +82,9 @@ class World:
         if not self.running:
             return {"verdict": "absent", "running": False, "message": "No rig is running."}
         return {"verdict": "running", "running": True, "config_name": self.state["config_name"],
-                "mode": self.state.get("mode"), "rig": self.state.get("rig"), "config": self.state["config"],
+                "rig": self.state.get("rig"), "config": self.state["config"],
                 "children": {n: {"pid": p, "alive": True} for n, p in self.state["children"].items()},
-                "message": f"{self.state['config_name']} ({self.state.get('mode')} mode), up 2m"}
+                "message": f"{self.state['config_name']}, up 2m"}
 
     def compile(self, name, root, machine):
         self.compiled.append((name, root))
@@ -196,14 +196,12 @@ def test_what_cannot_be_saved_from_here_is_refused_with_a_code_and_the_way_that_
     assert save_refusal(world.state, world.described()) is None
     world.running = False
     assert save_refusal(world.state, world.described())[1] == "no_rig"
-    world = World(root, mode="panel")
-    reason, code = save_refusal(world.state, world.described())
-    assert code == "panel" and "does not know what the amp is at" in reason
+    world = World(root)
+    world.state["mode"] = "panel"
+    assert save_refusal(world.state, world.described()) is None, "the panel is retired: no refusal for it"
     world = World(root, rig=None)
     reason, code = save_refusal(world.state, world.described())
     assert code == "v1" and "sushi-rig save <name> --rig" in reason and "not a rig of channels" in reason
-    del world.state["mode"]
-    assert save_refusal(world.state, world.described())[1] == "panel", "a state file that does not say is the panel's"
 
 
 def test_a_save_as_renames_the_run_and_keeps_everything_else(root):
@@ -454,8 +452,8 @@ def test_a_save_as_that_cannot_become_the_running_rig_says_so_and_keeps_the_file
 # Refusals
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("world_kwargs, code", [({"mode": "panel"}, "panel"), ({"rig": None}, "v1")])
-def test_panel_mode_and_a_v1_run_are_refused_and_nothing_is_written(root, world_kwargs, code):
+@pytest.mark.parametrize("world_kwargs, code", [({"rig": None}, "v1")])
+def test_a_v1_run_is_refused_and_nothing_is_written(root, world_kwargs, code):
     agent, world, rig = save_agent(root, World(root, **world_kwargs))
     status, answer = call(agent, "POST", "/rig/save")
     assert (status, answer["code"]) == (409, code)
@@ -501,7 +499,7 @@ def test_a_plugin_removed_behind_the_agents_back_is_refused_not_kept_in_the_file
 
 
 def test_a_plugin_the_agent_did_not_add_is_refused_as_a_capture_of_another_rig(root):
-    """Put on the rig behind the agent's back (the panel, a script): nothing
+    """Put on the rig behind the agent's back (a script of its own): nothing
     in the log explains it, so the capture is not this rig's as the agent
     knows it."""
     agent, _, rig = save_agent(root)

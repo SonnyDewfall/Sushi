@@ -1,5 +1,5 @@
 """The record bar turned on (#57): which ports a take records, and the session
-the listener runs.
+the recorder runs.
 
 No JACK and no PipeWire anywhere: the port plan is pure, the engine is stood
 in, and each fallback is a sentence checked here. Whether those ports carry
@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from rig_fixtures import FROZEN_MACHINE, FROZEN_SRC, frozen, frozen_v1
 
-from sushi_rig import capture, cli, transport
+from sushi_rig import capture, transport
 from sushi_rig import take as take_module
 from sushi_rig.capture import CaptureUnavailable, plan_columns
 from sushi_rig.machine import MachineSpec
@@ -27,7 +27,7 @@ from sushi_rig.transport import (
     NoEngine,
     PlanError,
     TakeSession,
-    Transport,
+    TransportError,
     jack_port,
     record_session,
     rig_stems,
@@ -228,8 +228,8 @@ def test_a_stereo_role_resolves_every_port_it_is_captured_from(tmp_path):
 
 
 def test_a_port_the_graph_does_not_have_is_left_for_the_engine_to_name():
-    """`up` starts the listener before Sushi, so a plan made then sees no
-    `sushi:` port. Leaving it as written is what lets the next RECORD resolve
+    """A plan made before Sushi has registered (the OSC listener's was, at
+    its start, until it was retired) sees no `sushi:` port. Leaving it as written is what lets the next RECORD resolve
     it; refusing the plan here would say recording is unavailable for a rig
     that is simply still starting, and the engine's own check names what is in
     the graph anyway."""
@@ -265,7 +265,7 @@ def test_an_ambiguous_port_refuses_the_whole_plan():
 
 def test_the_live_graph_is_read_for_every_take_planned(duo, tmp_path, monkeypatch):
     """A device that came back under another profile is resolved afresh at the
-    next RECORD, not held from the listener's start."""
+    next RECORD, not held from an earlier plan."""
     reads = []
 
     def read():
@@ -370,7 +370,7 @@ def test_a_channel_the_loaded_config_lacks_is_refused(duo):
 
 
 # --------------------------------------------------------------------------- #
-# The session the listener runs
+# The session the recorder runs
 # --------------------------------------------------------------------------- #
 
 def test_the_pieces_in_place_make_a_take_session(duo, tmp_path):
@@ -432,8 +432,7 @@ def test_no_rig_file_at_all(tmp_path):
     said = no_engine(record_session(None, None, engine=StandInEngine))
     assert said == (
         "recording is not available: no take can be planned for this run: this run has "
-        "no rig file (the listener was given no --rig), so there is nothing to say which "
-        "ports a take records"
+        "no rig file, so there is nothing to say which ports a take records"
     )
 
 
@@ -442,8 +441,7 @@ def test_no_config_to_carry(duo, tmp_path):
     said = no_engine(record_session(rig_path, None, machine_file=machine_path,
                                     engine=StandInEngine))
     assert said.endswith(
-        "the listener was given no --panel-config, so it does not know the config "
-        "Sushi loaded, which every take carries")
+        "this run names no config Sushi loaded, which every take carries")
 
 
 def test_a_config_with_no_sample_rate(duo, tmp_path):
@@ -482,7 +480,7 @@ def test_an_engine_that_cannot_be_made_is_named(duo, tmp_path):
     assert said == "recording is not available: the capture engine could not be made: no libjack today"
 
 
-def test_nothing_unexpected_stops_the_listener_starting(duo, tmp_path, monkeypatch):
+def test_nothing_unexpected_stops_a_session_being_made(duo, tmp_path, monkeypatch):
     def explode(*a, **k):
         raise KeyError("surprise")
 
@@ -492,95 +490,27 @@ def test_nothing_unexpected_stops_the_listener_starting(duo, tmp_path, monkeypat
                     "unexpected error: 'surprise'")
 
 
-def test_record_on_a_refused_run_shows_the_reason_on_the_panel():
-    said = Transport(NoEngine("no take can be planned for this run: because")).on_record()
-    assert said == "record failed: recording is not available: no take can be planned for this run: because"
+def test_record_on_a_refused_run_says_the_reason():
+    """What the recorder answers RECORD with on a run it cannot plan a take
+    for: the session's own sentence, and nothing started."""
+    refused = NoEngine("no take can be planned for this run: because")
+    with pytest.raises(TransportError) as said:
+        refused.start("riff-idea")
+    assert str(said.value) == "recording is not available: no take can be planned for this run: because"
     assert NoEngine().message == NoEngine.MESSAGE
 
 
-# --------------------------------------------------------------------------- #
-# The listener is given it
-# --------------------------------------------------------------------------- #
-
-def run_listen(monkeypatch, argv):
-    seen = {}
-    monkeypatch.setattr("sushi_rig.listen.serve", lambda *a, **kw: seen.update(kw))
-    assert cli.main(["listen", *argv]) == 0
-    return seen["session"]
-
-
-def test_the_listener_gets_a_take_session_when_the_pieces_are_there(duo, tmp_path, monkeypatch, capsys):
-    rig_path, config_path, machine_path = duo
-    monkeypatch.setattr(transport, "_capture_engine", StandInEngine)
-    session = run_listen(monkeypatch, [
-        "--rig", str(rig_path), "--panel-config", str(config_path),
-        "--machine", str(machine_path), "--takes-dir", str(tmp_path / "takes"),
-    ])
-    assert isinstance(session, TakeSession)
-    assert session.plan.takes_dir == tmp_path / "takes"
-    assert "RECORD records guitar.wav from sushi:audio_output_2" in capsys.readouterr().err
-
-
-def test_the_listeners_session_names_an_unnamed_take_for_its_rig_file(duo, tmp_path, monkeypatch):
-    """#134 on the panel's path: the session `sushi-rig listen --rig` builds
-    answers the default from the rig file it was given and its takes folder,
-    by the rule the agent's takes are named by (`take.next_name`)."""
-    rig_path, config_path, machine_path = duo
-    monkeypatch.setattr(transport, "_capture_engine", StandInEngine)
-    session = run_listen(monkeypatch, [
-        "--rig", str(rig_path), "--panel-config", str(config_path),
-        "--machine", str(machine_path), "--takes-dir", str(tmp_path / "takes"),
-    ])
+def test_a_session_names_an_unnamed_take_for_its_rig_file(duo, tmp_path):
+    """#134 on `record_session`'s path, which the recorder plans each take
+    by: the default comes from the rig file it was given and its takes
+    folder, by the rule the agent's takes are named by (`take.next_name`)."""
+    session = session_for(duo, tmp_path)
     now = datetime(2026, 11, 12, 21, 0)
     assert session.default_name(now) == "duo-2026-11-12-take-01"
     (tmp_path / "takes" / "duo-2026-11-12-take-01").mkdir(parents=True)
     (tmp_path / "takes" / "_archive" / "duo-2026-11-12-take-04").mkdir(parents=True)
     assert session.default_name(now) == "duo-2026-11-12-take-05"
     assert session.default_name(now) == take_module.next_name(tmp_path / "takes", "duo", now)
-
-
-def test_the_listener_says_at_start_why_record_is_off(monkeypatch, capsys):
-    session = run_listen(monkeypatch, [])
-    assert isinstance(session, NoEngine)
-    assert f"RECORD is off — {session.message}" in capsys.readouterr().err
-
-
-def test_each_take_carries_the_amp_as_the_listener_last_sent_it(duo, tmp_path, monkeypatch):
-    """The session is built with the amp hook over the listener's own dict,
-    and `serve` updates that dict, not a copy, as a fader moves."""
-    pytest.importorskip("pythonosc")
-    import pythonosc.dispatcher
-    import pythonosc.osc_server
-
-    from sushi_rig.listen import AMP_ADDRESS_PREFIX, serve
-
-    handlers = {}
-
-    class Dispatcher:
-        def map(self, address, handler):
-            handlers[address] = handler
-
-    class Server:
-        def __init__(self, *a, **k):
-            pass
-
-        def serve_forever(self):
-            # A fader move arrives, then the listener is stopped.
-            handlers[AMP_ADDRESS_PREFIX + "*"](AMP_ADDRESS_PREFIX + "Input Lvl", 0.75)
-            raise KeyboardInterrupt
-
-        def server_close(self):
-            pass
-
-    monkeypatch.setattr(pythonosc.dispatcher, "Dispatcher", Dispatcher)
-    monkeypatch.setattr(pythonosc.osc_server, "BlockingOSCUDPServer", Server)
-    amp = {"Input Lvl": 0.25}
-    session = session_for(duo, tmp_path, amp_model="amp/x.nam", amp_parameters=amp)
-    assert session.amend_config({})["_amp"]["parameters"]["Input Lvl"] == 0.25
-    serve(None, tmp_path, tmp_path, amp_model="amp/x.nam", amp_parameters=amp, session=session)
-    config = session.amend_config(json.loads(json.dumps(session.plan.config)))
-    assert config["_amp"]["model"] == "amp/x.nam"
-    assert config["_amp"]["parameters"]["Input Lvl"] == 0.75
 
 
 def test_a_run_without_an_amp_records_none(duo, tmp_path):
@@ -595,8 +525,10 @@ def test_a_config_that_cannot_be_made_is_the_takes_own_refusal(duo, tmp_path):
         raise KeyError("Input Lvl")
 
     session.amend_config = broken
-    said = Transport(session, clock=lambda: datetime(2026, 11, 12, 21, 0)).on_record()
-    assert said.startswith("record failed: cannot record duo-2026-11-12-take-01: ")
+    with pytest.raises(TransportError) as refused:
+        session.start(session.default_name(datetime(2026, 11, 12, 21, 0)))
+    said = str(refused.value)
+    assert said.startswith("cannot record duo-2026-11-12-take-01: ")
     assert said.endswith("the config it would carry could not be made (KeyError: 'Input Lvl')")
     assert not (tmp_path / "takes").exists()
 
@@ -614,26 +546,8 @@ def test_a_config_at_another_rate_is_refused_when_planned(duo, tmp_path):
         "take could not be captured at the rate it would declare")
 
 
-def test_up_starts_the_listener_under_pw_jack_with_the_machine_and_quantum(tmp_path):
-    from sushi_rig.rig import QUANTUM, RATE, plan_children
-
-    machine = tmp_path / "machines" / "box.yaml"
-    listen = next(c for c in plan_children(
-        tmp_path, tmp_path / "run" / "duo.json", "config/rigs/duo.yaml",
-        headless=False, tuner=False, machine_file=machine,
-    ) if c["name"] == "listen")
-    command = listen["command"]
-    assert command[0] == "pw-jack" and command[2] == "listen"
-    assert command[command.index("--machine") + 1] == str(machine.resolve())
-    assert listen["env_set"] == {"PIPEWIRE_QUANTUM": f"{QUANTUM}/{RATE}"}
-    sushi = next(c for c in plan_children(
-        tmp_path, tmp_path / "run" / "duo.json", None, headless=False, tuner=False,
-    ) if c["name"] == "sushi")
-    assert sushi["env_set"] == listen["env_set"]
-
-
 # --------------------------------------------------------------------------- #
-# A whole take, through the session the listener would run
+# A whole take, through the session the recorder would run
 # --------------------------------------------------------------------------- #
 
 class Pushing:
@@ -719,7 +633,7 @@ def test_a_shared_dry_tap_makes_a_take_that_checks_clean(tmp_path):
 
 def test_the_rig_file_and_library_are_read_at_each_record(duo, tmp_path, monkeypatch):
     """A SAVE rewrites the rig file and a commit moves the library while the
-    listener runs; each take says where they were when it was made."""
+    rig runs; each take says where they were when it was made."""
     pytest.importorskip("numpy")
     commits = iter(["aaa", "bbb"])
     monkeypatch.setattr(transport, "library_state",

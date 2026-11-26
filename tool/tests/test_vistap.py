@@ -60,10 +60,9 @@ def test_the_tap_starts_realtime_and_up_never_plans_one(tmp_path):
     """The agent starts it on demand (review of PR #200): `up` from the
     command line plans no tap, whatever it was told."""
     config = tmp_path / "c.json"
-    for headless in (True, False):
-        plan = plan_children(ROOT, config, None, headless=headless, tuner=True)
-        assert vistap.CHILD not in [c["name"] for c in plan]
-        assert "pw-loopback" not in [c["command"][0] for c in plan]
+    plan = plan_children(ROOT, config, tuner=True, recorder_socket=tmp_path / "recorder.sock")
+    assert vistap.CHILD not in [c["name"] for c in plan]
+    assert "pw-loopback" not in [c["command"][0] for c in plan]
     child = vistap.child()
     assert child["name"] == vistap.CHILD and child["optional"] is True and child["command"] == vistap.command()
     assert child["env_set"] == {"PIPEWIRE_CONFIG_NAME": "client-rt.conf"}, \

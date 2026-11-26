@@ -24,9 +24,6 @@ The page's messages use a few names of their own:
   has stopped.
 - **Stems** are a take's sound files, one for each thing recorded: "5 stems"
   is five files.
-- **Headless** means started from the page, with no separate control panel
-  beside the rig. Every rig the page starts is headless; "Started …, headless."
-  is the normal message.
 
 | Guide | What it covers |
 |---|---|
