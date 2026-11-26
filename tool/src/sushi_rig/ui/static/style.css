@@ -830,3 +830,122 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
 @media (max-width: 640px) {
   .pedal-panel { margin-left: 12px; }
 }
+
+/* ---------------------------------------------------------------- the three zones (#245) */
+/* The top of each screen: the status (what the rig is, read only), the
+   controls (the master, the Lock, the links), and under them the activity
+   (what happened and what waits for an answer, with Undo), pinned to the
+   top once the header has scrolled away. */
+.bar.zones { flex-wrap: nowrap; align-items: center; gap: 10px 20px; }
+/* One line, whatever the readings say: what does not fit is cut short, the
+   whole on hover, so a reading coming in never makes the header taller. */
+.zone-status { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; gap: 8px 12px; overflow: hidden; }
+.zone-status .rig-name { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zone-status .problems { flex: none; }
+.bar.zones .zone-status .tile { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+.bar.zones .zone-status .tile .s { overflow: hidden; text-overflow: ellipsis; }
+.zone-status .status .status-more { display: none; }
+.zone-controls { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
+.zone-controls .volume-rack input[type=range] { width: 120px; }
+/* The status line: a plain line on a laptop, a tap on a phone (below). */
+.zone-status .status-slot { display: inline-flex; align-items: center; min-height: 36px; padding: 0; margin: 0;
+  background: none; border: none; color: inherit; font: inherit; text-align: left; cursor: default; }
+.zone-status .status { white-space: nowrap; }
+/* The rig's problems in a word or two (#245), the whole on hover. */
+.zone-status .problems, .stage-head .problems, .new-rig-screen .problems { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; }
+.new-rig-screen .problems:not(:empty) { padding: 10px 20px 0; }
+.zone-status .problems:empty, .stage-head .problems:empty { display: none; }
+.zone-status .problem, .stage-head .problem, .new-rig-screen .problem { display: inline-flex; align-items: center; min-height: 32px; padding: 0 10px;
+  border-radius: 16px; font-size: 13px; white-space: nowrap; }
+.zone-status .problem strong, .stage-head .problem strong, .new-rig-screen .problem strong { color: inherit; font-weight: 600; }
+.zone-status .problem .at, .stage-head .problem .at, .new-rig-screen .problem .at { margin-left: 6px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.zone-status .problem.agent, .stage-head .problem.agent, .new-rig-screen .problem.agent { color: var(--refused); }
+/* On a laptop Stage and Help are in the controls; on a phone at the foot. */
+.rack-nav { display: none; }
+
+/* The activity zone. */
+.activity { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 10px; min-height: 56px;
+  padding: 6px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.stage-screen .activity { padding: 6px 16px; }
+.act-msg { position: relative; flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: 14px; }
+.activity .undo-slot { flex: none; margin-left: auto; align-self: flex-start; }
+.act-busy { display: inline-flex; align-items: center; gap: 8px; color: var(--accent-soft); font-size: 14px; }
+.act-busy .pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(245, 165, 36, .2); flex: none; }
+/* A question: in the refused colours, as a confirm has always been. */
+.act-ask { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 12px;
+  background: var(--refused-ground); border: 1px solid var(--refused-edge); }
+.act-ask .what, .act-item .what { font-size: 13px; color: var(--muted); }
+.act-ask .confirm { flex-wrap: nowrap; }
+.act-ask .rig-act.small { min-height: 44px; min-width: 44px; padding: 0 12px; }
+.act-results { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; min-width: 0; }
+/* A result: a line, not a box. Its words, then its buttons. */
+.activity .act-item, .activity .act-item.save-result, .activity .act-item.problem, .activity .act-item.notice {
+  display: inline-flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; padding: 0; margin: 0;
+  background: none; border: none; border-radius: 0; position: static; color: var(--text); font-size: 14px; line-height: 1.4; }
+.activity .act-item strong { color: var(--text); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.activity .act-item.refused strong, .activity .act-item.refused .said { color: var(--refused); }
+.activity .act-item .said { color: var(--muted); font-size: 13px; }
+.activity .act-item.older strong { color: var(--muted); font-weight: 400; }
+.activity .act-item .t { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.activity .act-item .dismiss { position: static; min-width: 44px; min-height: 44px; }
+.activity .act-item .rig-act, .activity .act-item .act { min-height: 44px; min-width: 44px; flex: none; padding: 0 12px; margin: 0; font-size: 13px; }
+.activity .act-item details { flex: 1 0 100%; }
+.act-chan { flex: none; min-height: 44px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--edge); background: transparent;
+  font-family: var(--display); font-weight: 600; font-size: 15px; color: var(--text); cursor: pointer; }
+.act-more { flex: none; min-height: 44px; min-width: 44px; padding: 0 8px; border-radius: 18px; border: 1px solid var(--edge); background: transparent;
+  font-family: var(--mono); font-size: 12px; color: var(--muted); cursor: pointer; }
+.act-more[aria-expanded="true"] { border-color: var(--accent); color: var(--accent-soft); }
+/* The rest, "+n": a list dropped down over the page, newest first. */
+.act-list { position: absolute; left: -20px; right: -20px; top: calc(100% + 7px); z-index: 31; display: flex; flex-direction: column;
+  max-height: 60vh; overflow-y: auto; background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
+.act-list[hidden] { display: none; }
+.act-list > * { padding: 6px 20px; min-height: 44px; border-top: 1px solid var(--line); }
+.act-list > .act-ask { border-radius: 0; border-width: 1px 0 0; }
+.activity .act-list .act-item { display: flex; }
+.act-list .act-item.past strong { font-weight: 400; color: var(--muted); }
+.act-list .rchan { font-family: var(--display); font-weight: 600; font-size: 15px; }
+/* The strip a question came from, marked in place (#245). */
+.strip.asking { border-color: var(--refused-edge); box-shadow: inset 3px 0 0 var(--refused); }
+/* A chip's strip, shown below the pinned zone, not under it. */
+.strip, .cards .track, .levels .level { scroll-margin-top: 72px; }
+/* The panels a question used to stand in. */
+.remove-panel .remove-close { align-self: flex-start; min-height: 40px; flex: none; }
+
+@media (max-width: 640px) {
+  /* Two rows when idle: the status and the controls in one (the name, its
+     dot, the master and the Lock), the activity in the other. */
+  .bar.zones { padding: 8px 16px; gap: 8px; }
+  .zone-status { flex-wrap: nowrap; gap: 8px; }
+  .zone-status .mark { display: none; }
+  .zone-status .rig-name { font-size: 19px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .zone-status .status-slot { cursor: pointer; min-width: 32px; min-height: 44px; justify-content: center; flex: none; }
+  .zone-status .status .status-text { display: none; }
+  .zone-status .tile-row { display: none; }
+  .zone-controls { flex-wrap: nowrap; gap: 6px; }
+  .zone-controls .volume-rack { flex: 0 1 160px; min-width: 0; padding-left: 8px; }
+  .zone-controls .volume-rack .k { display: none; }
+  .zone-controls .volume-rack input[type=range] { flex: 1 1 auto; width: auto; min-width: 40px; }
+  .zone-controls .volume-rack .value-field { width: 4.6em; flex: none; }
+  .zone-controls .lock { font-size: 0; gap: 0; padding: 0 12px; }
+  .zone-controls a.go { display: none; }
+  .zone-status .problem { min-height: 28px; padding: 0 8px; font-size: 12px; }
+  /* A tap on the dot: the status's words and the tiles, a row under it. */
+  .bar.zones.status-open { flex-wrap: wrap; }
+  .bar.zones.status-open .zone-status { flex-wrap: wrap; flex: 1 1 100%; }
+  .bar.zones.status-open .status .status-text { display: inline; white-space: normal; }
+  .bar.zones.status-open .tile-row { display: flex; }
+  .rack-nav { display: flex; }
+  .activity { padding: 6px 16px; }
+  .activity .act-item .t { display: none; }
+  /* The question, then "+n", in one line: what it is about is the chip's
+     and the question's title. A result is said whole (a take's name is
+     the take's), wrapping if it must. */
+  .act-ask .what { display: none; }
+  .act-ask { flex-wrap: nowrap; flex: none; gap: 6px; }
+  .act-ask .rig-act.small { padding: 0 10px; }
+  .act-chan { padding: 0 6px; }
+  .activity .undo { padding: 0 12px; }
+  .act-results { flex: 1 1 0; min-width: 0; }
+  .act-list { left: -16px; right: -16px; }
+  .act-list > * { padding: 6px 16px; }
+}

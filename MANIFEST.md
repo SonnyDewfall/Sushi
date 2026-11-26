@@ -7485,3 +7485,35 @@ time: the answer is kept by the file's path, size and `st_mtime_ns`
 run can change without the file. Tested: two polls parse once, and a write is
 parsed again. (3) Add amp's picker shares the model picker's CSS rules. Not run
 on the rig. *(2026-11-25)*
+
+**#245: the top of the page in three zones, and every answer in one bar.**
+The owner, after #209: "a lot of scrolling is required to read and address
+some of the messages", then, of the mock-ups: one activity bar at the top
+(option A), with "status information in one area, changes and any action
+needed in another, and then anything that we can change (eg. volume) in
+another". So the rack's header is a **status** zone (the name, up and for
+how long, LOAD, XRUNS, AMP, and the rig's problems as boxes of a word or two,
+"No amp", "Amp not wired", the reason on hover) and a **controls** zone (the
+master, the Lock, Stage and Help); under it, sticky at the top of the window
+once the header has gone, the **activity** zone: the newest question
+(Restart?, Stop?, Drop changes?, Remove?), what is running, the last results
+(three on a laptop with their times, one on a phone), a "+n" for the rest,
+and Undo. The stage has the same bar under its header, with its Undo. On a
+phone the status is the name and a dot, a tap away from the rest, and Stage
+and Help are at the foot, so the top is two rows. Every result, refusal and
+second tap that was drawn where its action was taken (the strips' foot, a
+Load… or Remove panel, the save column, the pedal panel, a unit's row, an
+add's place, the record bar, the problem boxes) is now said in the bar: each
+region hands its result or question to the zone as it draws (`actResult`,
+`actAsk`), with the same buttons calling the same functions, so an answer
+still goes to the strip and the rig it was asked for. A result or question
+about a channel carries its chip, which shows that strip, and the strip a
+question came from is marked. Which is shown is rig.js's (`activityView`,
+`activitySeen`, `activityBusy`), tested pure; the zones, the sticky bar, a
+question answered from it and the stage in Chromium (`test_ui_activity.py`).
+About 110 assertions in twelve `test_ui_*.py` files that looked for results
+where they were drawn now look in the zone for the same words and titles.
+What belongs to an open editor stays in it: the pickers' own checks, the
+New rig form's result, the drawer's "why", a knob's "refused:" note, the amp
+card's state, a removal panel's "what goes". Not tried on a real phone or in
+Safari: sticky positioning is seen in headless Chromium only. *(2026-11-26)*

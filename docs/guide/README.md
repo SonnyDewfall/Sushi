@@ -28,6 +28,29 @@ The page's messages use a few names of their own:
   beside the rig. Every rig the page starts is headless; "Started …, headless."
   is the normal message.
 
+## Where the page tells you things
+
+The top of the rack and of the stage screen has three parts:
+
+- **The rig**, at the top left: its name, a dot that says whether it is up
+  and, on a laptop, for how long, the **LOAD**, **XRUNS** and **AMP**
+  readings, and any problem in a word or two, such as **No amp**. Hover over
+  any of them for the whole of it. On a phone only the name and the dot
+  show: tap the dot for the rest.
+- **What you can change**, at the top right: **MASTER**, the **Lock**, and
+  the **Stage** and **Help** links (at the foot of the page on a phone).
+- **What happened**, in the bar under them. Every answer to something you
+  did is said there: what worked ("Saved electric_board"), what was refused
+  ("Not removed"), and anything waiting for your answer, such as
+  **Restart?** with **Yes** and **No**. **Undo** is at its right end. The bar
+  stays at the top of the window when you scroll, so you never have to go
+  looking for a question. The channel's name beside a message is a button:
+  tap it to go to that channel. The strip a question is about has a red edge
+  while it waits. When more has happened than fits, a **+** and a number
+  opens the rest. A message that worked goes by itself after a while or
+  stays until the next one; one that was refused stays until you close it
+  with **×**.
+
 | Guide | What it covers |
 |---|---|
 | [Getting started](getting-started.md) | Start the agent, open the page, start a rig, reach it from a phone |

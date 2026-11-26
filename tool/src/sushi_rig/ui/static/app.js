@@ -179,6 +179,13 @@ const state = {
   writing: 0, lastWriteEnd: -Infinity, pushWaiting: false, pushTimer: null, pushedAt: -Infinity,
   lightsReading: false, lightsAgain: false,  // a "midi" push's /health read in flight, and one more asked: see `readLights`
   screen: null, regions: null, updaters: [], keys: new WeakMap(),
+  // The activity zone (#245): what the regions said at this draw (`items`,
+  // `asks`, gathered afresh each render), when each was first seen
+  // (`seen`, `times`, `counter`: R.activitySeen), the past for the "+n"
+  // list (`history`), whether that list is open, and the status's detail
+  // opened on a phone (`statusOpen`).
+  activity: { items: [], asks: [], seen: null, times: new Map(), counter: 0, history: [], open: false, wide: null },
+  statusOpen: false,
 };
 
 // ---------------------------------------------------------------- network
@@ -430,7 +437,7 @@ async function refreshRunningChannels() {
     const sameRig = was.for !== null && JSON.parse(was.for)[0] === rig.config_name;
     // A result shown is kept without its restart offer, which was for the
     // run before: the run has started again since, from the file.
-    const result = sameRig && was.result ? { ...was.result, offer: null } : null;
+    const result = sameRig && was.result ? keepActId(was.result, { ...was.result, offer: null }) : null;
     state.wiring = { ...freshWiring(), for: run, pending: was.pending, result };
   }
   return refreshRigChannels(rig.config_name, changed);
@@ -1116,7 +1123,16 @@ function lockButton() {
 
 function statusLine(status) {
   return h("span", { class: `status tone-${status.tone}`, title: status.tone === "up" ? SOUND_NOTE : null },
-    h("span", { class: "dot", "aria-hidden": "true" }), status.detail);
+    h("span", { class: "dot", "aria-hidden": "true" }), ...statusWords(status.detail));
+}
+
+// The status's words: what it is and for how long ("Up 12 min"), then the
+// rest (" · sound not measured"), which the rack's status zone keeps for
+// its title when room is short (#245).
+function statusWords(detail) {
+  const cut = detail.indexOf(" · ");
+  return cut < 0 ? [h("span", { class: "status-text" }, detail)]
+    : [h("span", { class: "status-text" }, detail.slice(0, cut), h("span", { class: "status-more" }, detail.slice(cut)))];
 }
 
 // Load and xruns from pw-top (GET /rig/load, `R.loadTiles`), and the amp.
@@ -1148,19 +1164,32 @@ function problems() {
   return out;
 }
 
+// The rig's problems, in the status zone (#245): each a box of a word or two
+// (its title: "No amp", "Amp not wired", "The tuner (fmit) exited"), the
+// whole of it on hover. They are states of the rig, not answers to a tap:
+// those are the activity zone's (`activityRegion`).
 function problemsRegion(el) {
   const list = problems();
-  const key = JSON.stringify([list, state.failures.map((f) => [f.title, f.reason, f.at.getTime()]), state.notice]);
-  patch(el, key, () => [
-    ...state.failures.map((f, i) => h("div", { class: "problem refused", role: "alert", title: f.reason },
-      h("strong", {}, f.title), h("span", {}, R.shortSaid(f.reason, 40, f.title)),
-      f.action ? h("button", { class: "act", onclick: () => { state.failures.splice(i, 1); f.action.run(); } }, f.action.label) : null,
-      h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.failures.splice(i, 1); render(); } }, "×"))),
-    ...list.map((p) => h("div", { class: `problem ${p.kind}`, title: p.reason }, h("strong", {}, p.title), h("span", {}, R.shortSaid(p.reason, 40, p.title)),
-      p.at ? h("span", { class: "at" }, p.at) : null)),
-    state.notice ? h("div", { class: "notice", title: state.notice.title || null }, state.notice.text ?? state.notice,
-      h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.notice = null; render(); } }, "×")) : null,
-  ]);
+  patch(el, JSON.stringify(list), () => list.map((p) => h("span", { class: `problem ${p.kind}`, title: p.reason || null },
+    h("strong", {}, p.title), p.at ? h("span", { class: "at" }, clock(p.at)) : null)));
+}
+
+// The page's own refusals and notices, in the activity zone (#245): what a
+// tap here was refused (`fail`), with the second tap it offers, and what a
+// start, stop, switch or model change said (`state.notice`).
+function sayFailuresAndNotice() {
+  const drop = (f) => { const i = state.failures.indexOf(f); if (i >= 0) state.failures.splice(i, 1); };
+  for (const f of state.failures) {
+    actResult({ id: actId(f, "f"), cls: "problem refused", ok: false, title: f.title, said: R.shortSaid(f.reason, 40, f.title),
+      detail: f.reason, channel: f.channel || null,
+      offer: f.action ? { label: f.action.label, cls: "act", run: () => { drop(f); f.action.run(); } } : null,
+      dismiss: () => { drop(f); render(); } });
+  }
+  const n = state.notice;
+  if (n) {
+    actResult({ id: actId(n, "n"), cls: "notice", ok: true, title: n.text, detail: n.title || null,
+      dismiss: () => { state.notice = null; render(); } });
+  }
 }
 
 // ---------------------------------------------------------------- gestures
@@ -1229,46 +1258,203 @@ function undoRegion(el, screen) {
   const view = R.undoButton(u.answer, { locked: state.locked, screen, pending: u.pending });
   const said = u.said;
   const ask = u.ask;
-  patch(el, JSON.stringify([view, said && [said.ok, said.text, said.title, !!said.offer], u.restartConfirm, !!state.pending,
-    ask && ask.what]), () => [
+  patch(el, JSON.stringify([view, !!ask]), () => [
     h("button", { class: `undo${view.cant ? " cant" : ""}`, disabled: view.disabled || !!ask, title: view.title, "aria-label": view.title,
       onclick: () => undo() }, "Undo"),
-    // What a press was held for: dropping unsaved work, or a restart that
-    // cuts the sound. Yes presses again with it, keeping what was said before.
-    ask ? confirmBox(ask.what === "drop" ? "Drop changes?" : "Restart?",
-      () => undo({ ...ask.opts, ...(ask.what === "drop" ? { discard: true } : { restart: true }) }),
-      () => { u.ask = null; render(); }, { pending: u.pending, cls: "undo-ask" }) : null,
-    said ? h("span", { class: `undo-said ${said.ok ? "ok" : "refused"}`, role: said.ok ? "status" : "alert", title: said.title || null },
-      said.text) : null,
-    said && said.offer && !u.restartConfirm ? h("button", { class: "rig-act small undo-restart", disabled: !!state.pending,
-      onclick: () => { u.restartConfirm = true; render(); } }, "Restart") : null,
-    said && said.offer && u.restartConfirm ? confirmBox("Restart?", restartForUndo, () => { u.restartConfirm = false; render(); }) : null,
   ]);
+  // What a press was held for: dropping unsaved work, or a restart that
+  // cuts the sound. Yes presses again with it, keeping what was said before.
+  if (ask) {
+    actAsk({ key: `undo-ask ${ask.what}`, label: "Undo", q: ask.what === "drop" ? "Drop changes?" : "Restart?",
+      yes: () => undo({ ...ask.opts, ...(ask.what === "drop" ? { discard: true } : { restart: true }) }),
+      no: () => { u.ask = null; render(); }, pending: u.pending, cls: "undo-ask" });
+  }
+  // What the last press said, beside the Undo that would take it back.
+  if (said) {
+    actResult({ id: actId(said, "u"), cls: "undo-said", ok: said.ok, title: said.text, detail: said.title || null,
+      offer: said.offer && !u.restartConfirm ? { label: "Restart", cls: "rig-act small undo-restart", disabled: !!state.pending,
+        run: () => { u.restartConfirm = true; render(); } } : null });
+  }
+  if (said && said.offer && u.restartConfirm) {
+    actAsk({ key: "undo-restart", label: "Undo", q: "Restart?", yes: restartForUndo,
+      no: () => { u.restartConfirm = false; render(); }, cls: "undo-restart-ask" });
+  }
 }
 
-// What an action said, in a few words (#209): its title ("Saved
-// electric_board", "Not assigned: C") and, for a refusal, what is wrong cut
-// to its first clause (`R.shortSaid`), with everything else it said -- the
-// file written, what git says, the agent's whole reason -- in the box's
-// `title`, for a hover. `action` and `offer` are its buttons, if any.
-function resultBox(result, { cls = "save-result", dismiss = null, offer = null } = {}) {
-  const more = [result.ok ? result.text : result.reason, result.ok ? result.commit : null].filter(Boolean).join(" ");
-  return h("div", { class: `${cls} ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert", title: more || null },
-    h("strong", {}, result.title),
-    !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason, 40, result.title)) : null,
-    result.action ? h("button", { class: "rig-act danger", onclick: result.action.run }, result.action.label) : null,
-    offer,
-    dismiss ? h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: dismiss }, "×") : null);
+// A result's words for the activity zone: as `resultBox` says them, its
+// title, what is wrong in a few words, and the rest (the file written, what
+// git says, the agent's whole reason) for a hover.
+function resultWords(result) {
+  return { ok: !!result.ok, title: result.title,
+    said: !result.ok && result.reason ? R.shortSaid(result.reason, 40, result.title) : null,
+    detail: [result.ok ? result.text : result.reason, result.ok ? result.commit : null].filter(Boolean).join(" ") || null };
 }
 
 // A confirm, where one is still asked (#209: what Undo cannot take back, or
 // what cuts the sound): one or two words, Yes and No.
-function confirmBox(question, yes, no, { pending = false, cls = "" } = {}) {
+function confirmBox(question, yes, no, { pending = false, cls = "", title = null } = {}) {
   return h("span", { class: `confirm${cls ? " " + cls : ""}`, role: "group", "aria-label": question },
-    h("span", { class: "q" }, question),
+    h("span", { class: "q", title }, question),
     h("button", { class: "rig-act danger small confirm-yes", disabled: pending, onclick: yes }, "Yes"),
     h("button", { class: "rig-act small confirm-no", onclick: no }, "No"));
 }
+
+// ---------------------------------------------------------------- the activity zone (#245)
+// What happened and what waits for an answer, in one zone at the top of each
+// screen, pinned there once the header has scrolled away: the question open
+// (Restart?, Drop changes?, Stop?...), what is running, the last results
+// with their second taps (Restart, Load anyway, Remove anyway...), and Undo.
+// Each region says what it has to say as it draws (`actResult`, `actAsk`),
+// with the same buttons, running the same calls, it drew in place before;
+// the zone is drawn last (`activityRegion`) from what R.activityView picks.
+// A result or question about a channel carries its chip, which shows that
+// channel's strip; the strip a question came from is marked.
+
+const actIds = new WeakMap();
+let actNext = 0;
+
+// A result's id: the same object is the same result, whatever it says, so it
+// keeps its place and its time; a new answer is a new object. A string (an
+// add's refusal) is its own id.
+function actId(obj, prefix = "r") {
+  if (obj === null || typeof obj !== "object") return `${prefix}:${obj}`;
+  if (!actIds.has(obj)) actIds.set(obj, `${prefix}${++actNext}`);
+  return actIds.get(obj);
+}
+
+// The same result, copied (its restart offer taken off after a restart).
+function keepActId(from, to) {
+  if (from && typeof from === "object" && actIds.has(from)) actIds.set(to, actIds.get(from));
+  return to;
+}
+
+// What a region has to say at this draw: a result (`{id, cls, ok, title,
+// said, detail, channel, offer, dismiss, extra}`), or a question (`{key, q,
+// label, channel, yes, no, pending, cls, detail}`).
+function actResult(item) { state.activity.items.push(item); }
+function actAsk(ask) { state.activity.asks.push(ask); }
+
+// A laptop's rack has room for the last few results side by side; a phone,
+// and the stage's narrow column, for the latest.
+const WIDE = "(min-width: 641px)";
+function actWide() {
+  return state.screen !== "stage" && matchMedia(WIDE).matches;
+}
+
+// What is running, from this page or another (R.activityBusy).
+function currentBusy() {
+  const agent = state.health && state.health.ok ? state.health.body.agent || {} : {};
+  return R.activityBusy({ pending: state.pending, agentBusy: agent.busy || null, saving: !!state.saving,
+    undoing: state.undo.pending, amp: state.ampPending, ampAdd: state.ampAdd.pending, loading: state.loadUi.pending ? state.loadUi.pending.channel : false,
+    removing: state.removeUi.pending ? state.removeUi.pending.channel : false, writing: !!state.wiring.pending, assigning: !!state.pedalUi.pending,
+    deleting: state.bin.pending });
+}
+
+// A chip's tap: that channel's strip (and its tab) on the rack, its level and
+// cards on the stage. Allowed locked: it changes what is shown.
+function showChannel(channel) {
+  if (!channel) return;
+  if (state.screen === "rack") {
+    if (state.rackParts && state.rackParts.buttons.has(channel)) chooseTab(channel);
+    const strip = document.querySelector(`.strip[data-channel="${CSS.escape(channel)}"]`);
+    if (strip) strip.scrollIntoView({ block: "start" });
+  } else if (state.screen === "stage") {
+    const at = document.querySelector(`.cards .track[data-track="${CSS.escape(channel)}"]`)
+      || document.querySelector(`.levels .level[data-channel="${CSS.escape(channel)}"]`);
+    if (at) at.scrollIntoView({ block: "start" });
+  }
+}
+
+function actChip(channel) {
+  return channel ? h("button", { type: "button", class: "act-chan", title: `Show ${channel}`, "aria-label": `Show ${channel}`,
+    onclick: () => showChannel(channel) }, channel) : null;
+}
+
+// One result: its time (on a laptop), its channel's chip, its title, what
+// was wrong in a few words, its second tap and ×; the rest on hover.
+function actItem(item, { older = false } = {}) {
+  return h("div", { class: `act-item ${item.cls || ""} ${item.ok ? "ok" : "refused"}${older ? " older" : ""}`,
+    role: item.ok ? "status" : "alert", title: item.detail || null, "data-act": item.id },
+  h("span", { class: "t" }, clock(item.at)),
+  actChip(item.channel),
+  item.what ? h("span", { class: "what" }, item.what) : null,
+  h("strong", {}, item.title),
+  item.said ? h("span", { class: "said" }, item.said) : null,
+  item.extra ? item.extra() : null,
+  item.offer ? h("button", { class: item.offer.cls || "rig-act small offer", disabled: !!item.offer.disabled,
+    title: item.offer.title || null, onclick: item.offer.run }, item.offer.label) : null,
+  item.dismiss ? h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: item.dismiss }, "×") : null);
+}
+
+// One question: its channel's chip, what it is about (Undo, Amp...), and the
+// question with Yes and No.
+function actQuestion(ask) {
+  return h("div", { class: "act-ask", "data-ask": ask.key },
+    actChip(ask.channel),
+    ask.label ? h("span", { class: "what" }, ask.label) : null,
+    confirmBox(ask.q, ask.yes, ask.no, { pending: !!ask.pending, cls: ask.cls || "", title: ask.detail || null }));
+}
+
+// A past result, in the "+n" list: its words, never its buttons.
+function actPast(p) {
+  return h("div", { class: `act-item past ${p.ok ? "ok" : "refused"}`, title: p.detail || null },
+    h("span", { class: "t" }, clock(p.at)),
+    p.channel ? h("span", { class: "rchan" }, p.channel) : null,
+    h("strong", {}, p.title), p.said ? h("span", { class: "said" }, p.said) : null);
+}
+
+const itemKey = (i) => [i.id, i.ok, i.what || null, i.title, i.said || null, i.detail || null, i.channel || null, i.cls || null,
+  i.offer ? [i.offer.label, !!i.offer.disabled, i.offer.title || null] : null, !!i.dismiss, i.sig ?? null, clock(i.at)];
+const askKey = (a) => a && [a.key, a.q, a.label || null, a.channel || null, !!a.pending, a.cls || null, a.detail || null, a.sig ?? null];
+
+// The zone, drawn after every region has said its part.
+function activityRegion(regions) {
+  const act = state.activity;
+  sayFailuresAndNotice();
+  const wide = actWide();
+  const tracked = R.activitySeen(act.seen, act.items, act.asks, Date.now(), act.counter, act.times);
+  Object.assign(act, { seen: tracked.seen, times: tracked.times, counter: tracked.counter });
+  const items = act.items.map((i) => { const t = tracked.seen.items.get(i.id); return { ...i, n: t.n, at: t.at }; });
+  const asks = act.asks.map((a) => { const t = tracked.seen.asks.get(a.key); return { ...a, n: t.n, at: t.at }; });
+  const view = R.activityView(items, asks, act.history, { wide, busy: currentBusy() });
+  if (!view.count) act.open = false;
+  const key = JSON.stringify([wide, view.busy, askKey(view.ask), view.shown.map(itemKey), view.more.asks.map(askKey),
+    view.more.items.map(itemKey), view.more.past.map((p) => [p.id, p.title, clock(p.at)]), act.open]);
+  const el = regions.activity;
+  patch(regions.actMsg, key, () => {
+    const parts = [];
+    if (view.busy) parts.push(h("div", { class: "act-busy rig-busy", role: "status" }, h("span", { class: "pulse", "aria-hidden": "true" }), view.busy));
+    if (view.ask) parts.push(actQuestion(view.ask));
+    if (view.shown.length) parts.push(h("div", { class: "act-results" }, view.shown.map((i, n) => actItem(i, { older: n > 0 }))));
+    if (view.count) {
+      const titles = [...view.more.asks.map((a) => a.q), ...view.more.items.map((i) => i.title), ...view.more.past.map((p) => p.title)];
+      parts.push(h("button", { type: "button", class: "act-more", "aria-expanded": String(act.open), "aria-controls": "act-list",
+        "aria-label": `${view.count} more`, title: titles.join("\n"),
+        onclick: () => { act.open = !act.open; render(); } }, `+${view.count}`));
+    }
+    parts.push(h("div", { class: "act-list", id: "act-list", role: "group", "aria-label": "More activity", hidden: !act.open },
+      view.more.asks.map(actQuestion), view.more.items.map((i) => actItem(i)), view.more.past.map(actPast)));
+    return parts;
+  });
+  el.classList.toggle("idle", !view.ask && !view.busy && !view.shown.length);
+  el.classList.toggle("asking", !!view.ask);
+  el.classList.toggle("wide", wide);
+  // The strip the question came from, marked in place (#245's L-A2).
+  const marked = view.ask && view.ask.channel;
+  for (const strip of document.querySelectorAll(".strip")) strip.classList.toggle("asking", !!marked && strip.dataset.channel === marked);
+}
+
+// The zone's element: the messages, then Undo, which acts on them.
+function activityFrame(undo) {
+  const actMsg = h("div", { class: "act-msg" });
+  const activity = h("div", { class: "activity", role: "region", "aria-label": "Activity" }, actMsg, undo);
+  return { activity, actMsg };
+}
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.activity.open && !state.drawer) { state.activity.open = false; render(); }
+});
+matchMedia(WIDE).addEventListener("change", () => render());
 
 // Save (S4): the running rig into its own file, or as a new one (`name`),
 // which then is the running rig. The agent writes the file and does not
@@ -1473,13 +1659,16 @@ function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, titl
   const stop = view.actions.find((a) => a.op === "stop" && !a.disabled);
   const confirming = state.confirming && !!stop;
   // Stop takes a second tap, because it cuts the sound; the rest are one.
-  const acts = (actions) => (confirming
-    ? h("div", { class: "rig-actions" }, confirmBox("Stop?", () => lifecycle("stop", stop.name),
-      () => { clearTimeout(state.confirmTimer); state.confirming = false; render(); }, { cls: "stop-confirm" }))
-    : h("div", { class: "rig-actions" }, actions.map((a) => h("button", {
-      class: `rig-act${a.primary ? " primary" : ""}`, disabled: a.disabled,
-      onclick: () => (a.op === "stop" ? armStop() : lifecycle(a.op, a.name)),
-    }, a.label))));
+  // The second is asked in the activity zone (#245), away from the first.
+  if (confirming && !(dropdown && state.locked)) {
+    actAsk({ key: "stop", q: "Stop?", yes: () => lifecycle("stop", stop.name), cls: "stop-confirm", sig: stop.name,
+      detail: `Stop ${stop.name}: the sound stops.`,
+      no: () => { clearTimeout(state.confirmTimer); state.confirming = false; render(); } });
+  }
+  const acts = (actions) => h("div", { class: "rig-actions" }, actions.map((a) => h("button", {
+    class: `rig-act${a.primary ? " primary" : ""}`, disabled: a.disabled || (a.op === "stop" && confirming),
+    onclick: () => (a.op === "stop" ? armStop() : lifecycle(a.op, a.name)),
+  }, a.label)));
   if (dropdown) {
     // The select in the header's first row, beside the Lock button, in the
     // rig's name's place: what it shows is the screen's title (the running
@@ -1498,9 +1687,8 @@ function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, titl
     },
     sel.prompt ? h("option", { value: "", disabled: true, selected: true }, sel.prompt) : null,
     sel.options.map((o) => h("option", { value: o.value, selected: o.value === sel.value }, o.label))));
-    patch(el, JSON.stringify(["dropdown", sel.actions, view.problem, view.busy, confirming && !locked, locked]), () => [
+    patch(el, JSON.stringify(["dropdown", sel.actions, view.problem, confirming && !locked, locked]), () => [
       view.problem ? h("p", { class: "rig-problem", title: view.problem }, R.shortSaid(view.problem)) : null,
-      view.busy ? h("p", { class: "rig-busy", role: "status" }, view.busy) : null,
       // Start and Stop only unlocked, in one slim row with the guide's
       // link: on stage a Stop within reach of a thumb is the mistake the
       // lock is there to prevent.
@@ -1524,14 +1712,18 @@ function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, titl
         h("button", { class: "rig-del", disabled: dels[i].disabled, "aria-label": dels[i].aria, title: dels[i].why,
           onclick: () => deleteRig(r.name) }, dels[i].label))
         : rigButton(r)))) : null,
-    bin && bin.said && !bin.said.ok ? saidBox(bin.said) : null,
-    view.busy ? h("p", { class: "rig-busy", role: "status" }, view.busy) : null,
     acts(view.actions),
     // The New rig screen, from the rack's picker only: making a rig is not a
     // stage action, so the stage's picker does not offer it.
     newRig ? h("a", { class: "rig-act new-rig", href: "#new-rig" }, "New rig…") : null,
     helpAnchor("rigs"),
   ]);
+  // A delete refused, in the activity zone (#245).
+  if (bin && bin.said && !bin.said.ok) {
+    const b = bin.said;
+    actResult({ id: actId(b, "d"), cls: "save-result rig-deleted", ok: false, title: b.title, detail: b.reason || null,
+      dismiss: () => { state.bin.said = null; render(); } });
+  }
   if (rebuilt && state.bin.focus) {
     const target = el.querySelector(state.bin.focus);
     if (target) { state.bin.focus = null; target.focus(); }
@@ -1545,13 +1737,6 @@ function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, titl
 function binKey() {
   const b = state.bin;
   return { said: b.said, pending: b.pending };
-}
-
-function saidBox(said) {
-  return h("div", { class: `save-result rig-deleted ${said.ok ? "ok" : "refused"}`, role: said.ok ? "status" : "alert",
-    title: said.ok ? null : said.reason },
-    h("strong", {}, said.title),
-    h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.bin.said = null; render(); } }, "×"));
 }
 
 // The notices that go by themselves after R.NOTICE_MS (#189): the takes
@@ -1577,12 +1762,13 @@ function armNotices() {
   if (wait !== null) noticeTimer = setTimeout(expireNotices, wait);
 }
 
-// Where the focus goes when what held it leaves with its notice: the record
-// bar's to Record, the takes folder's to Open folder, the Undo's to Undo.
-// Never left on the page's body.
+// Where the focus goes when what held it leaves with its notice: from the
+// activity zone (#245), where every notice is now, to what made it: the
+// record bar's Record, the takes folder's Open folder, else Undo. Never left
+// on the page's body.
 function focusAfterNotice(where) {
   const tries = where === "record" ? ["button.record-act.rec", "button.record-act.stop"]
-    : where === "takes" ? ["button.open-takes"] : where === "undo" ? ["button.undo"] : [];
+    : where === "takes" ? ["button.open-takes"] : where ? ["button.undo"] : [];
   for (const selector of tries) {
     const el = document.querySelector(selector);
     if (el && !el.disabled) { el.focus(); if (document.activeElement === el) return; }
@@ -1597,8 +1783,10 @@ function expireNotices() {
   if (openDone || recordDone || undoDone) {
     const active = document.activeElement;
     const held = active && active !== document.body ? active : null;
-    const where = held && (held.closest(".record-bar") ? "record" : held.closest("section.takes") ? "takes"
-      : held.closest(".undo-slot") ? "undo" : null);
+    const item = held && held.closest(".act-item");
+    const where = held && (held.closest(".record-bar") || (item && item.classList.contains("record-result")) ? "record"
+      : held.closest("section.takes") || (item && item.classList.contains("open-result")) ? "takes"
+        : held.closest(".activity") ? "undo" : null);
     if (undoDone) state.undo.said = null;
     if (openDone) state.takesOpen.result = null;
     if (recordDone) state.recordResult = null;
@@ -1725,11 +1913,9 @@ function ampRegion(el) {
       // restart with the amp, after "Restart?".
       const on = view.ampOn;
       return [h("h2", {}, "AMP"), h("p", { class: view.state === "failed" ? "missing" : "amp-none", title: view.why }, R.shortSaid(view.why)),
-        on && !state.ampOnAsk ? h("button", { class: "rig-act small amp-on", disabled: !!on.why || !!state.pending,
+        on ? h("button", { class: "rig-act small amp-on", disabled: !!on.why || !!state.pending || state.ampOnAsk,
           title: on.why || `Restart ${on.rig} with its amp: the sound cuts out while it restarts.`,
           onclick: () => { state.ampOnAsk = true; render(); } }, "Amp on") : null,
-        on && state.ampOnAsk ? confirmBox("Restart?", () => ampOn(on.rig), () => { state.ampOnAsk = false; render(); },
-          { pending: !!state.pending || !!on.why, cls: "amp-on-ask" }) : null,
         view.addAmp ? addAmpParts(view.addAmp) : null];
     }
     state.ampPicker = h("div", { class: "amp-picker" });
@@ -1753,6 +1939,21 @@ function ampRegion(el) {
     ];
   });
   if (state.ampPicker) ampPickerRegion(state.ampPicker, picker);
+  // Its questions, in the activity zone (#245): Amp on's restart, Add amp's.
+  const on = view.state !== "up" && view.state !== "hidden" ? view.ampOn : null;
+  if (on && state.ampOnAsk) {
+    actAsk({ key: "amp-on", label: "Amp", q: "Restart?", yes: () => ampOn(on.rig), no: () => { state.ampOnAsk = false; render(); },
+      pending: !!state.pending || !!on.why, cls: "amp-on-ask", sig: on.rig,
+      detail: `Restart ${on.rig} with its amp: the sound cuts out while it restarts.` });
+  }
+  const add = view.state !== "up" && view.state !== "hidden" ? view.addAmp : null;
+  const ui = state.ampAdd;
+  if (add && ui.open && ui.model) {
+    actAsk({ key: "amp-add", label: "Add amp", q: "Restart?", yes: () => addAmp(add.rig, ui.model),
+      no: () => { Object.assign(ui, { open: false, model: null }); render(); },
+      pending: !!add.why || ui.pending || !!state.pending, cls: "amp-add-ask", sig: [add.rig, ui.model],
+      detail: `Add ${R.modelName(ui.model)} to ${add.rig}: its file gains the amp, and the rig restarts with it.` });
+  }
 }
 
 // Add amp (#246), for a rig whose file has no amp: the button, then the
@@ -1773,11 +1974,10 @@ function addAmpParts(offer) {
   select.value = ui.model || "";
   select.addEventListener("change", () => { ui.model = select.value || null; render(); });
   const close = () => { Object.assign(ui, { open: false, model: null }); render(); };
+  // The model chosen asks "Restart?" in the activity zone (`ampRegion`).
   return h("div", { class: "amp-add-pick" },
     h("label", { class: "selector" }, h("span", { class: "label" }, "Model"), select),
-    ui.model ? confirmBox("Restart?", () => addAmp(offer.rig, ui.model), close,
-      { pending: !!offer.why || busy, cls: "amp-add-ask" })
-      : h("button", { class: "rig-act small amp-add-close", onclick: close }, "Cancel"));
+    h("button", { class: "rig-act small amp-add-close", onclick: close }, "Cancel"));
 }
 
 function ampPickerRegion(el, picker) {
@@ -1793,10 +1993,15 @@ function ampPickerRegion(el, picker) {
     if (picker.why) select.title = picker.why;
     return [
       h("label", { class: "selector" }, h("span", { class: "label" }, "Model"), select),
-      chosen && picker.canChange ? confirmBox("Restart amp?", () => changeAmpModel(chosen.model),
-        () => { state.ampChoice = null; render(); }, { cls: "amp-confirm" }) : null,
     ];
   });
+  // A model chosen asks once, in the activity zone (#245).
+  const chosen = state.ampChoice && picker.options.find((o) => o.model === state.ampChoice);
+  if (chosen && picker.canChange) {
+    actAsk({ key: "amp-model", label: "Amp", q: "Restart amp?", yes: () => changeAmpModel(chosen.model),
+      no: () => { state.ampChoice = null; render(); }, cls: "amp-confirm", sig: chosen.model,
+      detail: `Load ${chosen.label}: the amp restarts, and its sound cuts out meanwhile.` });
+  }
 }
 
 // The stage's amp: the model's name and the output level only, hidden
@@ -2024,10 +2229,11 @@ function helpAnchor(which, cls = "help-link") {
 function rackFrame() {
   const regions = {
     title: h("h1", { class: "rig-name" }),
-    status: h("span", { class: "status-slot" }),
+    status: h("button", { type: "button", class: "status-slot", "aria-expanded": "false",
+      onclick: () => { state.statusOpen = !state.statusOpen; render(); } }),
     lock: h("span", { class: "lock-slot" }),
     undo: h("span", { class: "undo-slot" }),
-    problems: h("div", { class: "problems", "aria-live": "polite" }),
+    problems: h("span", { class: "problems", "aria-live": "polite" }),
     tiles: h("span", { class: "tile-row" }),
     rigs: h("section", { class: "rigs", "aria-label": "Rigs" }),
     channels: h("div", { class: "channel-list" }),
@@ -2046,20 +2252,31 @@ function rackFrame() {
   // fader in it keeps its focus and a drag in progress whatever else in the
   // bar changes (the status line moves on every minute of uptime). The
   // master sits after the rig's name, before anything whose width changes.
-  regions.header = h("header", { class: "bar" },
-    h("svg", { width: 28, height: 28, viewBox: "0 0 28 28", "aria-hidden": "true", class: "mark" }, h("path", { d: "M5 18a9 9 0 0 1 18 0" }), h("path", { d: "M10 18a4 4 0 0 1 8 0" })),
-    regions.title, masterFader("rack"), regions.status,
-    h("span", { class: "spacer" }), regions.tiles, h("a", { class: "go", href: "#stage" }, "Stage"), helpAnchor("guide", "go help"), regions.undo, regions.lock);
+  //
+  // Three zones (#245): the status, read only (the rig's name, up or down
+  // and for how long, load, xruns, the amp, its problems in a word or two);
+  // the controls (the master, the Lock, the Stage and Help links); and under
+  // them the activity (`activityRegion`), with Undo. On a phone the status
+  // is the name and its dot, the rest a tap on the dot away, and Stage and
+  // Help are in a bar at the foot, as the stage's are.
+  regions.header = h("header", { class: "bar zones" },
+    h("div", { class: "zone-status", role: "group", "aria-label": "Status" },
+      h("svg", { width: 28, height: 28, viewBox: "0 0 28 28", "aria-hidden": "true", class: "mark" }, h("path", { d: "M5 18a9 9 0 0 1 18 0" }), h("path", { d: "M10 18a4 4 0 0 1 8 0" })),
+      regions.title, regions.status, regions.problems, regions.tiles),
+    h("div", { class: "zone-controls", role: "group", "aria-label": "Controls" },
+      masterFader("rack"), regions.lock, h("a", { class: "go", href: "#stage" }, "Stage"), helpAnchor("guide", "go help")));
+  Object.assign(regions, activityFrame(regions.undo));
   // The open tab's panel (#135): the amp first, in the tab of the channel it
   // is in front of (between the guitar and the board), then that chain.
   regions.panel.append(regions.amp, regions.rack);
-  const frame = h("div", { class: "screen rack-screen" }, regions.header, regions.problems,
+  const frame = h("div", { class: "screen rack-screen" }, regions.header, regions.activity,
     // A mixing desk (2026-11-06): the channel strips on the left, the chains
     // in the middle, one at a time behind a tab per channel (#135), the
     // files (rigs, save, revert, takes) on the right, the master in the
     // header. At phone width they stack in that order, the strips first:
     // volume is what is reached for. The problem boxes are above all three,
-    // outside the tabs: nothing they say is behind a closed one.
+    // in the status zone, outside the tabs: nothing they say is behind a
+    // closed one.
     h("div", { class: "rack-body" }, h("nav", { class: "channels", "aria-label": "Channel strips" }, regions.wiring, regions.pedals),
       h("div", { class: "rack-main" }, regions.tabs, regions.panel),
       h("div", { class: "side files", "aria-label": "Rigs and files" }, regions.rigs,
@@ -2068,7 +2285,10 @@ function rackFrame() {
     // The Library drawer (#130): over the page, not in a column, so opening
     // it moves nothing on the rack, and a chain changing under it moves
     // nothing in it.
-    regions.drawer);
+    regions.drawer,
+    // On a phone, Stage and Help at the foot, as on the stage (#245).
+    h("nav", { class: "stage-nav rack-nav", "aria-label": "Screens" }, h("a", { href: "#stage" }, "Stage"),
+      h("a", { href: "#rack", class: "here", "aria-current": "page" }, "Rack"), helpAnchor("guide", "help")));
   return { frame, regions };
 }
 
@@ -2187,17 +2407,17 @@ function removeParts(slot, unit) {
   const name = unit.name;
   const parts = {
     ask: h("button", { class: "row-act remove", "data-focus": "remove", onclick: () => removeUnit(name) }),
-    said: h("p", { class: "row-said", hidden: true }),
   };
   slot.remove = parts;
-  return h("div", { class: "row-acts" }, parts.ask, parts.said);
+  return h("div", { class: "row-acts" }, parts.ask);
 }
 
-// The Remove's state, in place: offered, in flight, or refused in a few
-// words (the agent's reason on hover). Locked, it says so and refuses in
-// place. In flight its button keeps the focus (`aria-disabled`, not
-// `disabled`, which would drop it to the page), until its row goes.
-function drawRemove(slot, name) {
+// The Remove's state, in place: offered, or in flight. In flight its button
+// keeps the focus (`aria-disabled`, not `disabled`, which would drop it to
+// the page), until its row goes. Refused, locked or not, it is said in the
+// activity zone (#245), in a few words, the agent's reason on hover, with
+// the chip of the channel `track` the row is on.
+function drawRemove(slot, name, track) {
   const parts = slot.remove;
   if (!parts || !parts.ask.isConnected) return;
   let now = state.removing.get(name) || {};
@@ -2208,12 +2428,12 @@ function drawRemove(slot, name) {
   parts.ask.setAttribute("aria-label", `Remove ${name}`);
   parts.ask.title = state.locked ? R.lockRefusal(true, "remove") : "";
   parts.ask.setAttribute("aria-disabled", String(pending));
-  const said = now.reason ? (now.lock ? "Locked" : "Not removed") : "";
-  if (parts.said.textContent !== said) parts.said.textContent = said;
-  parts.said.title = now.reason || "";
-  parts.said.hidden = !said;
-  parts.said.classList.toggle("refused", !!now.reason);
-  parts.said.setAttribute("role", now.reason ? "alert" : "status");
+  if (now.reason) {
+    const held = now;
+    actResult({ id: actId(held, "x"), cls: "row-said", ok: false, what: name, title: held.lock ? "Locked" : "Not removed",
+      detail: held.reason, channel: track,
+      dismiss: () => { if (state.removing.get(name) === held) state.removing.delete(name); render(); } });
+  }
 }
 
 function removeFocus(name, which) {
@@ -2251,7 +2471,7 @@ async function removeUnit(name) {
     }
   }, () => {
     state.removing.delete(name);
-    if (answer.ok) state.notice = `Removed ${name} from ${rig}`;
+    if (answer.ok) state.notice = { text: `Removed ${name} from ${rig}` };
     else fail(`Not removed from ${rig}: ${name}`, answer);
   });
   render();
@@ -2667,7 +2887,7 @@ function chainRegion(regions, model, status, open) {
   track.units.forEach((unit, index) => {
     const slot = parts.slots.get(unit.name);
     unitSlot(slot, track, unit, index);
-    drawRemove(slot, unit.name);
+    drawRemove(slot, unit.name, track.isMaster ? R.MASTER : track.name);
     drawAddSlot(slot.add, track, slots[index + 1]);
   });
   parts.order = track.units.map((u) => u.name);
@@ -2692,10 +2912,7 @@ function addSlotParts(track, slot) {
       if (event.currentTarget.getAttribute("aria-disabled") === "true") return;
       openDrawer(track, parts.slot);
     } });
-  parts.said = h("span", { class: "add-said", hidden: true });
-  parts.dismiss = h("button", { class: "dismiss small", "aria-label": "Dismiss", hidden: true,
-    onclick: () => { state.addRefused.delete(key); render(); parts.button.focus({ preventScroll: true }); } }, "×");
-  parts.el = h("div", { class: "add-slot", "data-slot": slot.key }, parts.button, parts.said, parts.dismiss);
+  parts.el = h("div", { class: "add-slot", "data-slot": slot.key }, parts.button);
   return parts;
 }
 
@@ -2722,12 +2939,15 @@ function drawAddSlot(parts, track, slot) {
   parts.button.classList.toggle("working", !!now);
   parts.button.setAttribute("aria-busy", String(!!now));
   parts.button.title = off || (state.locked ? `${R.lockRefusal(true, "add")} The library can still be looked through.` : "");
+  // Refused: said in the activity zone (#245), the agent's reason on hover;
+  // its × gives the focus back to this place.
   const refused = now ? null : state.addRefused.get(parts.key) || null;
-  const short = R.shortSaid(refused || "");
-  if (parts.said.textContent !== short) parts.said.textContent = short;
-  parts.said.title = refused || "";
-  parts.said.hidden = parts.dismiss.hidden = !refused;
-  parts.said.setAttribute("role", refused ? "alert" : "status");
+  if (refused) {
+    const key = parts.key;
+    actResult({ id: actId(`${key}\u0000${refused}`, "a"), cls: "add-said", ok: false, what: slot.label.replace(/…$/, ""),
+      title: R.shortSaid(refused), detail: refused, channel: track.isMaster ? R.MASTER : track.name,
+      dismiss: () => { state.addRefused.delete(key); render(); parts.button.focus({ preventScroll: true }); } });
+  }
 }
 
 // The drawer opened for a place (`slot` on `track`), or with neither, to
@@ -2857,7 +3077,7 @@ async function addFrom(entry) {
     else fail(`Not added: ${shown}`, { reason: outcome.reason.replace(/^Not added: /, "") });
   }, () => {
     state.adding.delete(key);
-    if (outcome.ok) state.notice = `Added ${outcome.name} to ${rig}`;
+    if (outcome.ok) state.notice = { text: `Added ${outcome.name} to ${rig}` };
     else fail(`Not added to ${rig}: ${shown}`, { reason: outcome.reason.replace(/^Not added: /, "") });
   });
   render();
@@ -3032,7 +3252,7 @@ function detail(unit, size, acts = null) {
 
 function renderRack(regions, model, unsaved, status) {
   patch(regions.title, status.title, () => status.title);
-  patch(regions.status, JSON.stringify(status), () => statusLine(status));
+  statusRegion(regions, status);
   patch(regions.lock, JSON.stringify([state.locked, state.armed]), () => lockButton());
   undoRegion(regions.undo, "rack");
   tilesRegion(regions.tiles);
@@ -3049,6 +3269,16 @@ function renderRack(regions, model, unsaved, status) {
   renderChanges(regions.changes);
   saveRegion(regions.save, unsaved);
   takesRegion(regions.takes);
+  activityRegion(regions);
+}
+
+// The status line in the status zone. On a phone it is the dot alone (the
+// words are its title), and a tap on it shows the words and the tiles.
+function statusRegion(regions, status) {
+  patch(regions.status, JSON.stringify(status), () => statusLine(status));
+  regions.status.title = status.detail;
+  regions.status.setAttribute("aria-expanded", String(state.statusOpen));
+  regions.header.classList.toggle("status-open", state.statusOpen);
 }
 
 // "Agent on …" (#181): the phone's URL when the agent listens on the
@@ -3084,9 +3314,7 @@ function saveRegion(el, unsaved) {
   const { dot, ...keyed } = view;
   const revert = state.revert.open ? revertKey(view) : null;
   const busyNow = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
-  const rebuilt = patch(el, JSON.stringify([keyed, state.saveAsOpen, state.saveResult, last, revert, state.saveRestartConfirm,
-    busyNow, !!state.pending]), () => {
-    const result = state.saveResult;
+  const rebuilt = patch(el, JSON.stringify([keyed, state.saveAsOpen, last, revert]), () => {
     return [
       h("div", { class: "save-acts" },
         h("button", { class: "save-act primary save-main", disabled: view.save.disabled, onclick: () => save(null) },
@@ -3102,21 +3330,27 @@ function saveRegion(el, unsaved) {
       // Why Save is off, or what is under way, in a few words; the whole
       // sentence on hover.
       view.blocked || state.saving ? h("p", { class: "sub save-note", title: view.note }, R.shortSaid(view.note)) : null,
-      result ? resultBox(result, {
-        cls: "save-result",
-        dismiss: () => { state.saveResult = null; state.saveRestartConfirm = false; render(); },
-        offer: result.ok && result.offer && !state.saveRestartConfirm
-          ? h("button", { class: "rig-act primary offer", disabled: !!state.pending,
-            onclick: () => { state.saveRestartConfirm = true; render(); } }, "Restart") : null,
-      }) : null,
-      result && result.ok && result.offer && state.saveRestartConfirm
-        ? confirmBox("Restart?", restartForSave, () => { state.saveRestartConfirm = false; render(); }, { pending: !!state.pending || !!busyNow })
-        : null,
       last ? h("p", { class: "sub last-save", title: `${last.file}, ${last.then}` }, `Saved ${last.time}`) : null,
       helpAnchor("save"),
     ];
   });
   drawSaveDot(el, dot);
+  // What the last save or revert said, and the restart a save-as offers, in
+  // the activity zone (#245).
+  revertAsks();
+  const result = state.saveResult;
+  if (result) {
+    actResult({ id: actId(result, "s"), cls: "save-result", ...resultWords(result),
+      dismiss: () => { state.saveResult = null; state.saveRestartConfirm = false; render(); },
+      offer: result.ok && result.offer && !state.saveRestartConfirm
+        ? { label: "Restart", cls: "rig-act primary offer", disabled: !!state.pending,
+          run: () => { state.saveRestartConfirm = true; render(); } } : null });
+  }
+  if (result && result.ok && result.offer && state.saveRestartConfirm) {
+    actAsk({ key: "save-restart", label: "Save", q: "Restart?", yes: restartForSave, sig: result.offer.name,
+      no: () => { state.saveRestartConfirm = false; render(); }, pending: !!state.pending || !!busyNow,
+      detail: `Restart ${result.offer.name} to play what was saved: the sound cuts out while it restarts.` });
+  }
   if (rebuilt && typing) {
     const input = el.querySelector('input[name="rig-name"]');
     if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
@@ -3186,11 +3420,27 @@ function revertPanel(view) {
       h("button", { class: `revert-point${row.id === key.choice ? " chosen" : ""}`, "data-point": row.id,
         "aria-pressed": String(row.id === key.choice), disabled: !!key.pending, onclick: () => revertTo(key.rig, row, false) },
       h("span", { class: "n" }, row.title, row.current ? h("span", { class: "tag" }, "now") : null),
-      h("span", { class: "s" }, row.sub))))) : null,
-    key.drop ? confirmBox("Drop changes?", () => revertTo(key.rig, key.drop, true),
-      () => { state.revert.drop = null; render(); }, { pending: !!key.pending, cls: "revert-drop" }) : null,
-    key.restart ? confirmBox("Restart?", () => revertTo(key.rig, key.restart.row, key.restart.discard, true),
-      () => { state.revert.restart = null; render(); }, { pending: !!key.pending, cls: "revert-restart" }) : null);
+      h("span", { class: "s" }, row.sub))))) : null);
+}
+
+// The revert's questions (#235's review), in the activity zone (#245): the
+// unsaved work it would drop, and the restart it would make.
+function revertAsks() {
+  const r = state.revert;
+  if (!r.open) return;
+  const rig = r.rig;
+  if (r.drop) {
+    const row = r.drop;
+    actAsk({ key: "revert-drop", label: "Revert", q: "Drop changes?", yes: () => revertTo(rig, row, true),
+      no: () => { state.revert.drop = null; render(); }, pending: !!r.pending, cls: "revert-drop", sig: [rig, row.id],
+      detail: `Revert ${rig} to ${row.title}: what is unsaved is dropped.` });
+  }
+  if (r.restart) {
+    const { row, discard } = r.restart;
+    actAsk({ key: "revert-restart", label: "Revert", q: "Restart?", yes: () => revertTo(rig, row, discard, true),
+      no: () => { state.revert.restart = null; render(); }, pending: !!r.pending, cls: "revert-restart", sig: [rig, row.id, discard],
+      detail: `Revert ${rig} to ${row.title}: Sushi restarts, and the sound cuts out meanwhile.` });
+  }
 }
 
 // POST /rigs/<rig>/revert, then what it said, under the buttons. A refusal
@@ -3289,7 +3539,7 @@ function recordRegion(el) {
   const result = state.recordResult;
   // What follows the typing (the check, Record's state) is drawn by the
   // field's own handler (`drawNameCheck`), not by a rebuild.
-  const rebuilt = patch(el, JSON.stringify([recordBarView(""), result]), () => {
+  const rebuilt = patch(el, JSON.stringify([recordBarView("")]), () => {
     const recording = view.state === "recording";
     el.className = `record-bar${recording ? " recording" : ""}${view.state === "unavailable" ? " off" : ""}`;
     return [
@@ -3310,18 +3560,18 @@ function recordRegion(el) {
       h("div", { class: "record-acts" },
         h("button", { class: "record-act rec", disabled: view.record.disabled, onclick: recordStart }, view.record.label),
         h("button", { class: "record-act stop", disabled: view.stop.disabled, onclick: recordStop }, view.stop.label)),
-      // A stop names the take, its folder and `take check`'s verdict (#189),
-      // a take with problems in the refusal colour and as an alert, with
-      // the stop's own reason too when it failed.
-      result ? h("div", { class: `record-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert",
-        title: [result.text, !result.ok ? result.reason : null, result.folder].filter(Boolean).join(" ") || null },
-        h("strong", {}, result.title),
-        // Not whole, or not stopped: what is wrong in a few words ("1 problem").
-        !result.ok && (result.text || result.reason)
-          ? h("span", { class: "said" }, R.shortSaid(result.text || result.reason, 40, result.title)) : null,
-        h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.recordResult = null; render(); } }, "×")) : null,
     ];
   });
+  // A stop names the take, its folder and `take check`'s verdict (#189), a
+  // take with problems in the refusal colour and as an alert, with the
+  // stop's own reason too when it failed: in the activity zone (#245).
+  if (result) {
+    actResult({ id: actId(result, "k"), cls: "record-result", ok: !!result.ok, title: result.title,
+      // Not whole, or not stopped: what is wrong in a few words ("1 problem").
+      said: !result.ok && (result.text || result.reason) ? R.shortSaid(result.text || result.reason, 40, result.title) : null,
+      detail: [result.text, !result.ok ? result.reason : null, result.folder].filter(Boolean).join(" ") || null,
+      dismiss: () => { state.recordResult = null; render(); } });
+  }
   if (rebuilt && typing) {
     const input = el.querySelector('input[name="take-name"]');
     if (input) {
@@ -3487,9 +3737,13 @@ function takesRegion(el) {
     h("h2", {}, "TAKES"),
     view.dir ? h("p", { class: "takes-dir", title: "Takes go in this folder" }, h("code", {}, view.dir)) : null,
     view.button ? h("button", { class: "rig-act open-takes", disabled: view.button.disabled, onclick: openTakesFolder }, view.button.label) : null,
-    result ? resultBox(result, { cls: "save-result open-result", dismiss: () => { state.takesOpen.result = null; render(); } }) : null,
     helpAnchor("takes"),
   ]);
+  // What Open folder said, in the activity zone (#245).
+  if (result) {
+    actResult({ id: actId(state.takesOpen.result, "o"), cls: "save-result open-result", ...resultWords(result),
+      dismiss: () => { state.takesOpen.result = null; render(); } });
+  }
 }
 
 async function openTakesFolder() {
@@ -3528,13 +3782,17 @@ function stageFrame() {
   };
   // One row: the state's dot, the rig dropdown in the rig's name's place
   // (the name itself kept for the screen readers' heading), and the Lock.
-  regions.row.append(regions.title, regions.pick, regions.undo, regions.lock);
+  regions.row.append(regions.title, regions.pick, regions.lock);
   // Built once, its parts patched on their own, as the rack's is: the master
   // fader under the rig's state keeps a drag and its focus through a poll.
-  // Start, Stop and the busy line (#182) under the master and the tiles,
-  // so the header is no taller locked than it was before the dropdown.
-  regions.header = h("header", { class: "stage-head" }, regions.row, regions.detail, masterFader("stage"), regions.tiles, regions.rigs);
-  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.record, regions.levels, regions.amp, regions.cards,
+  // Start and Stop (#182) under the master and the tiles, so the header is
+  // no taller locked than it was before the dropdown. The rig's problems
+  // under its tiles, in a word or two; and under the header the activity
+  // zone, with Undo (#245), as the rack's.
+  regions.header = h("header", { class: "stage-head" }, regions.row, regions.detail, masterFader("stage"), regions.tiles,
+    regions.problems, regions.rigs);
+  Object.assign(regions, activityFrame(regions.undo));
+  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.activity, regions.record, regions.levels, regions.amp, regions.cards,
     h("nav", { class: "stage-nav" }, h("a", { href: "#stage", class: "here", "aria-current": "page" }, "Stage"), h("a", { href: "#rack" }, "Rack"),
       helpAnchor("stage", "help")));
   return { frame, regions };
@@ -3572,7 +3830,7 @@ function renderStage(regions, model, status) {
   const sends = model ? model.tracks.filter((t) => t.send) : [];
   patch(regions.levels, JSON.stringify(sends.map((t) => [t.name, t.send.name, t.send.panel])), () => {
     state.levelUpdaters = [];
-    return sends.length ? [h("span", { class: "k" }, "CHANNELS"), ...sends.map((t) => h("div", { class: "level" },
+    return sends.length ? [h("span", { class: "k" }, "CHANNELS"), ...sends.map((t) => h("div", { class: "level", "data-channel": t.name },
       channelVolume(t, "stage", state.levelUpdaters)))] : [];
   });
   const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel, u.monoNote])]), state.locked, [...state.open]]) : JSON.stringify(["none", status.tone, state.locked]);
@@ -3584,11 +3842,12 @@ function renderStage(regions, model, status) {
       return [status.tone === "busy" ? h("p", { class: "empty", title: "The rig is changing; the cards come back when it is up." }, "Changing…")
         : h("p", { class: "empty", title: "Nothing is running in Sushi." }, "No rig")];
     }
-    return model.tracks.filter((t) => t.units.length).map((t) => h("section", { class: "track" }, h("h2", {}, t.name), t.units.map(card)));
+    return model.tracks.filter((t) => t.units.length).map((t) => h("section", { class: "track", "data-track": t.name }, h("h2", {}, t.name), t.units.map(card)));
   });
   stageAmpRegion(regions.amp);
   // The dropdown is shown off while locked; Start and Stop are not there.
   rigsRegion(regions.rigs, { dropdown: regions.pick, title: status.title });
+  activityRegion(regions);
 }
 
 // ---------------------------------------------------------------- pedals (#192)
@@ -3656,9 +3915,22 @@ function pedalSlots(badgeEl, panelEl, t) {
   if (button) button.classList.toggle("lit", on.some((c) => (pu.lights[c] || {}).until > Date.now()));
   const focus = focusedName(panelEl);
   const rebuilt = patch(panelEl, JSON.stringify(open ? [board, t.rows, t.params, pu.confirm && pu.confirm.key === t.key ? [pu.confirm.what, pu.confirm.row, pu.confirm.value] : null,
-    pu.pending, pu.refused && pu.refused.key === t.key ? pu.refused.reason : null, state.locked, !!state.saving] : null),
+    pu.pending, state.locked] : null),
   () => (open ? pedalPanel(board, t) : null));
   if (rebuilt) refocus(panelEl, focus);
+  // An assignment refused, in the activity zone (#245): for unsaved work
+  // (#210) with the save, then the same assignment, in one tap.
+  const refused = open && pu.refused && pu.refused.key === t.key ? pu.refused : null;
+  if (refused) {
+    const locked = pedalLockRefusal();
+    actResult({ id: actId(refused, "p"), cls: "pedal-refused", ok: false, what: t.what, title: R.shortSaid(refused.reason),
+      detail: refused.reason, channel: t.path.split("/")[0],
+      dismiss: () => { if (pu.refused === refused) pu.refused = null; render(); },
+      offer: refused.saveThen ? { label: "Save & assign", cls: "rig-act primary small save-then",
+        disabled: !!pu.pending || !!locked || !!state.saving,
+        title: "Save, then assign: the restart that plays it is offered after the save",
+        run: () => saveThenAssign(t, refused.saveThen) } : null });
+  }
 }
 
 function pedalIcon() {
@@ -3702,18 +3974,11 @@ function pedalPanel(board, t) {
       if (use && !here) rows.push(h("p", { class: "sub", title: `${R.pedalName(c.name)} is on ${R.pedalSaid(use.binding, use.target)} now.` }, `on ${R.pedalSaid(use.binding, use.target)}`));
     }
   }
-  const refused = pu.refused && pu.refused.key === t.key ? pu.refused.reason : null;
   return h("div", { class: "pedal-panel", role: "group", "aria-label": `Pedal for ${t.what}`, title: board.controller || null },
     board.controller ? null : h("p", { class: "sub" }, "No device"),
     rows.length ? rows : h("p", { class: "sub", title: "None of the device's controls can take this." }, "Nothing fits"),
     busy ? h("p", { class: "sub", role: "status" }, "Assigning…") : null,
-    locked ? h("p", { class: "sub lock-says", title: locked }, lockIcon(), "Locked") : null,
-    refused ? h("p", { class: "row-said refused", role: "alert", title: refused }, R.shortSaid(refused)) : null,
-    // Refused for unsaved work (#210): the save, then the same assignment, in
-    // one tap; two words on the button (#209), the rest in its title.
-    refused && pu.refused.saveThen ? h("button", { class: "rig-act primary small save-then", disabled: busy || !!locked || !!state.saving,
-      title: "Save, then assign: the restart that plays it is offered after the save",
-      onclick: () => saveThenAssign(t, pu.refused.saveThen) }, "Save & assign") : null);
+    locked ? h("p", { class: "sub lock-says", title: locked }, lockIcon(), "Locked") : null);
 }
 
 function pedalLockRefusal() {
@@ -3769,10 +4034,10 @@ async function sendPedal(t, choice) {
   }
   render();
   if (answer.ok) {
-    const offer = document.querySelector("section.pedals .rigfile-result .offer");
+    const offer = document.querySelector(".activity .pedal-result .offer");
     if (pu.result.offer && offer) {
-      // A restart plays it: the offer, under the strips, is where the focus
-      // goes, so it is in view and not missed (#210).
+      // A restart plays it: the offer, in the activity zone, is where the
+      // focus goes, so it is not missed (#210).
       offer.focus();
     } else {
       // The panel has closed: the focus it held goes back to the badge that
@@ -3826,8 +4091,8 @@ function pedalsRegion(el) {
   // The file's mappings waiting for a restart (#210), offered while nothing
   // an assignment said is shown in its place.
   const behind = pu.result ? null : R.pedalBehind(board);
-  patch(el, JSON.stringify([shown, board.controller, board.choose, board.problem, device, rows.map((r) => [r.control, r.name, r.does, r.assigned, r.job]),
-    pu.result, pu.restartConfirm, busy, !!state.pending, behind]), () => (!shown ? [] : [
+  patch(el, JSON.stringify([shown, board.controller, board.choose, board.problem, device, rows.map((r) => [r.control, r.name, r.does, r.assigned, r.job])]),
+    () => (!shown ? [] : [
     h("h2", {}, "PEDALS"),
     board.choose.length ? h("label", { class: "selector pedal-pick" }, h("span", { class: "label", title: "The device this rig's pedal map is for" }, "Device"),
       (() => {
@@ -3843,15 +4108,27 @@ function pedalsRegion(el) {
       h("span", { class: "heard", "aria-hidden": "true" }),
       h("strong", { class: "pedal-name" }, r.name), h("span", { class: "does" }, r.does), h("span", { class: "value" }),
       h("span", { class: "sr-only heard-said" })))),
-    pu.result ? rigFileResult(pu.result, () => { pu.result = null; render(); }, () => { pu.restartConfirm = true; render(); }) : null,
-    behind ? h("div", { class: "rigfile-result pedal-behind", role: "status", title: behind.title },
-      h("span", { class: "said" }, behind.text),
-      h("button", { class: "rig-act primary offer", disabled: !!state.pending, onclick: () => { pu.restartConfirm = true; render(); } },
-        behind.offer.label)) : null,
-    pu.restartConfirm ? confirmBox("Restart?", restartForPedals, () => { pu.restartConfirm = false; render(); },
-      { pending: !!state.pending || !!busy }) : null,
     helpAnchor("pedals"),
   ]));
+  // What an assignment said, the map waiting for a restart, and the restart
+  // that plays it, in the activity zone (#245).
+  if (shown && pu.result) {
+    actResult({ id: actId(pu.result, "q"), cls: "rigfile-result pedal-result", ...rigFileWords(pu.result),
+      dismiss: () => { pu.result = null; render(); }, extra: rigFileHint(pu.result),
+      offer: pu.result.ok && pu.result.offer ? { label: pu.result.offer.op === "restart" ? "Restart" : pu.result.offer.label,
+        cls: "rig-act primary offer", disabled: !!state.pending, run: () => { pu.restartConfirm = true; render(); } } : null });
+  }
+  if (shown && behind) {
+    actResult({ id: actId(`${behind.text}\u0000${behind.title}`, "b"), cls: "rigfile-result pedal-behind", ok: true,
+      title: "Pedals", said: behind.text, detail: behind.title,
+      offer: { label: behind.offer.label, cls: "rig-act primary offer", disabled: !!state.pending,
+        run: () => { pu.restartConfirm = true; render(); } } });
+  }
+  if (shown && pu.restartConfirm) {
+    actAsk({ key: "pedal-restart", label: "Pedals", q: "Restart?", yes: restartForPedals,
+      no: () => { pu.restartConfirm = false; render(); }, pending: !!state.pending || !!busy,
+      detail: "Restart the rig to play the pedal map: the sound cuts out while it restarts." });
+  }
   // The lights and the pedal's value, in place.
   for (const r of rows) {
     const li = el.querySelector(`.pedal-row[data-control="${CSS.escape(r.control)}"]`);
@@ -3976,6 +4253,20 @@ function fitWidth(choices, draft) {
 // What a rig file write said (#209: a few words, the rest on hover): its
 // title, the machine file's missing lines when a role is missing (a
 // control: they are to copy), and the offer to restart, start or switch.
+// A rig file write's words for the activity zone (#245), as `rigFileResult`
+// says them; and its machine lines, to copy, when a role is missing.
+function rigFileWords(result) {
+  return { ok: !!result.ok, title: result.title,
+    said: !result.ok && result.reason ? R.shortSaid(result.reason, 40, result.title) : null,
+    detail: [result.ok ? result.text : result.reason, result.programs ? result.programs.note : null,
+      ...(result.programs ? result.programs.rows.map((r) => `${r.rig}: program ${r.from} → ${r.to}`) : []),
+      result.ok ? result.commit : null].filter(Boolean).join(" ") || null };
+}
+function rigFileHint(result) {
+  return result.hint ? () => h("details", { class: "machine-hint-box" }, h("summary", {}, "Machine lines"),
+    h("pre", { class: "machine-hint" }, result.hint)) : null;
+}
+
 function rigFileResult(result, dismiss, play) {
   const more = [result.ok ? result.text : result.reason, result.programs ? result.programs.note : null,
     ...(result.programs ? result.programs.rows.map((r) => `${r.rig}: program ${r.from} → ${r.to}`) : []),
@@ -3996,7 +4287,10 @@ function newRigFrame() {
     problems: h("div", { class: "problems", "aria-live": "polite" }),
     form: h("main", { class: "new-rig" }),
   };
-  const frame = h("div", { class: "screen rack-screen new-rig-screen" }, regions.header, regions.problems, regions.form);
+  // The activity zone (#245), for what a start or a switch from here says;
+  // no Undo here: nothing on this screen is undone.
+  Object.assign(regions, activityFrame(null));
+  const frame = h("div", { class: "screen rack-screen new-rig-screen" }, regions.header, regions.problems, regions.activity, regions.form);
   return { frame, regions };
 }
 
@@ -4014,9 +4308,10 @@ function renderNewRig(regions, status) {
   if (!nr.touched && nr.channels.length === 0 && choices.inputs.length) nr.channels.push(R.newChannel(choices, []));
   if (!filesReady()) {
     patch(regions.form, "reading", () => h("p", { class: "empty" }, "Reading…"));
-    return;
+  } else {
+    newRigRegion(regions.form);
   }
-  newRigRegion(regions.form);
+  activityRegion(regions);
 }
 
 function newRigView() {
@@ -4266,15 +4561,27 @@ function stripsRegion(el, model, unsaved) {
   const sources = w.adding && filesReady() ? R.sourceChoices(state.rigs, state.rigChannels) : null;
   const busy = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
   const focus = focusedName(parts.foot);
-  // What a removal said, under the strips of the rig it was for only, and
-  // gone once another rig is drawn, so it does not come back with its rig
-  // (a rig down for a moment, as in the restart the removal made, is not
-  // another rig).
-  if (state.removeUi.done && view.rig && state.removeUi.done.rig !== view.rig) state.removeUi.done = null;
-  const removed = state.removeUi.done && state.removeUi.done.rig === view.rig ? state.removeUi.done : null;
+  if (ready) {
+    loadActivity(view);
+    removeActivity(view, filed);
+  }
+  // What an edit of the file said and the restart that plays it, in the
+  // activity zone (#245), with the chip of the channel it was about.
+  if (w.result) {
+    const result = w.result;
+    actResult({ id: actId(result, "w"), cls: "rigfile-result wiring-result", channel: result.channel || null,
+      ...rigFileWords(result), extra: rigFileHint(result), dismiss: () => { w.result = null; render(); },
+      offer: result.ok && result.offer ? { label: result.offer.op === "restart" ? "Restart" : result.offer.label,
+        cls: "rig-act primary offer", disabled: !!state.pending, run: () => { w.restartConfirm = true; render(); } } : null });
+  }
+  if (w.restartConfirm) {
+    actAsk({ key: "wiring-restart", label: "Channels", q: "Restart?", channel: w.result ? w.result.channel || null : null,
+      yes: restartForEdit, no: () => { w.restartConfirm = false; render(); }, pending: !!state.pending || !!busy,
+      detail: `Restart ${view.rig} to play the edit: the sound cuts out while it restarts.` });
+  }
   const rebuilt = patch(parts.foot, JSON.stringify([ready, view.rig, view.channels.map((c) => c.name), choices,
-    w.adding && [w.adding.input, w.adding.width, w.adding.from], sources, w.pending, w.result, w.restartConfirm, busy,
-    !!state.pending, view.unsaved, removed]), () => [
+    w.adding && [w.adding.input, w.adding.width, w.adding.from], sources, w.pending,
+    view.unsaved]), () => [
     !ready ? null
       : w.adding && !sources ? h("p", { class: "sub" }, "Reading…")
         : w.adding ? addChannelForm(parts.foot, view, choices, sources)
@@ -4283,10 +4590,6 @@ function stripsRegion(el, model, unsaved) {
               w.adding = R.newChannel(choices, view.channels); w.result = null; render();
               inBackground("rig channels", refreshAllRigChannels);
             } }, "Add channel"),
-    w.result ? rigFileResult(w.result, () => { w.result = null; render(); }, () => { w.restartConfirm = true; render(); }) : null,
-    w.restartConfirm ? confirmBox("Restart?", restartForEdit, () => { w.restartConfirm = false; render(); },
-      { pending: !!state.pending || !!busy }) : null,
-    removed ? resultBox(removed, { cls: "save-result remove-done", dismiss: () => { state.removeUi.done = null; render(); } }) : null,
   ]);
   if (rebuilt) refocus(parts.foot, focus);
   if (ready) drawAddCheck(parts.foot, view);
@@ -4354,7 +4657,6 @@ function loadPanel(view, c) {
       g.options.map((o) => h("option", { value: o.value, title: o.title }, o.label)))));
   select.value = R.sourceValue(lu.choice);
   select.addEventListener("change", () => { lu.choice = R.sourceFrom(select.value); lu.result = null; lu.ampAsk = false; render(); });
-  const result = lu.result && lu.result.channel === c.name && lu.result.rig === view.rig ? lu.result : null;
   const off = !!lu.pending || !!state.removeUi.pending || !!state.pending || !!locked || !lu.choice;
   // Load with amp (#246): from a rig with an amp onto this one, which has
   // none, the source rig's amp comes too. It restarts the rig, so it asks.
@@ -4364,24 +4666,42 @@ function loadPanel(view, c) {
     h("button", { type: "button", class: "save-act primary load-go", title: locked,
       disabled: off, onclick: () => { lu.ampAsk = false; loadChannel(c.name, view.rig, lu.choice, {}); } },
       lu.pending ? "Loading…" : "Load"),
-    withAmp && !lu.ampAsk ? h("button", { type: "button", class: "save-act load-amp", disabled: off,
+    withAmp ? h("button", { type: "button", class: "save-act load-amp", disabled: off || lu.ampAsk,
       title: locked || `Load it with ${lu.choice.rig}'s amp: ${view.rig} gains that amp, and restarts with it.`,
       onclick: () => { lu.ampAsk = true; render(); } }, "Load with amp") : null,
-    withAmp && lu.ampAsk ? confirmBox("Restart?", () => { lu.ampAsk = false; loadChannel(c.name, view.rig, lu.choice, { withAmp: true }); },
-      () => { lu.ampAsk = false; render(); }, { pending: off, cls: "load-amp-ask" }) : null,
     locked ? h("p", { class: "sub lock-says", title: locked }, lockIcon(), "Locked") : null,
-    // A few words (#209): the title, and for a refusal what is wrong; the
-    // rest of what it said (its notes too) is the box's title, for a hover.
-    result ? h("div", { class: `save-result load-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert",
-      title: [result.ok ? result.text : result.reason, ...result.notes].filter(Boolean).join(" ") || null },
-      h("strong", {}, result.title),
-      !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason, 40, result.title)) : null,
-      result.offer ? h("button", { class: "rig-act offer", disabled: !!lu.pending || !!state.removeUi.pending || !!locked,
-        onclick: () => loadChannel(result.channel, result.rig, result.from, result.offer) }, result.offer.label) : null,
-      h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { lu.result = null; render(); } }, "×")) : null,
     h("button", { type: "button", class: "save-act load-close", disabled: !!lu.pending,
       onclick: () => { lu.channel = null; render(); } }, "Close"),
     helpAnchor("loadChannel"));
+}
+
+// A load's question and what it said, in the activity zone (#245), for the
+// strip and the rig it was asked for: Load with amp's "Restart?", and the
+// answer with the second tap a refusal offers (Load anyway, drop the MIDI
+// mappings), which sends the same load again to that strip of that rig.
+function loadActivity(view) {
+  const lu = state.loadUi;
+  const locked = R.lockRefusal(state.locked, "load_channel");
+  if (lu.ampAsk && lu.channel && lu.rig === view.rig && lu.choice && R.loadWithAmp(state.rigChannels, lu.choice, view.rig)) {
+    const { channel, choice } = lu;
+    const rig = view.rig;
+    const off = !!lu.pending || !!state.removeUi.pending || !!state.pending || !!locked;
+    actAsk({ key: "load-amp", label: "Load", q: "Restart?", channel, pending: off, cls: "load-amp-ask", sig: [rig, channel, choice],
+      detail: `Load ${choice.rig} / ${choice.channel} onto ${channel} with ${choice.rig}'s amp: ${rig} gains that amp, and restarts with it.`,
+      yes: () => { lu.ampAsk = false; loadChannel(channel, rig, choice, { withAmp: true }); },
+      no: () => { lu.ampAsk = false; render(); } });
+  }
+  // A few words (#209): the title, and for a refusal what is wrong; the rest
+  // of what it said (its notes too) for a hover.
+  const result = lu.result && lu.result.rig === view.rig ? lu.result : null;
+  if (result) {
+    actResult({ id: actId(result, "l"), cls: "save-result load-result", ok: !!result.ok, title: result.title, channel: result.channel,
+      said: !result.ok && result.reason ? R.shortSaid(result.reason, 40, result.title) : null,
+      detail: [result.ok ? result.text : result.reason, ...result.notes].filter(Boolean).join(" ") || null,
+      offer: result.offer ? { label: result.offer.label, cls: "rig-act offer", disabled: !!lu.pending || !!state.removeUi.pending || !!locked,
+        run: () => loadChannel(result.channel, result.rig, result.from, result.offer) } : null,
+      dismiss: () => { if (lu.result === result) lu.result = null; render(); } });
+  }
 }
 
 async function loadChannel(channel, rig, from, asked) {
@@ -4418,38 +4738,73 @@ function midiControls() {
 // is shown here with the second tap it offers, and a removal that would
 // restart Sushi asks "Restart?" first. The rig's last channel is not asked:
 // the agent refuses it, and the page says so.
+// The question ("Remove?", or the "Restart?" a removal asks first), what
+// was refused and the second tap it offers, are the activity zone's
+// (`removeActivity`); the panel says what goes, or why nothing can.
 function removePanel(view, c, count) {
   const ru = state.removeUi;
   const locked = R.lockRefusal(state.locked, "remove_channel");
   const goes = R.channelGoes(c, midiControls());
   const result = ru.result && ru.result.channel === c.name && ru.result.rig === view.rig ? ru.result : null;
-  const busy = !!ru.pending || !!state.loadUi.pending || !!state.pending;
   const close = () => { ru.channel = null; ru.result = null; render(); };
-  const ask = (asked) => removeChannel(c.name, view.rig, asked);
   let body;
   if (count <= 1) {
     body = h("p", { class: "sub said", title: "A rig needs one channel: add another first, or delete the rig." }, "Last channel");
   } else if (!result) {
-    body = [h("p", { class: "sub remove-goes", title: goes.title }, goes.words),
-      confirmBox("Remove?", () => ask({}), close, { pending: busy || !!locked, cls: "remove-ask" })];
+    body = h("p", { class: "sub remove-goes", title: goes.title }, goes.words);
   } else if (result.ask === "restart") {
-    body = [h("p", { class: "sub said", title: result.reason || null }, R.shortSaid(result.reason || "", 40)),
-      confirmBox("Restart?", () => ask(result.offer), close, { pending: busy || !!locked, cls: "remove-ask" })];
+    body = h("p", { class: "sub said", title: result.reason || null }, R.shortSaid(result.reason || "", 40));
   } else {
-    body = h("div", { class: `save-result remove-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert",
-      title: [result.ok ? result.text : result.reason, ...result.notes].filter(Boolean).join(" ") || null },
-      h("strong", {}, result.title),
-      // What is wrong in a few words; for the MIDI map, the controls it names.
-      result.midi ? h("span", { class: "said remove-midi" }, `MIDI: ${result.midi}`)
-        : !result.ok && result.reason ? h("span", { class: "said" }, R.shortSaid(result.reason, 40, result.title)) : null,
-      result.offer ? h("button", { class: "rig-act offer", disabled: busy || !!locked,
-        onclick: () => ask(result.offer) }, result.offer.label) : null,
-      h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: close }, "×"));
+    body = h("p", { class: "sub remove-goes", title: goes.title }, goes.words);
   }
   return h("div", { class: "load-panel remove-panel", role: "group", "aria-label": `Remove ${c.name}?` },
     body,
     locked ? h("p", { class: "sub lock-says", title: locked }, lockIcon(), "Locked") : null,
-    ru.pending ? h("p", { class: "sub" }, "Removing…") : null);
+    ru.pending ? h("p", { class: "sub" }, "Removing…") : null,
+    h("button", { type: "button", class: "save-act remove-close", disabled: !!ru.pending, onclick: close }, "Close"));
+}
+
+// A strip's Remove in the activity zone (#245), for the strip and the rig it
+// was asked for: "Remove?", the "Restart?" a removal asks before it
+// restarts Sushi, a refusal with its second tap (Remove anyway, drop the
+// MIDI mappings), each sending the same removal again to that strip of that
+// rig; and what a removal said once the channel has gone.
+function removeActivity(view, filed) {
+  const ru = state.removeUi;
+  const locked = R.lockRefusal(state.locked, "remove_channel");
+  const busy = !!ru.pending || !!state.loadUi.pending || !!state.pending;
+  const close = () => { ru.channel = null; ru.result = null; render(); };
+  const c = ru.channel && ru.rig === view.rig ? filed.find((x) => x.name === ru.channel) : null;
+  if (c && filed.length > 1) {
+    const rig = view.rig;
+    const ask = (asked) => removeChannel(c.name, rig, asked);
+    const result = ru.result && ru.result.channel === c.name && ru.result.rig === rig ? ru.result : null;
+    if (!result) {
+      const goes = R.channelGoes(c, midiControls());
+      actAsk({ key: "remove-channel", q: "Remove?", channel: c.name, pending: busy || !!locked, cls: "remove-ask", sig: [rig, c.name],
+        detail: goes.title || goes.words, yes: () => ask({}), no: close });
+    } else if (result.ask === "restart") {
+      actAsk({ key: "remove-restart", label: "Remove", q: "Restart?", channel: c.name, pending: busy || !!locked, cls: "remove-ask",
+        sig: [rig, c.name, result.offer], detail: result.reason || null, yes: () => ask(result.offer), no: close });
+    } else {
+      actResult({ id: actId(result, "m"), cls: "save-result remove-result", ok: !!result.ok, title: result.title, channel: c.name,
+        // What is wrong in a few words; for the MIDI map, the controls it names.
+        said: result.midi ? `MIDI: ${result.midi}` : !result.ok && result.reason ? R.shortSaid(result.reason, 40, result.title) : null,
+        detail: [result.ok ? result.text : result.reason, ...result.notes].filter(Boolean).join(" ") || null,
+        offer: result.offer ? { label: result.offer.label, cls: "rig-act offer", disabled: busy || !!locked,
+          run: () => ask(result.offer) } : null,
+        dismiss: close });
+    }
+  }
+  // What a removal said, for the rig it was for only, and gone once another
+  // rig is drawn, so it does not come back with its rig (a rig down for a
+  // moment, as in the restart the removal made, is not another rig).
+  if (ru.done && view.rig && ru.done.rig !== view.rig) ru.done = null;
+  const removed = ru.done && ru.done.rig === view.rig ? ru.done : null;
+  if (removed) {
+    actResult({ id: actId(removed, "g"), cls: "save-result remove-done", channel: removed.channel, ...resultWords(removed),
+      dismiss: () => { ru.done = null; render(); } });
+  }
 }
 
 async function removeChannel(channel, rig, asked) {
@@ -4512,7 +4867,7 @@ function drawAddCheck(el, view) {
   }
 }
 
-async function rigFileWrite(call, op, what, rig) {
+async function rigFileWrite(call, op, what, rig, channel = null) {
   if (state.wiring.pending) return null;
   state.wiring.pending = true;
   render();
@@ -4524,7 +4879,7 @@ async function rigFileWrite(call, op, what, rig) {
     // write began on, and the answer belongs on the one that is drawn.
     state.wiring.pending = false;
   }
-  state.wiring.result = R.rigFileOutcome(op, what, answer);
+  state.wiring.result = { ...R.rigFileOutcome(op, what, answer), channel };
   render();
   if (answer.ok) refreshRigChannels(rig, true).then(render);
   return answer;
@@ -4533,12 +4888,12 @@ async function rigFileWrite(call, op, what, rig) {
 async function addChannel(rig, el, view) {
   const draft = state.wiring.adding;
   if (!draft || R.checkChannelName(draft.name, view.channels.map((c) => c.name)) || !draft.input) return;
-  const answer = await rigFileWrite(R.addChannelCall(rig, draft), "add", `${draft.name} to ${rig}`, rig);
+  const answer = await rigFileWrite(R.addChannelCall(rig, draft), "add", `${draft.name} to ${rig}`, rig, draft.name);
   if (answer && answer.ok) { state.wiring.adding = null; render(); }
 }
 
 async function changeInput(rig, channel, change) {
-  const answer = await rigFileWrite(R.inputCall(rig, channel, change), "input", `${channel}'s input`, rig);
+  const answer = await rigFileWrite(R.inputCall(rig, channel, change), "input", `${channel}'s input`, rig, channel);
   if (answer && answer.ok) { state.wiring.editing = null; render(); }
 }
 
@@ -4582,6 +4937,8 @@ function render() {
       }
     }
     settleEdits();
+    state.activity.items = [];
+    state.activity.asks = [];
     const live = liveBody();
     const model = live ? R.rackModel(live, state.plugins, state.profiles) : null;
     const rig = state.health && state.health.ok ? state.health.body.rig : null;
