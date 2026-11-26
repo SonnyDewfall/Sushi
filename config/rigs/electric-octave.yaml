@@ -18,7 +18,6 @@ name: electric-octave
 description: Electric guitar with an octave up beside it — the board of electric-octave-up, its octave
   on a channel of its own
 meta:
-  version: '1.0'
   status: draft
   source: config/retired/rigs/electric-octave-up.yaml
 host:

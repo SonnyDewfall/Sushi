@@ -165,6 +165,17 @@ VOLUME_FLOOR_DB = 40.0
 
 _KEYS = ("kind", "schema_version", "name", "description", "meta", "host", "amp",
          "channels", "master", "midi")
+# What `meta` once held and the format no longer has. A rig's version number
+# (`meta.version`, MAJOR with the chain and MINOR with the values) was a rule
+# nothing enforced: every rig said 1.0 and no save ever changed it. Dropped
+# (#143, 2026-11-26): a rig is named, and the setlist is what makes rigs
+# usable. A file that still says one loads, and the key is ignored without a
+# word: it was never read, so ignoring it changes nothing anyone relied on,
+# and a note would be said at every compile of every rig made from such a
+# file until its next save. It is kept out of the compiled `_meta`
+# (`parse_rig`), and a save writes the file without it (`fold_state`).
+# Not `schema_version`, which is the format's own and is checked.
+RETIRED_META = ("version",)
 _MIDI_KEYS = ("controller", "port", "programs", "controls")
 _CONTROL_KEYS = ("control", "blend", "parameter", "mute", "bypass", "volume", "range")
 _BINDINGS = ("blend", "parameter", "mute", "bypass", "volume")
@@ -938,8 +949,9 @@ def parse_rig(raw: Any) -> Rig:
 
     if problems:
         raise RigFileError(problems)
+    meta = {k: v for k, v in (raw.get("meta") or {}).items() if k not in RETIRED_META}
     rig = Rig(str(name), tuple(channels), master, description or "", host,
-              settings, raw.get("amp"), dict(raw.get("meta") or {}), midi)
+              settings, raw.get("amp"), meta, midi)
     problems = check_rig(rig)
     if problems:
         raise RigFileError(problems)
@@ -1592,6 +1604,9 @@ def fold_state(
     So is a chain lacking one of the file's plugins with no remove of it in
     `edits`. Without `edits` (the CLI's `sushi-rig save`, the panel's SAVE:
     no log), any plugin added or removed live is refused that way.
+
+    A `meta.version` (`RETIRED_META`, #143) is left out of what is written,
+    so a save, in place or as a new name, writes the file without it.
     """
     rig = parse_rig(copy.deepcopy(raw))  # refuse what load_rig would refuse
     captured = captured or {}
@@ -1723,6 +1738,14 @@ def fold_state(
 
     blended = blended_channels(rig)
     out = copy.deepcopy(raw)
+    # A key the format dropped (`RETIRED_META`) is not written back, and a
+    # `meta` that held nothing else goes with it.
+    meta = out.get("meta")
+    if isinstance(meta, dict) and any(key in meta for key in RETIRED_META):
+        for key in RETIRED_META:
+            meta.pop(key, None)
+        if not meta:
+            del out["meta"]
     for channel in out.get("channels") or []:
         if not isinstance(channel, dict):
             continue
