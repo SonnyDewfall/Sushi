@@ -71,19 +71,56 @@ export function monoNote(units, index) {
 
 // ---------------------------------------------------------------- values
 // Sushi normalises every parameter linearly over its domain and ignores the
-// LV2 logarithmic hint (panel.py, found on the rig), so a real value is
-// min + v * (max - min) whatever the profile's scale. The scale changes how a
-// drag maps to the value and how it is written, never this.
+// LV2 logarithmic hint (found on the rig, for the retired Open Stage Control
+// panel), so a real value is min + v * (max - min) whatever the profile's
+// scale. The scale changes how a drag maps to the value and how it is
+// written, never this.
 
 const isNumber = (x) => typeof x === "number" && Number.isFinite(x);
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
+
+// How much wider than its bottom a range must be for a control no profile
+// judged to turn on a log scale. The retired panel turned on its faders'
+// `logScale` at a top of 10 or more whatever the bottom (its
+// LOG_SCALE_DOMAIN_THRESHOLD: a graphic EQ band's ~0.016 to ~63, a gain to
+// 1000, whose useful range was a sliver at the bottom of a linear drag); a
+// log knob needs a bottom above zero, so here it is a range above zero whose
+// top is more than ten times its bottom.
+export const LOG_RANGE_RATIO = 10;
+
+// The scale a control is drawn on when no profile says one: a toggle for a
+// port that says it is one, a log scale for a positive range wider than
+// `LOG_RANGE_RATIO`, linear otherwise.
+export function plainScale(min, max, toggled) {
+  if (toggled) return "toggle";
+  if (isNumber(min) && isNumber(max) && min > 0 && max / min > LOG_RANGE_RATIO) return "log";
+  return "linear";
+}
+
+// What a profile entry says that is the plugin's own, not the profile's
+// judgement: its unit, whether it is whole-numbered or a toggle, and its
+// named values. A hidden parameter shown by a card's All is drawn from these
+// alone, "plainly", as a plugin with no profile would be, but in its units.
+export function plainEntry(entry) {
+  if (!entry) return null;
+  const points = Array.isArray(entry.scale_points) && entry.scale_points.length ? entry.scale_points : null;
+  return { plain: true, unit: entry.unit || null, integer: !!entry.integer, toggled: !!entry.toggled,
+    ...(points ? { scale_points: points } : {}) };
+}
 
 export function makeControl(name, info, entry) {
   const min = info && isNumber(info.min_domain_value) ? info.min_domain_value : null;
   const max = info && isNumber(info.max_domain_value) ? info.max_domain_value : null;
   const hasRange = min !== null && max !== null && max > min;
   const choices = entry && Array.isArray(entry.scale_points) && entry.scale_points.length ? entry.scale_points : null;
-  let scale = (entry && entry.scale) || (entry && entry.toggled ? "toggle" : "linear");
+  // No profile, or a hidden parameter drawn plainly: the plain rule. A
+  // profile's own entry keeps the profile's scale (linear where it says none).
+  const plain = !entry || entry.plain;
+  let scale = plain ? plainScale(min, max, entry && entry.toggled)
+    : entry.scale || (entry.toggled ? "toggle" : "linear");
+  // A parameter drawn plainly whose plugin names its values is a selector of
+  // those names, as a profile's enum is.
+  if (plain && choices && scale !== "toggle") scale = "enum";
   const notes = [];
   // A log or dB drag needs a positive minimum; a profile is loaded unvalidated,
   // so one that says log over a range reaching zero is drawn linear, and says so.
@@ -102,14 +139,26 @@ export function makeControl(name, info, entry) {
     unit: (entry && entry.unit) || null,
     scale, control, min, max, hasRange, choices,
     integer: !!(entry && entry.integer),
-    group: entry ? (entry.group ?? null) : null,
-    visibility: (entry && entry.visibility) || "primary",
-    phone: entry && isNumber(entry.phone) ? entry.phone : null,
+    group: entry && !entry.plain ? (entry.group ?? null) : null,
+    visibility: (entry && !entry.plain && entry.visibility) || "primary",
+    phone: entry && !entry.plain && isNumber(entry.phone) ? entry.phone : null,
     readOnly: info ? info.automatable === false : false,
     missing: !info,
-    profiled: !!entry,
+    profiled: !!entry && !entry.plain,
     notes,
   };
+}
+
+// The plugin's own bypass or on switch: GxTS9's BYPASS, calf's Bypass,
+// a-reverb's Enable, string-machine's Enabled (lv2_enabled). Profiles hide
+// these because Sushi's bypass is what switches a pedal, and a second switch
+// inside it is one a player can leave off and not find; so a card's All
+// leaves them out too. No fact of a profile marks one (no designation is
+// read), so it is the word, whole and in any case, in the parameter's name
+// or its port's symbol, `_` and other punctuation counting as a break.
+const OWN_SWITCH = /(^|[^a-z0-9])(bypass|enabled?)($|[^a-z0-9])/i;
+export function ownSwitch(entry) {
+  return [entry && entry.name, entry && entry.symbol].some((s) => typeof s === "string" && OWN_SWITCH.test(s));
 }
 
 // ---------------------------------------------------------------- a control of several parameters
@@ -442,7 +491,19 @@ export function stepped(ctrl, v, steps, fine = false) {
   if (step === null) {
     const whole = (ctrl.integer || ctrl.scale === "enum") && ctrl.hasRange;
     const size = stepOf(ctrl) / (fine && !whole ? FINE_DIVISOR : 1);
-    return valueAt(ctrl, positionOf(ctrl, start) + steps * size);
+    const next = valueAt(ctrl, positionOf(ctrl, start) + steps * size);
+    // An integer on a log scale steps a hundredth of the travel, as a log
+    // knob does, and `valueAt` rounds that to a whole number: near the bottom
+    // of 1 to 64, a hundredth is under one, so it rounded back to where it
+    // was and the wheel and keys never moved it (review of #139). A step
+    // moves it by at least one whole number, the way it was turned.
+    if (whole && logMapped(ctrl) && steps !== 0) {
+      const from = Math.round(realOf(ctrl, start)), to = realOf(ctrl, next);
+      if ((steps > 0 && to < from + 1) || (steps < 0 && to > from - 1)) {
+        return normalisedOf(ctrl, clampTo(from + Math.sign(steps), ctrl.min, ctrl.max));
+      }
+    }
+    return next;
   }
   const size = step / (fine ? FINE_DIVISOR : 1);
   // In whole steps, never by dividing a grid value back (7.1 / 0.1 is
@@ -549,16 +610,24 @@ export function parseTyped(ctrl, text) {
 // the profile names that the running plugin lacks (`missing`), and what the
 // plugin has that the profile does not name (in `advanced`, marked). Without
 // one: every parameter Sushi reports, in its own order, read-only ones too.
+//
+// `hidden` is what the profile hides that the running plugin has and can be
+// set (automatable), each drawn plainly (`plainEntry`): what a card's All
+// shows (#139: the retired Open Stage Control panel had a fader for every
+// automatable parameter, and a hidden one was otherwise out of reach). A
+// control of several parameters the profile hides is not among them: it has
+// no parameter of its own, and its parameters are. Nor is the plugin's own
+// bypass or on switch (`ownSwitch`).
 export function unitPanel(params, profile) {
   params = params || {};
   if (!profile) {
     const controls = Object.entries(params).map(([n, info]) => makeControl(n, info, null));
-    return { mode: "plain", groups: [{ id: null, label: null, controls }], advanced: [], missing: [] };
+    return { mode: "plain", groups: [{ id: null, label: null, controls }], advanced: [], missing: [], hidden: [] };
   }
   const groups = profile.groups.map((g) => ({ id: g.id, label: g.label, controls: [] }));
   const other = { id: null, label: "Other", controls: [] };
   const byId = new Map(groups.map((g) => [g.id, g]));
-  const advanced = [], missing = [], listed = new Set();
+  const advanced = [], missing = [], hidden = [], listed = new Set();
   for (const entry of profile.parameters) {
     if (Array.isArray(entry.drives)) {
       // A control of several parameters: none of its own in Sushi.
@@ -570,7 +639,13 @@ export function unitPanel(params, profile) {
       continue;
     }
     listed.add(entry.name);
-    if (entry.visibility === "hidden") continue;
+    if (entry.visibility === "hidden") {
+      const info = params[entry.name];
+      if (info && info.automatable !== false && !ownSwitch(entry)) {
+        hidden.push(makeControl(entry.name, info, plainEntry(entry)));
+      }
+      continue;
+    }
     const ctrl = makeControl(entry.name, params[entry.name], entry);
     if (ctrl.missing) missing.push(ctrl);
     else if (entry.visibility === "advanced") advanced.push(ctrl);
@@ -583,7 +658,7 @@ export function unitPanel(params, profile) {
     advanced.push(ctrl);
   }
   if (other.controls.length) groups.push(other);
-  return { mode: "profile", groups: groups.filter((g) => g.controls.length), advanced, missing };
+  return { mode: "profile", groups: groups.filter((g) => g.controls.length), advanced, missing, hidden };
 }
 
 export function primaryControls(panel) {
@@ -1110,8 +1185,8 @@ const trackOf = (live, processor) => {
 // only what came after it counts, an undo after it included (undo passes
 // over a save, so it puts back what the file does not have).
 //
-// The baseline is only what the agent saw. A change from the OSC panel, a
-// MIDI mapping inside Sushi, or a `sushi-rig save` since, is not in the log,
+// The baseline is only what the agent saw. A MIDI mapping inside Sushi, or a
+// `sushi-rig save` since, is not in the log,
 // and the log is lost when the agent restarts; `partial` says when the log
 // was trimmed past the rig's start, so the list may be short. Entries before
 // the last rig switch, or older than the rig's start (a restart reloads its
@@ -1429,10 +1504,9 @@ export function loadTiles(answer, up, xruns) {
 const VERBS = { start: "Starting", stop: "Stopping", switch: "Switching to", restart: "Restarting" };
 
 // The request for a lifecycle gesture. A start is a rig of channels
-// (config/rigs/, `rig: true`) and headless: the page replaces the OSC panel,
-// and a rig run with its panel cannot be switched live (#93).
+// (config/rigs/, `rig: true`).
 export function lifecycleCall(op, name, { discard = false, amp = false } = {}) {
-  if (op === "start") return { path: "/rig/up", json: { config_name: name, rig: true, headless: true } };
+  if (op === "start") return { path: "/rig/up", json: { config_name: name, rig: true } };
   if (op === "stop") return { path: "/rig/down", json: {} };
   if (op === "switch") return { path: "/rig/switch", json: { config_name: name } };
   // Offered after an edit of the running rig's file (the rig files below):
@@ -1575,7 +1649,7 @@ export function lifecycleOutcome(op, name, answer) {
       reason: answer.reason + (body.how === "restart" && why ? `. It restarted because ${why}` : "") };
   }
   if (op === "start") {
-    return answer.ok ? { ok: true, ...tagged(`Started ${name}`, `Started ${name}, headless.`) }
+    return answer.ok ? { ok: true, ...tagged(`Started ${name}`, `Started ${name}.`) }
       : { ok: false, title: `Not started: ${name}`, reason: answer.reason };
   }
   if (op === "restart") {
@@ -1660,7 +1734,7 @@ export const RETIRED_KEYS = ["sushi-rig.binned"];
 // ---------------------------------------------------------------- saving (S4)
 // POST /rig/save: the running rig into its own file of config/rigs, or "save
 // as" a new one, which then is the running rig. The agent decides what can be
-// saved and says why not (panel, v1, taken, a chain changed live...); these
+// saved and says why not (a run from a v1 config, taken, a chain changed live...); these
 // only say what the page offers and what an answer means.
 
 // A rig's name, as save.validate_name checks it (save.NAME_PATTERN): it
@@ -1709,12 +1783,14 @@ export function seenSince(health, logAnswer) {
 
 // What the Save buttons offer. Both are offered whenever a rig that can be
 // saved from here is up and nothing is running: the unsaved list is only
-// what the agent saw (not the panel's changes, nor pedals mapped in Sushi,
-// nor anything before the agent started, nor an amp change while GET /amp
-// failed), so an empty list is no proof the file holds what is playing. Not
-// offered, with why and how to save instead, for a v1 run (`rig.rig` null)
-// or one with its panel (any mode but "headless", as `rig.runs_panel`
-// reads it), both of which the agent refuses. `fmt` writes a time.
+// what the agent saw (not pedals mapped in Sushi, nor anything before the
+// agent started, nor an amp change while GET /amp failed), so an empty list
+// is no proof the file holds what is playing. Not offered, with why and how
+// to save instead, for a run an older `up` started from a v1 config (`rig.rig`
+// null), which the agent refuses (v1 configs are retired, #218), nor for one
+// an older `up` started with the retired panel (`rig.panel`), whose SAVE
+// listener still runs beside it until it is restarted.
+// `fmt` writes a time.
 export function saveView(health, unsaved, pending, logAnswer = null, fmt = (iso) => iso) {
   const agentUp = !!(health && health.ok);
   const rig = agentUp ? health.body.rig || {} : {};
@@ -1726,11 +1802,11 @@ export function saveView(health, unsaved, pending, logAnswer = null, fmt = (iso)
   let blocked = null;
   if (!running) blocked = "No rig is running to save.";
   else if (!file) {
-    blocked = `${running} is a v1 config, not a rig of channels started with --rig, so it is not saved from here. `
-      + "Save it on the rig with: sushi-rig save <name> --rig <its rig.yaml>";
-  } else if (rig.mode !== "headless") {
-    blocked = "The rig runs with its panel, which owns the amp, so the agent does not know what the amp is at: "
-      + "save with the panel's SAVE button, or start the rig from here (headless) to save from here.";
+    blocked = `${running} was started from a v1 config by an older sushi-rig, so it has no rig file to save into. `
+      + `Restart it, which runs config/rigs/${running}.yaml, and save that.`;
+  } else if (rig.panel) {
+    blocked = `${running} was started with the retired panel by an older sushi-rig, and its panel and SAVE `
+      + "listener still run beside it. Restart it, which stops them, and save from here.";
   }
   const since = seenSince(health, logAnswer);
   const off = !!blocked || !idle;
@@ -2162,6 +2238,9 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
     return { state: "failed", why: answer.reason };
   }
   const b = answer.body;
+  // A rig an older sushi-rig started with the retired Open Stage Control
+  // panel, whose listener still writes to Carla (amp_live KNOWN_PANEL): the
+  // agent refuses every write until the rig is restarted, so nothing is offered.
   const panel = b.known === "panel";
   const down = !!(b.carla && b.carla.alive === false);
   const writable = !panel && !down;
@@ -2189,7 +2268,7 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
     why: m.why || null, declared: m.declared || null,
   }));
   let why = null;
-  if (panel) why = "The panel is running and owns the amp: change it there, or run the rig headless.";
+  if (panel) why = "The rig was started with the retired panel, which still writes to the amp: restart the rig to change it here.";
   else if (down) why = "Carla is not running, so the amp cannot be changed: restart the rig.";
   else if (!b.held) why = "This agent did not start the running rig, so it cannot restart the amp alone: start the rig from here to change its model.";
   else if (locked) why = lockRefusal(true, "amp_model");
@@ -2750,7 +2829,7 @@ export function wiringView(health, channelsAnswer, unsaved) {
   }
   if (!rig.rig) {
     const name = rig.config_name || "The running config";
-    return { blocked: `${name} is a v1 config (started with \`sushi-rig up\` without \`--rig\`), which has no rig file to edit: `
+    return { blocked: `${name} was started from a v1 config by an older sushi-rig, which has no rig file to edit: `
       + "start it from the picker, or make a rig with New rig…" };
   }
   const name = rig.config_name;
@@ -3730,6 +3809,8 @@ export function undoOutcome(answer) {
   }
   const refused = (text) => ({ ok: false, text, title: answer.reason, offer: null, ask: null });
   // Held, not refused (#235's review): the page asks, and presses again.
+  // `panel`: a rig an older sushi-rig started with the retired panel, whose
+  // changes the agent cannot see; undoing with discard restarts it without.
   if (answer.code === "unsaved" || answer.code === "panel") return { ...refused("Drop changes?"), ask: "drop" };
   if (answer.code === "restarts") return { ...refused("Restart?"), ask: "restart" };
   // Which step was dropped, on the page, not only in the title a phone

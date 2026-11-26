@@ -100,17 +100,17 @@ def machine_file(root):
 
 class World:
     """The state file and `describe_rig`'s answer: rig `rig` of config/rigs
-    up headless (None: nothing up), compiled against the machine file. Its
+    up (None: nothing up), compiled against the machine file. Its
     running config is the real compile of its file as it was at the start."""
 
-    def __init__(self, root, rig="guitar_vocal", mode="headless"):
+    def __init__(self, root, rig="guitar_vocal"):
         self.root = root
         self.rig = rig
         self.children = {"sushi": {"pid": 11, "alive": True}}
         self.state = {}
         if rig is not None:
             self.state = {
-                "supervisor_pid": 10, "pgid": 10, "mode": mode, "config_name": rig,
+                "supervisor_pid": 10, "pgid": 10, "config_name": rig,
                 "config": f"/run/rigs/{rig}.json", "rig": f"config/rigs/{rig}.yaml",
                 "started_at": "2026-11-06T10:00:00+00:00", "amp_requested": False, "amp_model": None,
                 "machine": str(machine_file(root)), "children": {"sushi": 11},
@@ -120,9 +120,9 @@ class World:
     def described(self):
         if self.rig is None:
             return {"verdict": "absent", "running": False, "message": "No rig is running."}
-        return {"verdict": "running", "running": True, "config_name": self.rig, "mode": self.state["mode"],
+        return {"verdict": "running", "running": True, "config_name": self.rig,
                 "rig": self.state["rig"], "config": self.state["config"], "children": self.children,
-                "message": f"{self.rig} (headless mode), up 2m"}
+                "message": f"{self.rig}, up 2m"}
 
     def switching(self):
         return Switching(read_state=lambda: copy.deepcopy(self.state),
@@ -613,14 +613,6 @@ def test_unsaved_live_work_on_the_running_rig_refuses_the_edit_and_writes_nothin
     assert status == 200, answer
 
 
-def test_with_the_panel_running_an_edit_of_the_running_rig_is_refused(root):
-    agent, _ = rig_agent(root, World(root, mode="panel"))
-    before = files_of(root)
-    status, answer = call(agent, "POST", "/rigs/guitar_vocal/channels/add", json=mono("keys", "vocal-in"))
-    assert (status, answer["code"]) == (409, "panel") and "whose changes the agent cannot see" in answer["reason"]
-    assert files_of(root) == before
-
-
 def test_the_run_is_compiled_against_its_own_machine_file(root):
     """The state file's machine, not this host's: a rig started against
     another machine file is edited against that one."""
@@ -655,11 +647,16 @@ def test_unsaved_is_every_change_since_the_last_save_switch_or_start():
 
 
 def test_an_edit_waits_for_a_save_and_names_the_newest_change():
-    state = {"rig": "config/rigs/board.yaml", "mode": "headless", "started_at": "2026-11-06T10:00:00+00:00"}
+    state = {"rig": "config/rigs/board.yaml", "started_at": "2026-11-06T10:00:00+00:00"}
     assert rigfile_refusal(state, []) is None
     reason, code = rigfile_refusal(state, [logged("add", {"name": "slap", "track": "board"})])
     assert code == "unsaved" and "(the newest: slap added to board" in reason
-    assert rigfile_refusal({**state, "mode": "panel"}, [])[1] == "panel"
+    # A run an older `up` started with the panel, whose SAVE listener writes
+    # this file behind the agent's back: refused until it is restarted.
+    reason, code = rigfile_refusal({**state, "mode": "panel"}, [])
+    assert code == "panel" and "restart it, which stops them, then edit it" in reason
+    assert rigfile_refusal({**state, "children": {"listen": 1}}, [])[1] == "panel"
+    assert rigfile_refusal({**state, "mode": "headless"}, []) is None
 
 
 def test_a_request_is_checked_for_its_shape_only_and_values_are_the_compilers():
@@ -740,14 +737,11 @@ def test_a_restart_with_nothing_unsaved_or_nothing_to_keep_is_not_refused(root):
     agent.log.append(logged("bypass", {"processor": "guitar_eq"}))
     world.children = {"sushi": {"pid": 11, "alive": False}}
     assert call(agent, "POST", "/rig/restart")[0] == 200, "Sushi is gone, and the work with it: recovery goes ahead"
-    world.children = {"sushi": {"pid": 11, "alive": True}}
-    world.state["mode"] = "panel"
-    assert call(agent, "POST", "/rig/restart")[0] == 200, "the panel's changes cannot be seen: not refused for them"
-    assert runner.calls == [["restart"]] * 3
+    assert runner.calls == [["restart"]] * 2
 
 
 def test_restart_refusal_is_pure_over_the_state_the_answer_and_the_log():
-    state = {"config_name": "board", "rig": "config/rigs/board.yaml", "mode": "headless",
+    state = {"config_name": "board", "rig": "config/rigs/board.yaml",
              "started_at": "2026-11-06T10:00:00+00:00"}
     up = {"running": True, "children": {"sushi": {"alive": True}}}
     change = [logged("amp", {"name": "Output Lvl"})]
@@ -755,6 +749,14 @@ def test_restart_refusal_is_pure_over_the_state_the_answer_and_the_log():
     assert restart_refusal(state, up, change + [logged("save", {}, at="2026-11-06T10:06:00+00:00")]) is None
     assert restart_refusal(state, {"running": False}, change) is None
     assert restart_refusal(state, {**up, "children": {}}, change)[1] == "unsaved", "unknown is not dead"
+    assert "Save first" in restart_refusal(state, up, change)[0]
+    # A run an older `up` started with the retired panel: the restart is
+    # what stops the panel, and a save is refused for it, so the way through
+    # is discard, not "Save first".
+    panel = restart_refusal({**state, "mode": "panel"}, up, change)
+    assert panel[1] == "unsaved" and "Save first" not in panel[0]
+    assert "not saved from here, so restart with discard" in panel[0]
+    assert restart_refusal({**state, "mode": "panel"}, up, []) is None, "nothing to lose: the restart goes ahead"
 
 
 def test_a_switch_by_restart_carries_the_runs_machine_file(root):
@@ -765,11 +767,11 @@ def test_a_switch_by_restart_carries_the_runs_machine_file(root):
     and not into another, #246.)"""
     state = World(root).state
     steps = switch_steps(state, "two-guitars")
-    assert steps == [["down"], ["up", "two-guitars", "--rig", "--headless", "--no-tuner",
+    assert steps == [["down"], ["up", "two-guitars", "--no-tuner",
                                 "--machine", state["machine"]]]
-    assert switch_steps(state, "guitar_vocal")[1] == ["up", "guitar_vocal", "--rig", "--headless", "--no-tuner",
+    assert switch_steps(state, "guitar_vocal")[1] == ["up", "guitar_vocal", "--no-tuner",
                                                       "--no-amp", "--machine", state["machine"]]
-    v1 = {"config_name": "x", "mode": "headless", "children": {"sushi": 1}}
+    v1 = {"config_name": "x", "children": {"sushi": 1}}
     assert "--machine" not in switch_steps(v1, "two-guitars")[1]
 
 

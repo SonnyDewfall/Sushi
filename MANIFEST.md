@@ -7604,7 +7604,87 @@ run here against elkpy 1.3.0 (Python 3.13) and 1.4.0 (a Python 3.12 venv, as
 the container has it), and with elkpy hidden for the other half. Not run against a real Sushi: whether Sushi's
 request ids are unique across clients (assumed, since a kept notice is matched
 by id), and the probe rerun with the read-back, are the checks left.
+
+**The Open Stage Control panel is retired (#139, #218).** The owner's call:
+"Let's retire it and fix forwards if stuff is missing." The page replaced it,
+so `up` no longer generates a panel (`panel.py`, `sushi-rig panel`), starts
+`open-stage-control`, or runs the OSC listener behind its SAVE, reorder, amp
+and record buttons (`listen.py`, `sushi-rig listen`, `transport.Transport`).
+Every run is what was called headless: `plan_children` plans no listener,
+`start_children` generates and serves nothing after Sushi answers, and the
+state file carries no `mode`. With nothing else writing to Carla or moving
+processors past the agent, the agent's `panel` refusals are gone (save,
+record, revert, channel edits, load, remove, Add amp, a switch's `panel`
+blocker, the amp's `known: "panel"` and `409 panel`), and so is
+`rig.runs_panel`. Kept for what was written before: `up --headless` and
+`"headless": true` are taken and change nothing, `"headless": false` is
+refused, and a state file an older `up` wrote with `"mode": "panel"` is read
+as any other (a panel run still playing at the upgrade should be restarted,
+since its listener would still write to Carla). `--direct` is not the
+panel's: it is the CLI acting with no agent (#29), and stays. Tests that
+existed only for the panel and the listener went with them; the record bar's
+session tests now drive `TakeSession` as the recorder does. Not run on the
+rig. *(2026-11-26)*
+
+**The v1 path is retired, and every rig is a rig of channels (#218).** With
+the panel gone, nothing needed the v1 configs, and retiring the panel was the
+decision #218 waited for on making `--rig` the default: it is now what `up`
+always does. `sushi-rig up <name>` runs `config/rigs/<name>.yaml`
+(`prepare_launch` always compiles through `prepare_rig`, and every run gets
+the recorder); `--rig` is taken and changes nothing, and `"rig": false` in
+`POST /rig/up` is refused. `restart_arguments`, `parse_lifecycle` and the
+agent's switch steps carry no `rig`; a state file an older `up` wrote for a v1
+config is brought back as the rig of channels of its name (`switching_from`,
+`fallback_arguments`), and until then a save and a take refuse it (`409 v1`,
+reworded). `sushi-rig save` writes only a rig file (`save_config` and its
+archive are gone; a rig.yaml of tracks is refused). `verify --all`, `plugins`
+and `doctor` read every rig of `config/rigs/`, compiled as nulltest renders it
+(`verify.config_to_check`, no MIDI map, so the CI container needs no machine
+file); `nulltest --all` still holds a v1 config left in `config/`, of which
+there are none. The ten v1 configs, their three `config/src/` sources and
+their `.v1-mono` references were moved, not deleted, to `config/retired/v1/`
+(all but electric_board and guitar_vocal were tones saved from the panel);
+`config/archive/` is left as it was. Tests that read them as a convenience
+read the frozen copies (`tests/fixtures/v1/`) or the rigs; tests of
+`save_config` went with it. For the tests, `verify.configs_to_check` of the
+real checkout is the frozen rigs unless a test is marked `committed_rigs`
+(conftest.py), since a refusal's `plugins add` advice is now worked out over
+the rigs. `emit`, `push`, `probes`, `patchbay generate` and `convert` still
+read a rig.yaml of tracks or a v1 config by path. Not run on the rig.
 *(2026-11-26)*
+
+**Retiring the panel, PR #253's review (#139, #218, #217).** Nine findings.
+(1) A rig an older `up` started with the panel is not stopped by a pull: its
+listener and Open Stage Control run on in the rig's group, the old code,
+until the rig is stopped, and with nothing reading `mode` the page switched
+such a run live and the old SAVE would have written the next rig's sound into
+the previous rig's file. `rig.started_with_panel` (a state file saying
+`"mode": "panel"`, or recording a `listen` or `open-stage-control` child) is
+now read again: a switch of such a run is a restart (`panel`), and save,
+record, edits of its file, Add amp, loads, removes and every amp write are
+`409 panel` until it is restarted (a revert or a switch-back Undo is answered
+with discard, since it restarts); GET /amp says `known: "panel"`, /health
+`"panel": true`, and the page offers no Save and no amp change, saying why.
+A run this `up` started says neither. (2) `transport.jack_port` counted the
+names a port is listed under, de-duplicated, so two of one interface (one
+alias, one description, so one JACK name) were taken for one socket; it counts
+nodes now. (3) A graph that cannot be read (`transport.GraphUnreadable`) is
+doctor's UNCHECKED, needing PipeWire, not a FAULT. (4) An integer on a log
+scale (a hidden 1 to 64) never moved by wheel or key, a hundredth of the
+travel rounding back; a step now moves it one whole number at least. (5) A
+hidden parameter's `scale_points` were dropped, so an enumerated one was a
+knob; it is a selector of the plugin's names. (6) The visualiser's on-demand
+spike called the removed `headless` and `generate_panel`; updated, not run.
+(7) A card's All showed the plugin's own bypass or on switch (GxTS9 BYPASS,
+calf Bypass, a-reverb Enable, string-machine Enabled), which the profiles hide
+because Sushi's bypass is the one; no profile fact marks them, so they are
+left out by the word, whole, in the name or symbol (`R.ownSwitch`; the
+profile now carries `symbol`). As shipped, GxTS9's profile hides nothing else,
+so its card has no All; the browser test hides its Level on the way to the
+page. (8) Stale docs. (9) CI's slow job refused a skip: `test_stereo`'s v1
+renders were parametrised over `config/*.json`, empty since #218; they measure
+the frozen v1 configs now, and a fast test fails should those go. None of it
+run on the rig. *(2026-11-26)*
 
 **#245: the top of the page in three zones, and every answer in one bar.**
 The owner, after #209: "a lot of scrolling is required to read and address
@@ -7709,3 +7789,24 @@ in turn and its tests failed (five without (1), three without (2)).
 `group_members` moved from `supervisor.py` to `procs.py`. Tested with real
 processes (`test_child_signals.py`, `test_procs.py`, `test_supervisor.py`); not
 with a real Sushi, qpwgraph or Carla, nor on the rig. *(2026-11-26)*
+
+**One recording port resolver (#217).** A take's ports were found twice: the
+plan named each machine-file port as JACK sees it, off the live `pw-dump`
+(`transport.jack_port`), and passed on any it could not name; then the capture
+engine looked each up among its JACK client's ports by name *or by JACK alias*
+(`capture.match_sources`). The two could disagree (a port the plan left as
+written, found by the engine through an alias the plan never saw), and the
+engine's alias match was never seen to work on the rig (the `pw-jack jack_lsp
+-A` check is still to do); the plan's was, on 2026-11-06. With the panel's
+listener gone (it planned before Sushi registered, which is why the plan
+passed unknown ports on), the forgiving branch had no caller left. Now the
+plan is the one resolver, and strict: a port the live graph does not list, one
+it lists under two nodes, and a graph that cannot be read (`_live_jack_names`
+raises `PlanError`) refuse the plan; the engine and `doctor`'s record check
+find each named port by its JACK name alone. The recorder's status plans a
+refusal again after `REPLAN_S` (5 s) with the files unchanged, since the graph
+changes without them. Pinned: which port each stem of a take of a rig with a
+mono and a stereo channel records from, with the amp and without
+(`test_a_take_records_these_ports_for_a_mono_and_a_stereo_channel`). The
+tests stand the live graph in (conftest's `GraphAsWritten`) instead of reading
+the machine's. Not run on the rig. *(2026-11-26)*

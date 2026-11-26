@@ -55,16 +55,16 @@ config.write_text(json.dumps({"tracks": [{"name": "master", "outputs": [{"engine
 launch = rig.Launch(
     root=d, config_name="live", config=config,
     children=[{"name": "sushi", "command": [sys.executable, "-c", "import time; time.sleep(900)"], "optional": False}],
-    headless=True, amp_model=None, amp_values={}, tuner_requested=False, amp_requested=False,
+    amp_model=None, amp_values={}, tuner_requested=False, amp_requested=False,
     amp_model_requested=None, rig_source=None, machine_file=None, visualiser_tap_requested=True)
 world = S.World(prepare=lambda *a, **k: launch, sushi_ready=lambda alive: True,
-                generate_panel=lambda *a: (0, ""), link_problems=lambda *a: [], replay_amp=lambda v: None,
+                link_problems=lambda *a: [], replay_amp=lambda v: None,
                 log_dir=lambda: d / "logs", tap_lease=4.0, tap_linger=5.0)
 
 
 async def main():
     sup = S.Supervisor(world)
-    up = await sup.up("live", headless=True)
+    up = await sup.up("live")
     print("up:", up.ok, up.stderr.strip(), flush=True)
     window("rig up, no tap, 15 s", 15)
     t = time.monotonic()

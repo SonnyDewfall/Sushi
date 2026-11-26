@@ -12,7 +12,7 @@ Verified on the rig machine (`sonny-dewfall-XPS-9320`):
 | PipeWire / JACK, qpwgraph, fmit | ✅ |
 | `lilv` Python bindings (system) | ✅ `python3-lilv` + `liblilv-dev` |
 | `elkpy` (in `tool/.venv`) | ✅ imports cleanly on Python 3.14 |
-| `python-osc` (in `tool/.venv`) | ✅ for `sushi-rig listen` (the panel's save button) and the agent's amp control; in the `live` and `agent` extras |
+| `python-osc` (in `tool/.venv`) | ✅ for the amp's control (Carla's OSC): the agent's, and `up`'s replay of the amp's knobs; in the `live` and `agent` extras |
 
 Sushi's LV2 support is **Linux-only** — it is excluded from the macOS and Windows
 builds. Authoring has to happen here.
@@ -47,7 +47,7 @@ The extras, from `tool/pyproject.toml` (the package needs Python 3.11 or later):
 
 | Extra | Brings | For |
 |---|---|---|
-| `live` | elkpy, python-osc | talking to a running Sushi; the panel's save listener |
+| `live` | elkpy, python-osc | talking to a running Sushi, and to Carla |
 | `agent` | aiohttp, python-osc | `sushi-rig agent` and the web UI |
 | `capture` | JACK-Client, numpy | recording takes; needs `libjack-jackd2-0` and `pw-jack` on the machine too |
 | `midi` | alsa-midi | the agent's pedals; needs libasound (`libasound2t64`) |
@@ -120,8 +120,8 @@ actually results is a measurement, and belongs with `selftest` (issue #49).
 where to capture is too, and can be read before anything is linked:
 
 ```bash
-sushi-rig probes config/src/guitar_vocal.yaml         # every port each probe links
-sushi-rig probes config/src/guitar_vocal.yaml --amp   # as run with an amp model
+sushi-rig probes config/rigs/guitar_vocal.yaml        # every port each probe links
+sushi-rig probes config/rigs/guitar_vocal.yaml --amp  # as run with an amp model
 ```
 
 Every half of every track's output is its own probe, so a chain that comes out

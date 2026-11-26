@@ -110,13 +110,6 @@ def test_a_rig_whose_file_has_an_amp_is_offered_none_to_add(root):
     assert body["add_amp"] is False and body["amp_on"] is True and body["rig"] == "accustomed", body
 
 
-def test_a_rig_run_with_its_panel_is_offered_none_to_add(root):
-    agent, world, _, _ = make_agent(root)
-    world.state["mode"] = "panel"
-    status, body = call(agent, "GET", "/amp")
-    assert (status, body["add_amp"]) == (409, False), body
-
-
 def test_the_offer_reads_the_rig_file_once_until_it_changes(root, monkeypatch):
     """#248's review: every page polls GET /amp each second, and the offer
     parsed the rig file on every poll. Kept by the file's path, size and
@@ -143,7 +136,7 @@ def test_the_offer_reads_the_rig_file_once_until_it_changes(root, monkeypatch):
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     assert call(agent, "GET", "/amp")[1]["add_amp"] is False, "the file as written"
     assert len(parsed) == 2, "a write is parsed again"
-    world.state["mode"] = "panel"
+    world.state["rig"] = None  # a run no save can write (`save_refusal`)
     assert call(agent, "GET", "/amp")[1]["add_amp"] is False and len(parsed) == 2, \
         "the run is asked each time; the file is not read for it"
 
@@ -238,13 +231,6 @@ def test_an_amp_added_waits_for_unsaved_work_unless_it_is_dropped(models):
     status, body = add(agent, discard=True)
     assert status == 200 and body["discarded"] is True, body
     assert yaml.safe_load(path.read_text())["amp"]["model"] == f"amp/models/{MODEL}"
-
-
-def test_a_rig_run_with_its_panel_is_refused_an_amp(models):
-    agent, world, fake, runner = make_agent(models)
-    world.state["mode"] = "panel"
-    status, body = add(agent)
-    assert (status, body["code"]) == (409, "panel"), body
 
 
 # --------------------------------------------------------------------------- #

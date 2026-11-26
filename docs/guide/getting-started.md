@@ -30,7 +30,7 @@ has had its one-time volume fix (see [The audio interface](audio-interface.md)).
    the list now reads **Start** and the rig's name.
 5. Click **Start …**. It takes about five seconds; the bar under the top of
    the page says **Starting …** meanwhile. When it is done, the bar says
-   **Started …** (hover over it for **headless.**), the top left shows the
+   **Started …**, the top left shows the
    rig's name, and beside it you see **Up** and how long.
 6. Turn the monitors up and play.
 

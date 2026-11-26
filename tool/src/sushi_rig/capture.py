@@ -104,23 +104,21 @@ name>`. The two spellings differ for an ALSA device and coincide for Sushi's
 ports, so only the dry taps failed. One file cannot carry both, and two readers
 that each took one of them is the bug.
 
-So a take still names its ports as the machine file does (`Stem.port`, and
-`Column.source`), and `start` finds each one among the ports its own JACK client
-lists, by the port's JACK name or by any of its JACK aliases (`match_sources`).
-pipewire-jack gives every port aliases, and its own `jack_port_by_name` matches
-them; the PipeWire port alias, which is the machine file's spelling, is expected
-to be one of them. **That is a guess until the rig shows it** (`pw-jack jack_lsp
--A`, the MANIFEST's rig check): the fixture's alias lists are written from it,
-not captured. A name that matches no port, or more than one, is refused with
-every port's name and aliases listed. This match is the second line, not the
-first: `transport` already resolves each machine-file port to the name a JACK
-client sees (`<node.description>:<port.name>`, read off `pw-dump` by
-`patchbay.jack_port_names`) before it plans, which is the path the take of
-2026-11-06 20:38 recorded through. When that read fails, or the resolved name is
-absent, the columns arrive as the machine file wrote them and the alias match
-here is what is left. `doctor`'s record check
-lists JACK's ports the same way (`jack_ports`, under `pw-jack`) and matches with
-the same function, so it fails exactly when this would refuse at that step. The
+So the plan names each port as a JACK client sees it: `transport.jack_port`
+resolves each machine-file port, by its alias, to `<node.description>:<port.name>`,
+read off the live `pw-dump` (`patchbay.jack_port_names`), which is the path
+the take of 2026-11-06 20:38 recorded through. That is a take's one resolver
+(#217): a port the live graph does not have, or has under two nodes, or a
+graph that cannot be read, refuses the take when it is planned. `start` then
+looks for each named port among the ports its own JACK client lists, by JACK
+name only (`match_sources`), and refuses one that is not there, with every
+port's name and aliases listed. It used to match the machine file's alias
+among JACK's aliases too, as a second line for a plan made with no graph to
+read; that resolver could disagree with the first, and pipewire-jack's alias
+lists are still unseen on the rig (`pw-jack jack_lsp -A`, the MANIFEST's rig
+check), so it is gone. `doctor`'s record check lists JACK's ports the same
+way (`jack_ports`, under `pw-jack`) and matches with the same function, so it
+fails exactly when this would refuse at that step. The
 JACK port each column was linked from is in the take's account,
 `capture.engine.sources`.
 
@@ -131,8 +129,8 @@ quantum on the client it captures with.
 
 Three things to know before that run. The process has to be started under
 `pw-jack`, or JACK-Client finds a libjack that talks to no server; `up` starts
-the listener that way. The listener constructs a `CaptureEngine` for a `--rig`
-run, with the ports `transport.rig_stems` plans from the rig and the machine
+the recorder that way. The recorder constructs a `CaptureEngine` for a rig of
+channels, with the ports `transport.rig_stems` plans from the rig and the machine
 file, and says why it has none otherwise (`transport.record_session`). And the
 JACK dependency is the `[capture]` extra; importing this module never
 imports it.
@@ -328,39 +326,34 @@ class JackPort:
 
 
 def match_sources(columns: Sequence[Column], ports: Sequence[JackPort]) -> tuple[list[Column], list[str]]:
-    """Each column with the JACK port its source names, and every column whose
-    source names no port or more than one, said with every port listed.
+    """Each column with the JACK port its source is, and every column whose
+    source is no port JACK lists, said with every port listed.
 
-    A source names a port when it is the port's JACK name or one of its
-    aliases. The take's sources are the machine file's ports, by PipeWire
-    alias, and through `pw-jack` the iD14's guitar input is the port
-    `Audient iD14 Multichannel:capture_AUX0` (seen on the rig, 2026-11-02),
-    whose aliases are expected to hold `Audient iD14:capture_AUX0`: matched
-    here, not predicted from the graph. Every port is listed in a refusal
-    because what fixes it is reading which port carries which alias, and a
-    list cut at eight is how the rig's refusal hid it. Pure: the engine calls
-    it on its client's listing at each start, `doctor` on a listing of its own.
+    A source is matched by its JACK name alone. The plan has already named
+    each port as a JACK client sees it (`transport.jack_port`, off the live
+    graph), the one resolver of a take's ports (#217): this checks that the
+    port it named is the one the engine's client lists, and links that. It
+    used to match a machine-file alias among the ports' JACK aliases too, a
+    second resolver the rig never showed working (pipewire-jack's alias list
+    is still unseen, the MANIFEST's `jack_lsp -A` check), and one that could
+    have found a port the plan did not. Every port is listed in a refusal,
+    with its aliases, because what fixes it is reading which port is which,
+    and a list cut at eight is how the rig's refusal hid it. Pure: the engine
+    calls it on its client's listing at each start, `doctor` on a listing of
+    its own.
     """
     from dataclasses import replace
 
+    by_name = {p.name: p for p in ports}
     problems: list[str] = []
     matched: list[Column] = []
     for column in columns:
-        found = [p for p in ports if column.source == p.name or column.source in p.aliases]
-        if len(found) == 1:
-            matched.append(replace(column, jack=found[0].name))
+        found = by_name.get(column.source)
+        if found is not None:
+            matched.append(replace(column, jack=found.name))
             continue
         matched.append(column)
-        if found:
-            problems.append(
-                f"{column.source!r} (for {column.label}) names more than one JACK port: "
-                + "; ".join(p.shown() for p in found)
-                + ", so which one to record cannot be told"
-            )
-        else:
-            problems.append(
-                f"no JACK port is called or aliased {column.source!r} (for {column.label})"
-            )
+        problems.append(f"no JACK port is called {column.source!r} (for {column.label})")
     if problems:
         problems.append(
             "the output ports JACK lists are: " + "; ".join(p.shown() for p in ports)
@@ -372,8 +365,9 @@ def match_sources(columns: Sequence[Column], ports: Sequence[JackPort]) -> tuple
 def jack_ports(client) -> list[JackPort]:
     """The audio output ports `client` sees, with their aliases: what
     `match_sources` matches against, read the same way by the engine (on its
-    capture client) and by `doctor` (`list_jack_ports`). An alias that cannot
-    be read is treated as none, and the name still matches."""
+    capture client) and by `doctor` (`list_jack_ports`). The aliases are for
+    a refusal to list; a port is matched by its name. An alias that cannot be
+    read is treated as none."""
     found = []
     for port in client.get_ports(is_output=True, is_audio=True):
         try:
@@ -646,8 +640,9 @@ class CaptureEngine:
     then reads the counters, so they are final.
 
     The take's ports are matched at every start against the ports the
-    capture client lists, by name or alias (`match_sources`), since the graph
-    can change between takes (an interface replugged, a profile switched).
+    capture client lists, by JACK name (`match_sources`), since the graph can
+    change between the plan and the start (an interface replugged, a profile
+    switched).
 
     **Not run against a live PipeWire.** See the module docstring.
     """

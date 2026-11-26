@@ -62,13 +62,13 @@ def git(root, *args):
 
 class World:
     """The state file and the compiled configs, for electric_board up
-    headless from its file, with no amp; the compile is the real one."""
+    from its file, with no amp; the compile is the real one."""
 
     def __init__(self, root):
         self.root = root
         self.machine = root / "machines" / "box.yaml"
         self.state = {
-            "supervisor_pid": 10, "pgid": 10, "mode": "headless", "config_name": "electric_board",
+            "supervisor_pid": 10, "pgid": 10, "config_name": "electric_board",
             "config": "/run/rigs/electric_board.json", "rig": "config/rigs/electric_board.yaml",
             "started_at": "2026-11-06T10:00:00+00:00", "amp_requested": False, "amp_model": None,
             "amp_model_requested": None, "children": {"sushi": 11}, "machine": str(self.machine),
@@ -85,9 +85,9 @@ class World:
 
     def described(self):
         return {"verdict": "running", "running": True, "config_name": self.state["config_name"],
-                "mode": "headless", "rig": self.state["rig"], "config": self.state["config"],
+                "rig": self.state["rig"], "config": self.state["config"],
                 "children": {"sushi": {"pid": 11, "alive": True}},
-                "message": "electric_board (headless mode), up 2m"}
+                "message": "electric_board, up 2m"}
 
     def switching(self):
         return Switching(read_state=lambda: copy.deepcopy(self.state), write_state=self.write_state,
@@ -205,7 +205,7 @@ def test_a_revert_point_is_a_save_or_a_commit_and_discard_is_explicit():
 
 
 def test_a_revert_waits_for_unsaved_work_as_an_edit_does():
-    state = {"rig": "config/rigs/electric_board.yaml", "mode": "headless", "started_at": "2026-11-06T10:00:00+00:00"}
+    state = {"rig": "config/rigs/electric_board.yaml", "started_at": "2026-11-06T10:00:00+00:00"}
     change = {"op": "parameter", "args": {"processor": "overdrive", "parameter": "Drive"},
               "at": "2026-11-06T10:05:00+00:00"}
     assert revert_refusal(state, []) is None
@@ -213,7 +213,13 @@ def test_a_revert_waits_for_unsaved_work_as_an_edit_does():
     assert code == "unsaved" and "1 change" in reason and '{"discard": true}' in reason
     saved = {"op": "save", "args": {}, "at": "2026-11-06T10:06:00+00:00"}
     assert revert_refusal(state, [change, saved]) is None, "a save since: nothing to lose"
-    assert revert_refusal({**state, "mode": "panel"}, [])[1] == "panel"
+    # A run an older `up` started with the panel, whose changes the agent
+    # cannot see: refused, and answered with discard, since a revert
+    # restarts it without the panel.
+    reason, code = revert_refusal({**state, "mode": "panel"}, [])
+    assert code == "panel" and "restart it, which stops them" in reason and '{"discard": true}' in reason
+    assert revert_refusal({**state, "children": {"open-stage-control": 1}}, [])[1] == "panel"
+    assert revert_refusal({**state, "mode": "headless"}, []) is None
 
 
 # --------------------------------------------------------------------------- #

@@ -1,16 +1,17 @@
 """The rig agent (#29): one local-first process that owns the rig.
 
-Control reaches the rig from three places today: the panel speaks OSC to Sushi,
-`listen` handles SAVE and reorder, the CLI speaks gRPC. Every v2 feature needs
-one place that owns the rig instead, and this is its first slice: the lifecycle
-and the two things worth reading about a rig, served over HTTP on localhost.
+Control reached the rig from three places once: the Open Stage Control panel
+spoke OSC to Sushi, `listen` handled SAVE and reorder, the CLI spoke gRPC.
+Every v2 feature needed one place that owns the rig instead, and this is it:
+the lifecycle and everything the web UI does, served over HTTP. The panel and
+its listener are retired (#139, #218); the page is the control surface.
 
     GET  /health        the agent and the rig, in one answer: `agent.supervisor` is the rig
                         the agent holds and its children that crashed
     GET  /rig           what is running, if anything (`describe_rig`), and which
                         Program Change selects which rig when the rig's map switches rigs
     GET  /doctor        `doctor`'s checks, as data
-    POST /rig/up        {"config_name" (required), "rig", "headless", "tuner", "amp", "amp_model",
+    POST /rig/up        {"config_name" (required), "rig", "tuner", "amp", "amp_model",
                         "visualiser_tap"}
     POST /rig/down      {"force"}
     POST /rig/restart   {"discard"?} -- refused (409 unsaved) if it would drop changes no save wrote
@@ -109,7 +110,7 @@ changing; they do not take the lifecycle lock, so a `down` can still begin while
 one is in flight and will make it fail as `502`. They are serialised among
 themselves, so the "previous value" each change records is the value it actually
 replaced; a read (`GET /live`) takes no part in that, since it cannot disturb a
-`previous`, so a panel polling it does not make fader writes wait. Each request
+`previous`, so a page polling it does not make fader writes wait. Each request
 makes one connection to Sushi, does its reading and changing on it, and closes
 it. No call to Sushi may take longer than `LIVE_TIMEOUT`: past it the agent
 stops waiting, releases the lock and answers `504`, though it cannot stop the
@@ -154,7 +155,8 @@ not overwrite what was changed meanwhile). A processor the rig no longer has is
 400, as the other routes answer it. A refused entry is not skipped to reach an
 older one: that would undo something the caller did not ask about.
 
-That would wedge the stack, though: the panel's listener moves processors
+That would wedge the stack, though: anything that reaches Sushi outside the
+agent (a gRPC client of its own, Sushi's own MIDI mappings) changes the rig
 outside the agent's lock, so the newest entry can become impossible to undo for
 good. `{"skip": true}` is the way out. It asks the same question of the newest
 entry without sending anything, and if the entry is refused records an
@@ -213,8 +215,7 @@ previous rig back if that `up` fails), said in the answer (`how`, `why`) and
 on stderr. If steps were applied live and that restart's `down` then
 fails, the rig is half-switched -- part of the next rig in Sushi, the
 previous one in the state file -- and that is what /health and the answer
-say, naming both; nothing further is tried. A rig run with its panel restarts: the panel and its SAVE
-listener were started for the rig being left. One `op: "rig"` entry is
+say, naming both; nothing further is tried. One `op: "rig"` entry is
 logged either way, and undo stops at it. Not run against a live Sushi and
 not heard: shown against the fake only, and the time a live switch takes is
 not measured.
@@ -229,18 +230,15 @@ connection (502 and nothing recorded if it does not), and logs it (op
 "amp"); `POST /amp/model` restarts Carla alone in the held group
 (`Supervisor.restart_amp`), never Sushi, and records the model in the state
 file so `restart` keeps it. Undo reaches both, checking each against what was
-last sent, which is all a stale check can compare with here. With the panel
-running, the panel owns the amp and the agent writes nothing (409 `panel`);
-a rig switch sets the amp's parameters live, as steps of its plan, and
+last sent, which is all a stale check can compare with here. A rig switch sets the amp's parameters live, as steps of its plan, and
 restarts only for a model or an amp on one side. Decisions in amp_live.py,
 whose docstring says what is and is not known; wiring in the amp's block at
 the end of `Agent`. Not run against a real Carla.
 
 ## Saving the running rig (S4)
 
-`POST /rig/save` is the web UI's Save: the OSC listener's SAVE (listen.py)
-runs only beside the panel, and the web UI starts rigs headless, so without
-it a sound made from the page could not be kept. It captures the running
+`POST /rig/save` is the web UI's Save: without it a sound made from the page
+could not be kept. It captures the running
 Sushi on the agent's own connection, under the live lock and the amp's, and
 folds the capture into the running rig's file with `save.save_rig`, which
 keeps the file's comments; the amp is what the agent last sent Carla
@@ -248,9 +246,9 @@ keeps the file's comments; the amp is what the agent last sent Carla
 `name` it is "save as": a new `config/rigs/<name>.yaml` beside the running
 rig's file (another rig's name is refused, `taken`), which then becomes the
 running rig, recorded in the state file as a live switch records one, so
-`restart`, the next save, /health and /rigs follow it. Refused in panel mode
-(`panel`: the agent does not know the amp's values then, and the panel has
-its own SAVE) and for a v1 run (`v1`: `sushi-rig save` saves a config).
+`restart`, the next save, /health and /rigs follow it. Refused for a run an
+older `up` started from a v1 config (`v1`: it has no rig file to save into;
+v1 configs are retired, #218, and a restart runs the rig of its name).
 
 The file is written and NOT committed: committing in the player's checkout
 is the player's call. The answer and the log entry (`op: "save"`, with the
@@ -295,8 +293,7 @@ edit and for every other restart; and it, like every switch by restart
 (`switch_steps`), is started against the run's machine file, the one the
 draft was checked against. A new rig that moves other rigs' Program Change
 numbers says so (`programs_moved`). What git says of a written file is read
-after the lifecycle lock is let go, within the write's deadline. With the panel running (`panel`) the agent cannot
-see the panel's changes at all, so it refuses too. Each write takes the
+after the lifecycle lock is let go, within the write's deadline. Each write takes the
 lifecycle lock (`busy`), and the live lock for the running rig, so neither a
 restart nor a live change comes between the check and the write. A remote
 caller is treated as `/rig/save` treats one: no differently. Shown against
@@ -305,9 +302,7 @@ rig made here has been started on the rig.
 
 ## Recording from the web UI (S7)
 
-The panel's record bar is the listener's, and the listener runs only beside
-the panel; the page starts rigs headless. So a headless rig of channels gets
-a recorder of its own, `sushi-rig recorder`, a child of the rig started with
+A rig of channels gets a recorder of its own, `sushi-rig recorder`, a child of the rig started with
 it under `pw-jack` (recorder_process.py says why a child, and why a Unix
 socket), and the agent asks it. `POST /record/start` names the take and
 sends the run's files from the state file as it is now, and the amp as the
@@ -330,8 +325,7 @@ under the record lock. So the name shown is the name used, unless a take
 was made between the two, by another page or another day, and then the
 start gets the next number rather than a name a take already has.
 
-Refused (409, with a `code`): `no_rig`; `panel` (the listener's record bar
-owns recording); `v1` (a take records each channel's own output, which only
+Refused (409, with a `code`): `no_rig`; `v1` (a take records each channel's own output, which only
 a rig of channels has); `recording` and `not_recording`; `busy`;
 `no_recorder` (a run started before the recorder existed, or one whose
 recorder crashed, which /health shows and nothing restarts); `unavailable`
@@ -635,7 +629,7 @@ LOAD_SHARED = 1.5
 # The operation log keeps this many entries, newest last.
 LOG_LIMIT = 500
 
-# "up" the chain is earlier in it, as the panel's move buttons are: the
+# "up" the chain is earlier in it, as the rack's move buttons are: the
 # direction `live.decide_move` takes is negative for earlier, positive for later.
 DIRECTIONS = {"up": -1, "down": 1}
 
@@ -883,18 +877,26 @@ def lifecycle_arguments(
         # 2026-11-01). `down` and `restart` act on a rig that exists; `up`
         # makes one, so it must be told which.
         if "config_name" not in body:
-            raise AgentError("config_name is required: the name of a file in config/")
+            raise AgentError("config_name is required: the name of a rig in config/rigs/")
         name = body["config_name"]
         if not isinstance(name, str) or not CONFIG_NAME.fullmatch(name) or ".." in name:
             raise AgentError(f"invalid config name {name!r}: letters, digits, '_', '-' and '.'")
         args = ["up", name]
-        if flag("rig", False):
-            # A rig of channels, config/rigs/<name>.yaml, compiled at start
-            # with its own patchbay (#30, #96). The same name check applies:
-            # it names a file in config/rigs/, never a path.
-            args.append("--rig")
-        if flag("headless", False):
-            args.append("--headless")
+        # A rig of channels, config/rigs/<name>.yaml, compiled at start with
+        # its own patchbay (#30, #96): the only kind since the v1 configs were
+        # retired (#218). The name names a file in config/rigs/, never a
+        # path. `"rig": true`, which the page and `--rig` sent, is what every
+        # start is; false asks for a v1 config there is no longer any of.
+        if not flag("rig", True):
+            raise AgentError("'rig': false asks for a v1 config, config/<name>.json, and those are retired: "
+                             "every start is a rig of channels, config/rigs/<name>.yaml")
+        if not flag("headless", True):
+            # Every run is headless since the Open Stage Control panel was
+            # retired (#139): `"headless": true`, which the page sent for a
+            # long time, is what every run is, and false asks for a panel
+            # there is no longer any of.
+            raise AgentError("'headless': false asks for the Open Stage Control panel, which is retired: "
+                             "every rig runs headless, and the web page is its control surface")
         if not flag("tuner", True):
             args.append("--no-tuner")
         if not flag("amp", True):
@@ -1174,8 +1176,8 @@ class CantUndo(AgentError):
 
 class UndoHeld(AgentError):
     """A step of the one Undo's history (#209) that can be put back, but not
-    without the page's word: 409 with `code` (`unsaved`, `panel`: live work
-    it would drop, answered with `"discard": true`; `restarts`: the switch
+    without the page's word: 409 with `code` (`unsaved`: live work it would
+    drop, answered with `"discard": true`; `restarts`: the switch
     would restart Sushi, answered with `"restart": true`). The step stays."""
 
     def __init__(self, reason: str, code: str, extra: dict[str, Any] | None = None) -> None:
@@ -1328,8 +1330,8 @@ def check_undo_move(entry: dict[str, Any], current: list[str] | None) -> None:
 def check_undo_state(entry: dict[str, Any], current: Any) -> None:
     """`StaleUndo` unless a parameter or bypass is still as the change left it
     (`current` is what the rig says now), so an undo never overwrites a value
-    changed meanwhile -- by the panel, or by a later change another undo will
-    reach first. A value Sushi would not say (None) cannot be confirmed, and is
+    changed meanwhile -- by Sushi's own MIDI mappings, or by a later change
+    another undo will reach first. A value Sushi would not say (None) cannot be confirmed, and is
     refused rather than assumed."""
     args = entry["args"]
     close = lambda now, left: (isinstance(now, (int, float)) and not isinstance(now, bool)  # noqa: E731
@@ -1826,8 +1828,9 @@ def confirm_chain(chains: dict[str, list[str]], track: str, expected: list[str],
     """`Unconfirmed` (502) unless `track`'s chain, read back after an edit, is
     `expected`. Sushi's acknowledgement says it carried out a command; the
     read-back says the command did what the agent meant, and only that is
-    logged. A chain someone else changed in between (the panel's listener is
-    not behind the agent's lock) fails here too, which is the honest answer."""
+    logged. A chain someone else changed in between (a gRPC client of its
+    own is not behind the agent's lock) fails here too, which is the honest
+    answer."""
     if track not in chains:
         raise Unconfirmed(f"Sushi confirmed it {what}, but the rig read back has no track {track!r}")
     if chains[track] != expected:
@@ -2758,7 +2761,7 @@ class Agent:
     async def live_state(self, request):
         """The whole running rig. Takes no part in `_live_lock`: a read changes
         nothing, so it cannot disturb the `previous` a change records, and a
-        panel polling this must not make fader writes queue behind it. It is
+        page polling this must not make fader writes queue behind it. It is
         refused while a lifecycle command runs, as the changes are. A read made
         mid-change sees the rig before or after it, as any read of a live rig
         does.
@@ -2774,8 +2777,8 @@ class Agent:
         latest change is joined (`events.seq`, which every write, log entry
         and command's end moves), so a request after a change never gets a
         reading from before it; and only while it runs, never once done, so
-        what the agent cannot see (Sushi gone or back, the panel's changes)
-        is read afresh by the next request, as before. A read that fails
+        what the agent cannot see (Sushi gone or back, Sushi's own MIDI
+        mappings' changes) is read afresh by the next request, as before. A read that fails
         fails each request sharing it, as it would have alone."""
         shared = self._live_shared
         if shared is not None and shared[0] == self.events.seq and not shared[1].done():
@@ -3347,8 +3350,8 @@ class Agent:
         The target is chosen under the live lock, from the log as it is then:
         two undos queued together undo two entries, not one twice.
 
-        Skip is the way out of a refusal. The panel's listener moves processors
-        outside the agent's lock, so the newest entry can become impossible to
+        Skip is the way out of a refusal. Anything that reaches Sushi outside
+        the agent changes the rig outside the agent's lock, so the newest entry can become impossible to
         undo for good, and with no way past it every older change would be
         unreachable. `{"skip": true}` asks the same question of the newest
         entry without sending anything, and if it is refused, records an
@@ -5000,7 +5003,7 @@ class Agent:
         `which_controller` (with `controllers` to choose from),
         `rig_problem` (the compiler's refusal, `compile_midi`'s words for a
         control that cannot take that target), and for a change that needs a
-        restart, `unsaved` and `panel` (`rigfile_refusal`). 400 for a body of
+        restart, `unsaved` (`rigfile_refusal`). 400 for a body of
         the wrong shape."""
         from . import rigedit
 
@@ -5855,8 +5858,8 @@ class Agent:
 
     async def amp_route(self, request):
         """The amp as the agent last sent it (amp_live.amp_view): the model,
-        each parameter with its range, unit and whether the panel puts it on
-        a fader, and `known`. 409 `no_rig` or `no_amp`, and `busy` while a
+        each parameter with its range, unit and whether the page's amp card
+        puts it on a fader (`panel`), and `known`. 409 `no_rig` or `no_amp`, and `busy` while a
         lifecycle command runs, as /live is."""
         self._refuse_while_busy()
         try:
@@ -5901,7 +5904,7 @@ class Agent:
 
     def _amp_addable(self, state: dict[str, Any], described: dict[str, Any]) -> bool:
         """Whether the running rig's file has no `amp:` and is one `POST
-        /amp/add` would write: a rig of channels, run headless. A file that
+        /amp/add` would write: a rig of channels. A file that
         will not read is not offered one. Off the loop.
 
         Every page polls GET /amp each second, so the file's answer is kept
@@ -6031,7 +6034,7 @@ class Agent:
         Carla and log it (op "amp", `previous` what was last sent, None if
         nothing was). A value outside the range is clamped, and the answer
         says so (`clamped`). 400 for a name the amp lacks or a value that is
-        not a number; 409 `busy`, `no_rig`, `no_amp`, `panel`; 502
+        not a number; 409 `busy`, `no_rig`, `no_amp`; 502
         `carla_down` or `carla_not_answering`, with nothing recorded."""
         try:
             name, asked, sent = amp_live.parameter_request(await self._json_body(request))
@@ -6053,7 +6056,7 @@ class Agent:
         anything stops: 400 for a model that is not a name in amp/models (a
         path, from this machine only: `MODEL_NAME`), cannot be read, or was
         trained at another rate (`wrong_rate`); 409 `busy`, `no_rig`,
-        `no_amp`, `panel`, and `not_held` for a rig this agent did not start;
+        `no_amp`, and `not_held` for a rig this agent did not start;
         502 `carla_down`. A restart that fails is 502 with `restored`: whether
         the previous model was brought back. The state file records the
         model as `--amp-model` would, so `restart` keeps it (and a live
@@ -6091,7 +6094,7 @@ class Agent:
         Refused before anything is written: 400 for a body of the wrong shape
         or a model that is not one (`model_request`), cannot be read
         (`unreadable`) or was trained at another rate (`wrong_rate`); 409
-        `busy`, `no_rig`, `panel`, `v1` (as a save); `changed` when `rig` is
+        `busy`, `no_rig`, `v1` (as a save); `changed` when `rig` is
         not the running rig; `has_amp` when the file has an `amp:` already
         (a model is changed by POST /amp/model); `rig_problem`,
         `plugins_missing`; and `unsaved` while the rig holds live work no
@@ -6417,11 +6420,8 @@ class Agent:
 
         - 400: a name `save.validate_name` refuses, or a body with anything
           but `name` in it.
-        - 409 `busy`: a lifecycle command is running; `no_rig`; `panel`: the
-          rig runs with its panel, whose faders reach the amp through the
-          listener, so the agent does not know the amp's values, and the
-          panel has its own SAVE; `v1`: a config not started with `--rig`,
-          which the CLI's `sushi-rig save` saves; `taken`: the name is
+        - 409 `busy`: a lifecycle command is running; `no_rig`; `v1`: a run an older `up` started from a v1 config,
+          which has no rig file to save into; `taken`: the name is
           another rig's file; `changed`: the running rig changed while this
           waited; `not_saved`: `save_rig` refused (a capture naming a
           plugin the file lacks and the log did not add, or lacking one the
@@ -6920,7 +6920,7 @@ class Agent:
         place, keeping its comments (`rigfile.write_rig`), so the file
         changes by the channel's own lines and nothing else. Refused as
         `/rigs/new` refuses, nothing written; and for the running rig, as
-        `_rigfile_refusal` says (`unsaved`, `panel`). For the running rig the
+        `_rigfile_refusal` says (`unsaved`). For the running rig the
         answer says it takes effect at the next restart, and why
         (`rigfile.diff`'s reasons, as a switch gives them), and offers it."""
         from . import rigedit
@@ -7237,8 +7237,8 @@ class Agent:
                 "running rig, and it keeps playing as it was: the change takes effect when it restarts "
                 f"({'; '.join(r['code'] + ': ' + r['detail'] for r in why) or 'a restart reloads the file'}). "
                 "A restart stops the sound for a few seconds and brings the rig back from its file. The "
-                f"agent saw no unsaved change since {since or 'it started'}; a change it cannot see (the "
-                "panel, or before the agent started) is not in the file").split()))
+                f"agent saw no unsaved change since {since or 'it started'}; a change it cannot see (Sushi's "
+                "own MIDI mappings, or before the agent started) is not in the file").split()))
         return answer
 
     async def _restart_guard(self) -> tuple[str, str] | None:
@@ -7570,7 +7570,7 @@ class Agent:
         (what git says of the file now) and, for the running rig, the
         switch's `how`, `why` and `seconds`. 404 for a point that is not
         there; 400 for a body of the wrong shape; 409 `busy`, `unsaved`,
-        `panel`, `rig_problem`; 409 `restarts` with `why`, nothing written,
+        `rig_problem`; 409 `restarts` with `why`, nothing written,
         when `"restart": false` was sent and the switch would restart Sushi
         (the page's "Restart?", #209: a revert is otherwise one tap, since the
         one Undo puts it back, but a restart cuts the sound); 409
@@ -7891,7 +7891,7 @@ class Agent:
         file changed since, the bin entry gone, a value moved since from
         elsewhere, a live change too old for the live log, a Save as): the
         step is dropped and `skipped` says which, so the next press goes on.
-        409 `unsaved` or `panel` when a switch back would drop live work no
+        409 `unsaved` when a switch back would drop live work no
         save holds, as a revert is refused (answer with `"discard": true`),
         and `restarts` when it would restart Sushi and `"restart": false`
         was sent (`why` says why; answer with `"restart": true`): the step
@@ -8116,7 +8116,7 @@ class Agent:
         not report cannot be put back live. Off the loop.
 
         Not known before the switch is tried, so not said: a chain moved from
-        outside the agent (the panel), which the plan reads from Sushi, and a
+        outside the agent, which the plan reads from Sushi, and a
         live switch that fails part-way. Both still restart."""
         state = run["state"]
         reasons = [r.as_dict() for r in state_blockers(state)]
@@ -8240,7 +8240,7 @@ class Agent:
         (`saves.keep`) unless a save already keeps it, so Revert… goes back.
 
         Refused before anything is written, each a 409 with its reason:
-        `no_rig`, `panel`, `v1` (as a save); `changed`, when `rig` is given
+        `no_rig`, `v1` (as a save); `changed`, when `rig` is given
         and is not the running rig (the page sends the rig it drew); `no_source` (no such rig in
         config/rigs/, no such channel in it, or a file that will not read);
         `no_channel`; `name` (a name a load makes that the naming rule
@@ -8548,7 +8548,7 @@ class Agent:
         switched, and its Undo plays nothing.
 
         Refused before anything is written, each a 409 with its reason:
-        `no_rig`, `panel`, `v1` (as a save); `changed`, when `rig` is given
+        `no_rig`, `v1` (as a save); `changed`, when `rig` is given
         and is not the running rig; `no_channel`; `last_channel`, the rig's
         only channel (a rig needs one); `midi`, when controls of the MIDI
         map name the channel (`mappings`: each, with why; a blend's too,
@@ -8814,7 +8814,7 @@ class Agent:
         takes already in the folder, so a page can say a name will replace
         one; and `default_name`, what a take started now without a name
         would be called, for the record bar to show: `_default_take_name`)
-        or `unavailable` (`reason`, and a `code`: `no_rig`, `panel`,
+        or `unavailable` (`reason`, and a `code`: `no_rig`,
         `v1`, `no_recorder`, `recorder_timeout`, or none when the recorder
         cannot plan a take, with its reason). `doing` while a start or stop is
         under way. 200 for each of those, since unavailable is a state; a
@@ -8869,7 +8869,7 @@ class Agent:
 
         200 with `name`, `started_at`, `stems`, `said`, `amp` and the log
         `entry` (`op: "record"`, `action: "start"`). Refusals: 409 `busy`;
-        `no_rig`; `panel` (the listener's record bar owns recording); `v1`;
+        `no_rig`; `v1`;
         `recording` (a take is running: stop it first); `no_recorder`;
         `unavailable` (no take can be planned for this run, with why). 502
         `failed` for a take tried that did not start (its folder says why),
@@ -8902,7 +8902,7 @@ class Agent:
         """`POST /record/stop`: finish the running take. 200 with `name`,
         `seconds`, `problems` (`take check`'s, empty when whole), `said` and
         the log `entry` (`op: "record"`, `action: "stop"`); 409
-        `not_recording`, `no_rig`, `panel`, `v1`, `no_recorder`. A stop the
+        `not_recording`, `no_rig`, `v1`, `no_recorder`. A stop the
         recorder could not make cleanly, or could not read back, is 502
         `failed` with the reason (`stopped: true` says the take did stop),
         and is logged: the take is over either way. Not refused while a
@@ -8980,7 +8980,7 @@ class Agent:
         async with self._record_lock:
             state, described, refused = await self._record_state()
             if refused is not None:
-                return None  # no take of the agent's can be running: the listener's, if any, is the panel's
+                return None  # no take of the agent's can be running
             try:
                 return await self._stop_take(origin, state, described, why)
             except web.HTTPException as exc:
@@ -9212,7 +9212,7 @@ def plugin_width(plugin: dict[str, Any], ports: dict[str, Any]) -> str | None:
 def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     """The lifecycle commands that switch the running rig (`state`, the state
     file) to rig `rig` of config/rigs: `down`, then `up --rig` with the
-    headless, tuner, amp and visualiser tap choices `restart` would bring back
+    tuner, amp and visualiser tap choices `restart` would bring back
     (`rig.restart_arguments`), so a switch keeps how the rig is being run.
     Not the amp model override: that was chosen for the rig being left, and
     the next one's own `_amp` says its model. `AgentError` for a rig name that
@@ -9233,8 +9233,7 @@ def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     _, options = restart_arguments(state)
     machine = options.get("machine") or state.get("machine")
     up = lifecycle_arguments("up", {
-        "config_name": rig, "rig": True,
-        "headless": options["headless"], "tuner": options["tuner"],
+        "config_name": rig, "tuner": options["tuner"],
         "amp": options["amp"] or not keeps_no_amp(state, rig),
         "visualiser_tap": options["visualiser_tap"],
     }, machine=_absolute_machine(machine))
@@ -9298,8 +9297,6 @@ class SwitchRefused(AgentError):
 # Why a switch restarts, beyond the configs' differences (`rigfile.RESTART_REASONS`):
 # what only the state file, or the attempt itself, can say.
 SWITCH_RESTART_REASONS = {
-    "panel": "the rig runs with its panel and SAVE listener, which were started for the running "
-             "rig: switched live, SAVE would write the next rig's sound into the previous rig's file",
     "amp_override": "the amp runs a model given with --amp-model or chosen with POST /amp/model, "
                     "which belonged to the rig being left; the next rig's own amp comes with a restart",
     "failed": "a step of the live switch failed, so it restarts into the next rig rather than "
@@ -9309,6 +9306,9 @@ SWITCH_RESTART_REASONS = {
                 "would leave it with none; a restart brings Carla back",
     "amp_unwired": "the next rig has an amp and the running rig's Carla runs with its links not made, so "
                    "the guitar goes in dry; a restart starts the patchbay and Carla again",
+    "panel": "the rig was started with the retired Open Stage Control panel by an older sushi-rig, and its "
+             "panel and SAVE listener still run beside it, started for the running rig: switched live, "
+             "SAVE would write the next rig's sound into the previous rig's file. A restart stops them",
 }
 
 
@@ -9318,16 +9318,16 @@ def switch_request(body: Any) -> str:
     body = _object(body) if body is not None else {}
     if "config_name" not in body:
         raise AgentError("config_name is required: the name of a rig in config/rigs/")
-    return lifecycle_arguments("up", {"config_name": body["config_name"], "rig": True})[1]
+    return lifecycle_arguments("up", {"config_name": body["config_name"]})[1]
 
 
 def state_blockers(state: dict[str, Any]) -> list[rigfile.RestartReason]:
     """What, in how the running rig is being run, rules a live switch out
     (`SWITCH_RESTART_REASONS`). Pure."""
-    from .rig import runs_panel
+    from .rig import started_with_panel
 
     found = []
-    if runs_panel(state):
+    if started_with_panel(state):
         found.append(rigfile.RestartReason("panel", SWITCH_RESTART_REASONS["panel"]))
     if state.get("amp_model_requested") and state.get("amp_requested", True):
         found.append(rigfile.RestartReason(
@@ -9375,8 +9375,9 @@ def amp_blockers(
 
 
 def switching_from(state: dict[str, Any], described: dict[str, Any]) -> str | None:
-    """The name of the rig a switch leaves: a rig of channels by its file,
-    a v1 config by its name."""
+    """The name of the rig a switch leaves: by its file, or, for a state
+    file an older `up` wrote for a v1 config, by the name it ran under,
+    which is the name of the rig of channels a restart brings back."""
     rig = state.get("rig") or described.get("rig")
     if isinstance(rig, str) and rig:
         return Path(rig).stem
@@ -9384,15 +9385,15 @@ def switching_from(state: dict[str, Any], described: dict[str, Any]) -> str | No
 
 
 def fallback_arguments(state: dict[str, Any]) -> list[str] | None:
-    """The `up` that brings the running rig back if a switch's `up` fails:
-    a rig of channels as the MIDI switch has always brought it back
-    (`switch_steps`), a v1 config as `restart` would. Pure."""
-    rig = state.get("rig")
-    if isinstance(rig, str) and rig:
-        return switch_steps(state, Path(rig).stem)[1]
-    name, options = restart_arguments(state)
+    """The `up` that brings the running rig back if a switch's `up` fails,
+    as the MIDI switch has always brought it back (`switch_steps`): the rig
+    of channels it runs from, or for a state file an older `up` wrote for a
+    v1 config, the rig of channels of its name, as `restart` would. Pure."""
+    name = switching_from(state, {})
+    if not name:
+        return None
     try:
-        return lifecycle_arguments("up", {"config_name": name, **options})
+        return switch_steps(state, name)[1]
     except AgentError:
         return None
 
@@ -9689,8 +9690,7 @@ def load_with_amp(body: Any) -> bool:
 def load_refusal(state: dict[str, Any], log: list[dict[str, Any]], doing: str = "loading a channel",
                  again: str = "load") -> tuple[str, str] | None:
     """`(reason, "unsaved")` when loading a channel onto the running rig must
-    wait, or None. Pure. A revert's rule (`revert_refusal`, panel aside,
-    which the route has refused already): the load writes the rig file and
+    wait, or None. Pure. A revert's rule (`revert_refusal`): the load writes the rig file and
     plays it, so live work no save has written would be lost by it. A
     channel's removal (#190) is held by the same rule, in its own words
     (`doing`, and the verb to do it `again` with)."""
@@ -9807,24 +9807,42 @@ def live_edits(log: list[dict[str, Any]], since: Any = None) -> dict[str, Any]:
     return {"added": added, "removed": removed}
 
 
+def panel_run_refusal(state: dict[str, Any], then: str) -> tuple[str, str] | None:
+    """`(reason, "panel")` for a run an older `up` started with the retired
+    Open Stage Control panel (`rig.started_with_panel`), or None. Its panel
+    and SAVE listener still run the old code beside it: the listener's SAVE
+    writes the rig's file and its faders write to Carla, and neither goes
+    through the agent, so a write of the agent's would race one it cannot
+    see. Every write is refused until the rig is restarted, which stops them;
+    `then` says what to do after. Pure."""
+    from .rig import started_with_panel
+
+    if not started_with_panel(state):
+        return None
+    name = Path(str(state.get("rig") or "")).stem or state.get("config_name") or "the rig"
+    return (f"{name} was started with the Open Stage Control panel by a sushi-rig from before the panel was "
+            "retired, and its panel and SAVE listener still run beside it, writing the rig file and the amp "
+            f"where the agent cannot see: restart it, which stops them, then {then}", "panel")
+
+
 def save_refusal(state: dict[str, Any], described: dict[str, Any]) -> tuple[str, str] | None:
     """`(reason, code)` for a running rig the agent will not save, or None.
-    Pure over the state file and `describe_rig`'s answer."""
-    from .rig import runs_panel
-
+    Pure over the state file and `describe_rig`'s answer: no rig, then a
+    run still holding the retired panel (`panel_run_refusal`), then a run
+    an older `up` started from a v1 config."""
     if not described.get("running"):
         return (f"no rig is running to save ({described.get('message') or 'nothing is up'})", "no_rig")
-    if runs_panel(state):
-        return ("the rig runs with its panel, whose faders reach the amp through the listener, so the agent "
-                "does not know what the amp is at and would save a guess: save from the panel's SAVE button, "
-                "or run the rig headless", "panel")
+    panel = panel_run_refusal(state, "save")
+    if panel is not None:
+        return panel
     rig = state.get("rig")
     if not isinstance(rig, str) or not rig:
+        # Only a state file an older `up` wrote, for a v1 config: every run is
+        # a rig of channels since those were retired (#218).
         name = state.get("config_name") or described.get("config_name") or "the running config"
-        return (f"{name} is a v1 config (config/{name}.json), not a rig of channels started with --rig: "
-                "a save from here writes a rig file in place, keeping its comments, and a v1 config is "
-                "saved as a new config/<name>.json from the rig.yaml it was built from, with the old one "
-                f"archived. Save it on the rig with `sushi-rig save <name> --rig <its rig.yaml>`", "v1")
+        return (f"{name} was started from a v1 config, config/{name}.json, by a sushi-rig from before v1 "
+                "configs were retired, and has no rig file to save into: restart it, which runs "
+                f"config/rigs/{name}.yaml, and save that", "v1")
     return None
 
 
@@ -9911,23 +9929,22 @@ def record_request(body: Any) -> str | None:
 def record_refusal(state: dict[str, Any], described: dict[str, Any]) -> tuple[str, str] | None:
     """`(reason, code)` for a run the agent does not record, or None. Pure
     over the state file and `describe_rig`'s answer, in the order a player
-    would fix them: no rig, then the panel (whose listener records, and
-    says why for a v1 run itself), then a v1 run."""
-    from .rig import runs_panel
-
+    would fix them: no rig, then a run still holding the retired panel
+    (`panel_run_refusal`: its listener's record bar would record beside the
+    agent's), then a run an older `up` started from a v1 config, whose state
+    file names no rig file."""
     if not described.get("running"):
         return (f"no rig is running to record ({described.get('message') or 'nothing is up'})", "no_rig")
-    if runs_panel(state):
-        return ("the rig runs with its panel, whose record bar owns recording (the listener records the "
-                "take): record from the panel's RECORD, or start the rig from here (headless) to record "
-                "from here", "panel")
+    panel = panel_run_refusal(state, "record")
+    if panel is not None:
+        return panel
     rig = state.get("rig")
     if not isinstance(rig, str) or not rig:
         name = state.get("config_name") or described.get("config_name") or "the running config"
-        return (f"{name} is a v1 config, not a rig of channels started with --rig: a take records each "
-                "channel's own output beside its dry input, and only a rig of channels gives each channel "
-                "an output of its own (a v1 rig sums its tracks into the monitor bus). Start it as a rig of "
-                "channels (up --rig) to record", "v1")
+        return (f"{name} was started from a v1 config by a sushi-rig from before v1 configs were retired: a "
+                "take records each channel's own output beside its dry input, and only a rig of channels "
+                f"gives each channel an output of its own. Restart it, which runs config/rigs/{name}.yaml, "
+                "to record", "v1")
     return None
 
 
@@ -10042,8 +10059,9 @@ def unsaved_entries(log: list[dict[str, Any]], since: Any = None) -> list[dict[s
     Counted, not netted out: a knob turned and turned back is two entries,
     though the rig is as the file has it. That errs on the side of keeping
     work: the refusal it causes is answered by a Save, which writes what is
-    playing, and nothing is lost by it. And only what the agent saw: the
-    panel's changes and anything before the agent started are not here."""
+    playing, and nothing is lost by it. And only what the agent saw: what
+    Sushi's own MIDI mappings change and anything before the agent started
+    are not here."""
     start, _ = since_baseline(log, since)
     return [entry for entry in log[start:] if entry.get("op") not in _NOT_LIVE_CHANGES]
 
@@ -10062,16 +10080,13 @@ def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[s
     Refused until it is saved, rather than written with a warning: a refusal
     costs one tap on Save, and a warning would be read once and the work
     lost at the restart the same answer offers. `unsaved`, naming
-    the newest change. With the panel running (`panel`), the agent cannot
-    see the panel's changes at all, so whether there is work to lose cannot
-    be known here."""
-    from .rig import runs_panel
-
+    the newest change. For a run still holding the retired panel (`panel`),
+    the agent cannot see the panel's changes, nor stop its SAVE writing the
+    file, so it refuses until the rig is restarted."""
+    panel = panel_run_refusal(state, "edit it")
+    if panel is not None:
+        return panel
     name = Path(str(state.get("rig") or "the rig")).stem
-    if runs_panel(state):
-        return (f"{name} runs with its panel, whose changes the agent cannot see, so it cannot tell whether "
-                "the rig holds unsaved work that a restart into the edited file would drop: save from the "
-                "panel's SAVE and stop the rig, or run it headless, then edit it", "panel")
     unsaved = unsaved_entries(log, since=state.get("started_at"))
     if unsaved:
         newest = unsaved[-1]
@@ -10315,17 +10330,11 @@ def restart_refusal(
     up (the restart says so itself); Sushi gone (`describe_rig` says its
     process is not alive), where the work went with it and a restart is the
     recovery principle 9 asks for, which must not wait on a Save that cannot
-    capture anything; and a rig run with its panel, whose changes the agent
-    cannot see, so refusing would refuse every panel run's restart for
-    nothing it knows of. Counted, not netted out, as `unsaved_entries` says."""
-    from .rig import runs_panel
-
+    capture anything. Counted, not netted out, as `unsaved_entries` says."""
     if not described.get("running"):
         return None
     sushi = (described.get("children") or {}).get("sushi")
     if isinstance(sushi, dict) and sushi.get("alive") is False:
-        return None
-    if runs_panel(state):
         return None
     unsaved = unsaved_entries(log, since=state.get("started_at"))
     if not unsaved:
@@ -10333,9 +10342,14 @@ def restart_refusal(
     name = state.get("config_name") or described.get("config_name") or "the rig"
     newest = unsaved[-1]
     count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
+    # A run still holding the retired panel is not saved from here
+    # (`panel_run_refusal`), and the restart is what stops the panel, so
+    # "Save first" would send the player to a refusal.
+    first = ("A run started with the retired panel is not saved from here, so restart with discard"
+             if (panel_run_refusal(state, "save") is not None) else "Save first, or restart with discard")
     return (f"{name} has {count} made through the agent and not saved (the newest: "
             f"{describe_change(newest)}, at {newest.get('at')}), and a restart reloads its file without "
-            "them: Save first, or restart with discard (sushi-rig restart --discard, or "
+            f"them: {first} (sushi-rig restart --discard, or "
             '{"discard": true}) to drop them', "unsaved")
 
 
@@ -10368,16 +10382,15 @@ def revert_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[st
     """`(reason, code)` when a revert of the running rig must wait, or None.
     Pure over the state file and the log. The rule an edit of its file has
     (`rigfile_refusal`): a revert replaces what is playing with the file, so
-    unsaved live work would be lost by it (`unsaved`), and with the panel
-    running the agent cannot see the panel's (`panel`). Worded for a revert,
-    and answered with `{"discard": true}` rather than a restart."""
-    from .rig import runs_panel
-
+    unsaved live work would be lost by it (`unsaved`), and for a run still
+    holding the retired panel the agent cannot see the panel's changes
+    (`panel`). Worded for a revert, and answered with `{"discard": true}`
+    rather than a restart: a revert restarts the rig, which stops the panel."""
+    panel = panel_run_refusal(state, "revert it")
+    if panel is not None:
+        return (panel[0] + ', or revert with discard ({"discard": true}), which restarts it from the file and '
+                "drops whatever the panel changed", "panel")
     name = Path(str(state.get("rig") or "the rig")).stem
-    if runs_panel(state):
-        return (f"{name} runs with its panel, whose changes the agent cannot see, so it cannot tell whether "
-                "a revert would drop unsaved work: save from the panel's SAVE first, or revert with discard "
-                '({"discard": true}) to drop whatever it holds', "panel")
     unsaved = unsaved_entries(log, since=state.get("started_at"))
     if not unsaved:
         return None

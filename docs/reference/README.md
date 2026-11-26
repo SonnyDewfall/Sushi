@@ -17,7 +17,7 @@ The detail, for looking things up. To play the rig, start with the
 | [Environment](environment.md) | what the machine needs, setting up from scratch, `doctor` and the other preflight checks |
 | [Dependencies](dependencies.md) | every outside project the rig runs on or is built with: the version used, where it is pinned, how to check upstream for a newer one, and the faults worked around |
 | [Tests and CI](testing.md) | running the suites, the rule about `config/rigs/` and the frozen fixtures, the two workflows |
-| [The v1 workflow](v1-workflow.md) | the older loop: a hand-written rig.yaml, the Open Stage Control panel and its SAVE |
+| [The v1 workflow](v1-workflow.md) | retired: the v1 configs and the Open Stage Control panel, and what each part, and each of the panel's jobs, is now |
 | [Repository layout](repository-layout.md) | what each folder is for |
 
 The dated record of what was done and found is [MANIFEST.md](../../MANIFEST.md).

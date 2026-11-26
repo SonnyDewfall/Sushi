@@ -65,14 +65,14 @@ def root(tmp_path):
 
 
 class World:
-    """The state file and the compiled configs of rig `rig` up headless
+    """The state file and the compiled configs of rig `rig` up
     from its file, compiled for real; with no amp unless `amp`."""
 
     def __init__(self, root, rig="guitar_vocal", amp=False):
         self.root = root
         self.machine = root / MACHINE
         self.state = {
-            "supervisor_pid": 10, "pgid": 10, "mode": "headless", "config_name": rig,
+            "supervisor_pid": 10, "pgid": 10, "config_name": rig,
             "config": f"/run/rigs/{rig}.json", "rig": f"config/rigs/{rig}.yaml",
             "started_at": "2026-11-06T10:00:00+00:00", "amp_requested": amp,
             "amp_model": None, "amp_model_requested": None, "children": {"sushi": 11},
@@ -96,9 +96,9 @@ class World:
 
     def described(self):
         return {"verdict": "running", "running": True, "config_name": self.state["config_name"],
-                "mode": self.state["mode"], "rig": self.state["rig"], "config": self.state["config"],
+                "rig": self.state["rig"], "config": self.state["config"],
                 "children": {"sushi": {"pid": 11, "alive": True}},
-                "message": f"{self.state['config_name']} (headless mode), up 2m"}
+                "message": f"{self.state['config_name']}, up 2m"}
 
     def switching(self):
         return Switching(read_state=lambda: copy.deepcopy(self.state), write_state=self.write_state,
@@ -266,7 +266,7 @@ def test_a_loads_undo_waits_for_unsaved_work_as_the_load_did(root):
     status, body = call(agent, "POST", "/live/parameter",
                         json={"processor": "guitar_overdrive", "parameter": turned, "value": 0.25})
     assert status == 200, body
-    fake.values["guitar_overdrive"][turned] = 0.75  # moved since from the panel: not undoable
+    fake.values["guitar_overdrive"][turned] = 0.75  # moved since from outside the agent: not undoable
     status, body = call(agent, "POST", "/undo", json={})
     assert status == 409 and body["code"] == "cant_undo", body
     status, body = call(agent, "POST", "/undo", json={})
@@ -603,12 +603,8 @@ def test_a_channel_of_another_width_leaves_the_target_its_own(root):
     assert yaml.safe_load(rig_file(root, "guitar_vocal").read_text())["channels"][0]["width"] == "mono"
 
 
-def test_a_load_refuses_a_rig_that_is_not_one_of_channels_and_a_busy_agent(root):
+def test_a_load_refuses_a_busy_agent(root):
     agent, world, fake, _ = make_agent(root)
-    world.state["mode"] = "panel"
-    status, body = load(agent, "guitar", "guitar_vocal", "vocal")
-    assert status == 409 and body["code"] == "panel", body
-    world.state["mode"] = "headless"
 
     async def held():
         async with agent._lock:

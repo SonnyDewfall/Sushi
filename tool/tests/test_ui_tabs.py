@@ -1019,7 +1019,7 @@ def test_a_v1_run_has_a_tab_per_track_and_no_master(browser):
         expect(shown(p)).to_have_text(["overdrive", "octave", "delay"])
         expect(unit(p, "octave")).to_have_class(MINIMISED)
         expect(p.locator(".amp-card")).to_contain_text("no amp")  # no file to place it by: the first track's tab
-        expect(p.locator(".inputs-why")).to_contain_text("guitar_vocal is a v1 config")
+        expect(p.locator(".inputs-why")).to_have_attribute("title", re.compile("^guitar_vocal was started from a v1 config"))
         expect(p.locator("nav.channels .strip")).to_have_count(0)
         page.close()
 
@@ -1801,3 +1801,75 @@ def test_a_profile_arriving_under_a_drag_waits_for_the_drag_to_end(browser, serv
     expect(unit(p, "overdrive")).to_contain_text("GxTubeScreamer · profile")
     expect(slider(p, "overdrive Drive")).to_have_attribute("aria-valuetext", "0.82")
     page.close()
+
+
+def all_page(browser, served):
+    """The rack with the GxTS9 profile as shipped but for its Level, hidden.
+    The shipped profile hides only BYPASS, the plugin's own bypass, which a
+    card's All leaves out (`R.ownSwitch`), so as shipped the overdrive has no
+    All to press: the profiles the page fetches are changed on the way, so
+    the test needs no profile of its own on disk."""
+    import json
+
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+
+    def hide_level(route):
+        answer = route.fetch()
+        body = answer.json()
+        for profile in body["profiles"].values():
+            for entry in profile["parameters"]:
+                if entry["name"] == "Level" and entry.get("symbol") == "fslider0_":
+                    entry["visibility"] = "hidden"
+        route.fulfill(response=answer, body=json.dumps(body))
+
+    page.route("**/profiles", hide_level)
+    page.goto(served.url + "/#rack")
+    page.wait_for_selector(".unit")
+    page.wait_for_selector(".strip .volume")
+    settled(page)
+    return page, errors
+
+
+def test_a_cards_all_shows_what_its_profile_hides_and_hides_it_again(browser, served):
+    """#139: the overdrive's profile hides its Level here (`all_page`). The
+    open card's All shows it, drawn plainly under "Hidden by the profile",
+    and takes it away again; locked too, since it changes what is shown and
+    not the rig. Its BYPASS, which the profile hides too, is the plugin's own
+    bypass and is never shown (review of #139): Sushi's is the one to use."""
+    rack, errors = all_page(browser, served)
+    try:
+        lock = rack.locator("button.lock")
+        expect(lock).to_have_text("Locked")
+        name_of(rack, "overdrive").click()
+        card = unit(rack, "overdrive")
+        toggle = card.get_by_role("button", name="All", exact=True)
+        expect(toggle).to_have_attribute("aria-pressed", "false")
+        expect(card.get_by_text("Hidden by the profile")).to_have_count(0)
+        expect(card.get_by_role("slider", name="overdrive Level")).to_have_count(0)
+        toggle.click()
+        toggle = card.get_by_role("button", name="All", exact=True)
+        expect(toggle).to_have_attribute("aria-pressed", "true")
+        expect(card.get_by_text("Hidden by the profile")).to_be_visible()
+        expect(card.get_by_role("slider", name="overdrive Level")).to_be_visible()
+        expect(card.get_by_role("button", name="overdrive BYPASS")).to_have_count(0)
+        lock.click()
+        lock.click()
+        expect(lock).to_have_text("Lock off · editing")
+        toggle = card.get_by_role("button", name="All", exact=True)
+        toggle.click()
+        expect(card.get_by_role("button", name="All", exact=True)).to_have_attribute("aria-pressed", "false")
+        expect(card.get_by_role("slider", name="overdrive Level")).to_have_count(0)
+        expect(unit(rack, "octave").get_by_role("button", name="All", exact=True)).to_have_count(0)
+    finally:
+        rack.close()
+    assert errors == []
+
+
+def test_as_shipped_the_overdrive_has_no_all_since_its_profile_hides_only_its_own_bypass(rack):
+    name_of(rack, "overdrive").click()
+    card = unit(rack, "overdrive")
+    expect(card.get_by_text("Drive", exact=True).first).to_be_visible()
+    expect(card.locator(".row-act.all")).to_have_count(0)
+    expect(card.get_by_role("button", name="overdrive BYPASS")).to_have_count(0)

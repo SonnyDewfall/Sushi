@@ -27,6 +27,9 @@ from sushi_rig import doctor
 from sushi_rig.doctor import FAULT, OK, UNCHECKED, Check, Environment
 from sushi_rig.machine import MachineSpec
 from sushi_rig.patchbay import nodes_by_id
+# The real reader of the live graph, bound before conftest stands it in for
+# every test, for the one test of what doctor says when it cannot read.
+from sushi_rig.transport import _live_jack_names as read_live_jack_names
 
 ROOT = Path(__file__).parent.parent.parent
 CAPTURED = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
@@ -430,6 +433,7 @@ def test_an_appimage_is_recognised_by_its_magic_not_its_name(tmp_path):
     assert doctor._is_appimage(extracted) is False
 
 
+@pytest.mark.committed_rigs  # doctor reads every rig of config/rigs/ (#218)
 def test_gathering_the_environment_runs_and_answers_in_the_right_types():
     """The effect, exercised. What it finds depends on the machine, so only the
     shape is asserted — the decisions above are where the meaning is tested."""
@@ -450,6 +454,7 @@ def test_the_captured_fixture_is_still_a_dump_of_nodes_and_ports():
     assert {"sushi", "Carla", "NAM"} <= names
 
 
+@pytest.mark.committed_rigs  # doctor reads every rig of config/rigs/ (#218)
 def test_the_command_runs_end_to_end_and_names_every_check(capsys):
     """The anti-rot guarantee #48 asks for. What it *finds* depends on the
     machine — this container has no PipeWire, the rig machine has all of it — so
@@ -486,6 +491,7 @@ def test_the_command_runs_end_to_end_and_names_every_check(capsys):
     assert len(verdicts) == 1, f"expected one patchbay verdict, got {verdicts}"
 
 
+@pytest.mark.committed_rigs  # doctor reads every rig of config/rigs/ (#218)
 def test_a_pw_dump_that_is_not_json_does_not_abort_the_command(monkeypatch, capsys):
     """`pw-dump` exiting 0 with output that is not JSON raises from the *parse*,
     not the read. That escaped as a traceback, while the identical exception
@@ -529,10 +535,11 @@ def test_a_fault_never_rounds_itself_up_past_the_threshold():
     assert "1.0" not in short.message
 
 
-def test_the_stem_count_comes_from_the_largest_rig_not_a_guess():
+def test_the_stem_count_comes_from_the_largest_rig_not_a_guess(frozen_root):
     """Rigs will have one, two or more channels. guitar_vocal has two, each
-    recorded dry and processed."""
-    assert doctor._largest_rig(ROOT) == (4, "guitar_vocal")
+    recorded dry and processed. Read off the rigs of channels, the frozen
+    ones here (rig_fixtures.py), since the v1 configs were retired (#218)."""
+    assert doctor._largest_rig(frozen_root) == (4, "guitar_vocal")
     eight = doctor.check_disk(environment(take_stems=8, takes_free_bytes=ONE_HOUR))
     assert eight.state == FAULT, "twice the stems, half the time"
     assert "8-stem take of guitar_vocal" in eight.message
@@ -559,6 +566,7 @@ def test_a_takes_folder_linked_to_an_unplugged_drive_is_a_fault(tmp_path):
     assert check.state == FAULT and "connect the drive" in check.remedy
 
 
+@pytest.mark.committed_rigs
 def test_the_committed_amp_models_are_trained_at_the_rigs_rate():
     """Real files: both Neve models declare 48 kHz. A superset, so committing a
     third good model does not break the test of the property it shares."""
@@ -568,17 +576,21 @@ def test_the_committed_amp_models_are_trained_at_the_rigs_rate():
 
 
 def test_a_model_a_config_plays_is_checked_wherever_it_lives(tmp_path):
-    """A config's _amp.model can point outside amp/models. Checking the library
-    alone passed a config whose model was never looked at."""
+    """A rig's amp model can point outside amp/models. Checking the library
+    alone passed a config whose model was never looked at. A rig of channels,
+    since the v1 configs, where this was first found, were retired (#218)."""
     import json
 
-    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "rigs").mkdir(parents=True)
     elsewhere = tmp_path / "elsewhere" / "vintage.nam"
     elsewhere.parent.mkdir()
     elsewhere.write_text(json.dumps({"architecture": "WaveNet", "sample_rate": 44100}))
-    (tmp_path / "config" / "tone.json").write_text(json.dumps(
-        {"tracks": [], "_amp": {"plugin": "nam", "model": str(elsewhere)}}
-    ))
+    (tmp_path / "config" / "rigs" / "tone.yaml").write_text(
+        "kind: rig\nschema_version: 1\nname: tone\n"
+        f"amp: {{plugin: nam, model: {elsewhere}}}\n"
+        "channels:\n- {name: guitar, input: guitar-in, width: mono, chain: []}\n"
+        "master: {output: monitor-out, chain: []}\n"
+    )
     models = doctor._models(tmp_path)
     assert models == (doctor.ModelInfo("vintage.nam", 44100, "", ("tone",)),)
     check = doctor.check_models(environment(models=models))
@@ -625,16 +637,20 @@ def test_no_models_at_all_cannot_mismatch():
 
 
 @pytest.mark.parametrize("body", [
-    {"tracks": None}, {"tracks": 5}, {"tracks": {"a": 1}}, ["tracks"], None,
+    "kind: rig\nchannels: null\n", "kind: rig\nchannels: 5\n", "kind: rig\nchannels: {a: 1}\n",
+    "[channels]\n", "", "{not yaml\n",
 ])
 def test_one_odd_config_does_not_take_the_doctor_down(tmp_path, body):
-    """`"tracks": null` parses, and raised TypeError out of the comprehension
-    with nothing above `gather_environment` to catch it."""
-    import json
-
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "odd.json").write_text(json.dumps(body))
-    (tmp_path / "config" / "tone.json").write_text(json.dumps({"tracks": [{}, {}, {}]}))
+    """`"tracks": null` parsed, and raised TypeError out of the comprehension
+    with nothing above `gather_environment` to catch it. The rigs of channels
+    now (the v1 configs were retired, #218): an odd rig file is passed over."""
+    (tmp_path / "config" / "rigs").mkdir(parents=True)
+    (tmp_path / "config" / "rigs" / "odd.yaml").write_text(body)
+    channel = "- {{name: {}, input: guitar-in, width: mono, chain: []}}\n"
+    (tmp_path / "config" / "rigs" / "tone.yaml").write_text(
+        "kind: rig\nschema_version: 1\nname: tone\nchannels:\n"
+        + "".join(channel.format(n) for n in ("a", "b", "c"))
+        + "master: {output: monitor-out, chain: []}\n")
     assert doctor._largest_rig(tmp_path) == (3 * doctor.STEMS_PER_CHANNEL, "tone")
     assert doctor._models(tmp_path) == ()
 
@@ -647,14 +663,26 @@ GUITAR_VOCAL = frozen("guitar_vocal")  # the rig as these tests know it (rig_fix
 THIS_MACHINE = FROZEN_MACHINE
 
 
+# The rig's own `pw-dump`, which the plan names each port off as JACK does
+# (`transport.jack_port`, the one resolver, #217).
+CAPTURED_GRAPH = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
+
+
+def captured_names():
+    from sushi_rig.patchbay import jack_port_names
+
+    return jack_port_names(CAPTURED_GRAPH, "out")
+
+
 def planned_stems():
-    """guitar_vocal's take on this machine, planned as the recorder plans it."""
+    """guitar_vocal's take on this machine, planned as the recorder plans it,
+    over the rig's captured graph."""
     from sushi_rig.machine import MachineSpec
     from sushi_rig.rigfile import compile_rig, emit_compiled, load_rig
     from sushi_rig.transport import rig_stems
 
     rig = load_rig(GUITAR_VOCAL)
-    return rig_stems(rig, MachineSpec.load(THIS_MACHINE), emit_compiled(rig, *compile_rig(rig)))
+    return rig_stems(rig, MachineSpec.load(THIS_MACHINE), emit_compiled(rig, *compile_rig(rig)), captured_names())
 
 
 def planned_columns():
@@ -675,17 +703,19 @@ def jack_listing(drop=(), extra=None):
     return [JackPort(name, tuple(aliases)) for name, aliases in ports.items()]
 
 
-def test_the_recorders_ports_are_found_among_jacks_and_say_which_by_alias():
+def test_the_recorders_ports_are_found_among_jacks_by_the_names_the_plan_gives():
+    """The plan names each port as JACK does (#217), so every one is found by
+    its name: no alias is looked up."""
+    assert "Audient iD14 Multichannel:capture_AUX0" in {c.source for c in planned_columns()}
     check = doctor.record_ports_check(planned_columns(), jack_listing())
     assert check.state == OK, check.message
     assert "8 column(s)" in check.message
-    assert "Audient iD14:capture_AUX0 is Audient iD14 Multichannel:capture_AUX0" in check.message
 
 
 def test_a_dry_tap_jack_has_no_port_for_is_a_fault_naming_it_and_every_port():
     check = doctor.record_ports_check(planned_columns(), jack_listing(drop={"Audient iD14 Multichannel:capture_AUX0"}))
     assert check.state == FAULT
-    assert "no JACK port is called or aliased 'Audient iD14:capture_AUX0' (for guitar-dry.wav)" in check.message
+    assert "no JACK port is called 'Audient iD14 Multichannel:capture_AUX0' (for guitar-dry.wav)" in check.message
     assert "Audient iD14 Multichannel:capture_AUX1 (aliases:" in check.message
     assert "jack_lsp -A" in check.remedy
 
@@ -715,7 +745,11 @@ def test_doctor_fails_exactly_when_the_engine_would_refuse_the_take(graph, monke
     except capture.CaptureError:
         refused = True
     assert (doctor.record_ports_check(planned_columns(), jack.listed()).state == FAULT) is refused
-    assert refused is (graph != "the rig's")
+    # A second profile carrying the alias is no refusal at this step any more:
+    # the plan named the port as JACK does, and that port is there. Two live
+    # nodes answering to one alias are the plan's to refuse, off the graph
+    # (`transport.jack_port`, #217; test_record_session.py).
+    assert refused is (graph in ("guitar gone", "sushi gone"))
 
 
 def running_rig(tmp_path, **state):
@@ -731,15 +765,18 @@ def running_rig(tmp_path, **state):
     return recorded, {"running": True, "children": {}}
 
 
-def test_the_record_check_plans_the_running_rig_from_its_state_file(tmp_path):
+def test_the_record_check_plans_the_running_rig_from_its_state_file(tmp_path, monkeypatch):
+    from sushi_rig import transport
+
+    monkeypatch.setattr(transport, "_live_jack_names", captured_names)
     state, described = running_rig(tmp_path)
     check = doctor.record_check(ROOT, described, state, list_ports=jack_listing)
-    assert check.state == OK and "Audient iD14 Multichannel:capture_AUX0" in check.message
+    assert check.state == OK and "8 column(s)" in check.message, check.message
 
 
 @pytest.mark.parametrize("case, said", [
     ("down", "no rig is running"),
-    ("v1", "is a v1 config"),
+    ("v1", "was started from a v1 config"),
 ])
 def test_the_record_check_is_unchecked_where_there_is_nothing_to_ask(tmp_path, case, said):
     state, described = running_rig(tmp_path)
@@ -765,6 +802,27 @@ def test_where_no_jack_client_can_be_opened_the_record_check_needs_jack_not_gree
     check = doctor.record_check(ROOT, described, state, list_ports=unreachable)
     assert check.state == UNCHECKED
     assert check.message.startswith("needs JACK:") and "pw-jack is not installed" in check.message
+
+
+def test_where_the_live_graph_cannot_be_read_the_record_check_needs_pipewire_not_a_fault(tmp_path, monkeypatch):
+    """The take's ports are named off `pw-dump` (#217), which raises when it
+    cannot run. That is a check doctor could not make here, as for JACK
+    above, not a fault of the rig's: UNCHECKED, saying why, and JACK is not
+    asked, since there is no plan to look for."""
+    from sushi_rig import patchbay, transport
+
+    def no_dump(*a, **k):
+        raise patchbay.PatchbayError(["pw-dump is not installed"])
+
+    def never():
+        raise AssertionError("JACK is not asked when no take could be planned")
+
+    monkeypatch.setattr(transport, "_live_jack_names", read_live_jack_names)
+    monkeypatch.setattr(patchbay, "read_pw_dump", no_dump)
+    state, described = running_rig(tmp_path)
+    check = doctor.record_check(ROOT, described, state, list_ports=never)
+    assert check.state == UNCHECKED, check
+    assert check.message.startswith("needs PipeWire:") and "pw-dump is not installed" in check.message
 
 
 def test_the_jack_listing_runs_under_pw_jack_and_says_why_when_it_cannot(monkeypatch):
@@ -812,6 +870,7 @@ def test_an_unexpected_error_planning_the_take_is_that_checks_fault_not_doctors_
     assert check.state == FAULT and "failed unexpectedly: KeyError: 'tracks'" in check.message
 
 
+@pytest.mark.committed_rigs  # doctor reads every rig of config/rigs/ (#218)
 def test_run_reports_the_recorders_ports(tmp_path, monkeypatch):
     """The whole examination, with the graph, the rig and JACK stood in: the
     check is there, between the patchbay and the machine around it."""
@@ -1113,6 +1172,7 @@ def test_whether_realtime_can_be_had_is_read_from_the_agents_limit_and_rtkit(mon
     assert doctor._realtime_grant(99) == (True, "rtkit-daemon is running")
 
 
+@pytest.mark.committed_rigs  # doctor reads every rig of config/rigs/ (#218)
 def test_the_examination_reads_the_agents_tap_and_its_threads_by_pid(tmp_path, monkeypatch):
     from sushi_rig import patchbay, rig as rig_module, state as state_module
 

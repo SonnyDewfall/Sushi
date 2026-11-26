@@ -163,7 +163,7 @@ def test_several_undos_go_back_newest_first(served):
 def test_a_value_changed_elsewhere_since_cannot_be_undone_and_the_next_press_goes_on(served):
     call(served, "POST", "/live/bypass", {"processor": "delay", "bypassed": True})
     call(served, "POST", "/live/parameter", {"processor": "overdrive", "parameter": "Drive", "value": 0.9})
-    served.rig.info["overdrive"]["Drive"]["value"] = 0.1  # the panel, which the agent does not see
+    served.rig.info["overdrive"]["Drive"]["value"] = 0.1  # a MIDI mapping Sushi serves, which the agent does not see
     status, body = undo(served)
     assert status == 409 and body["code"] == "cant_undo"
     assert body["skipped"]["label"] == "overdrive Drive"
@@ -473,7 +473,7 @@ def test_undoing_a_revert_has_the_pedals_follow_the_rig_as_the_revert_does(serve
 
 
 def test_undo_across_a_switch_waits_for_unsaved_work_as_a_revert_does(served):
-    """Review 2: a live change that could not be undone (moved from the panel)
+    """Review 2: a live change that could not be undone (moved from outside the agent)
     is dropped from the history but still plays. The revert's Undo, which
     switches, would drop it: refused `unsaved`, the step kept, until the
     page says to drop it (`discard`)."""

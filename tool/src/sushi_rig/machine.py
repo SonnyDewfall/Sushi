@@ -464,7 +464,7 @@ def rig_controller(rig: Any, machine: "MachineSpec | Path | None" = None) -> dic
     """The controller `rig`'s MIDI map names, as this machine describes it, or
     None for a rig with no map; `MachineError` when the machine cannot say.
 
-    The one place `up --rig`, `emit` and the listener's save check resolve it,
+    The one place `up`, `emit` and a switch resolve it,
     so they refuse in the same words and cannot drift apart on the default.
     `machine` is a machine already loaded and validated, which is used as it
     is; or the path of a machine file to read; or None for this host's.

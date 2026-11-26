@@ -25,7 +25,9 @@ from sushi_rig.probes import (
 )
 from sushi_rig.spec import RigSpec
 
-SOURCES = checkout_root() / "config" / "src"
+# The rig.yaml sources of tracks, frozen (rig_fixtures.py): config/src/ was
+# retired to config/retired/v1/src/ with the v1 configs (#218).
+SOURCES = FROZEN_SRC
 RUNNING = "the running tracks: each probe through Sushi plays a copy of the chain"
 
 

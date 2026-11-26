@@ -34,8 +34,8 @@ DEFAULT_PORT = 8029
 PROBE_TIMEOUT = 2.0
 
 # How long a lifecycle request may take. `up` is bounded step by step (Sushi's
-# gRPC 15 s, qpwgraph's three attempts, the patchbay check's 10 s, the panel's
-# 60 s, the amp's 5 s) and `down` by its escalation; this is well past their
+# gRPC 15 s, qpwgraph's three attempts, the patchbay check's 10 s, the amp's
+# 5 s) and `down` by its escalation; this is well past their
 # sum, so it fires only on an agent that has stopped answering.
 REQUEST_TIMEOUT = 300.0
 
@@ -179,7 +179,7 @@ def lifecycle_request(command: str, args: Any) -> tuple[str, dict[str, Any]]:
     agent is the `up --no-amp` the CLI would run itself."""
     if command == "up":
         body: dict[str, Any] = {
-            "config_name": args.config_name, "rig": args.rig, "headless": args.headless,
+            "config_name": args.config_name,
             "tuner": args.tuner, "amp": args.amp,
         }
         if args.amp_model is not None:

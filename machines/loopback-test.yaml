@@ -9,7 +9,7 @@
 # and the interface's inputs are linked to nothing but the test's recorder.
 #
 #     python3 -I tool/spikes/live_rig/stereo_check.py tones &
-#     sushi-rig up --rig guitar_vocal --machine machines/loopback-test.yaml --direct --headless --no-tuner --no-amp
+#     sushi-rig up --rig guitar_vocal --machine machines/loopback-test.yaml --direct --no-tuner --no-amp
 #     python3 -I tool/spikes/live_rig/stereo_check.py rig --inputs guitar,vocal --label "what this run is"
 #
 # `--inputs` names the inputs the rig has (`guitar` alone for a one-channel

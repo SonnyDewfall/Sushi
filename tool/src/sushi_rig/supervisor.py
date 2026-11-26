@@ -117,7 +117,7 @@ HOLDER: tuple[str, ...] = (
 # How long one lifecycle step (`up`, `down` or `restart`) may take before the
 # agent stops waiting and answers 504. Each part of a start is bounded on its
 # own (Sushi's gRPC 15 s, qpwgraph's attempts, the patchbay check 10 s, the
-# panel 60 s, the amp 5 s), but what runs before them -- compiling the rig,
+# amp 5 s), but what runs before them -- compiling the rig,
 # reading the PipeWire graph, preparing the amp, clearing a stale qpwgraph --
 # is not, and a hang there would hold the lifecycle lock, and with it every
 # /rig/* request and every Program Change, until the agent restarted. The
@@ -163,12 +163,11 @@ def parse_lifecycle(args: Sequence[str]) -> tuple[str, dict[str, Any]]:
         if not rest or rest[0].startswith("-"):
             raise ValueError("'up' needs a config name first")
         options: dict[str, Any] = {
-            "config_name": rest[0], "rig": False, "headless": False,
+            "config_name": rest[0],
             "tuner": True, "amp": True, "amp_model": None, "machine": None,
             "visualiser_tap": True,
         }
         flags = {
-            "--rig": ("rig", True), "--headless": ("headless", True),
             "--no-tuner": ("tuner", False), "--no-amp": ("amp", False),
             "--no-visualiser-tap": ("visualiser_tap", False),
         }
@@ -409,7 +408,7 @@ class TapAnswer:
 class World:
     """What the supervisor reaches outside itself, so its tests can stand each
     in: planning a rig, checking a restart's plugins, starting a process,
-    qpwgraph, Sushi's gRPC, the panel,
+    qpwgraph, Sushi's gRPC,
     the patchbay check, the amp's knobs and stopping a group. The defaults are
     the ones `up`'s forked supervisor uses."""
 
@@ -419,7 +418,6 @@ class World:
     spawn: Callable[..., subprocess.Popen] = _spawn
     start_qpwgraph: Callable[..., "subprocess.Popen | None"] = start_qpwgraph
     sushi_ready: Callable[["Callable[[], bool] | None"], bool] = rig_module.sushi_ready
-    generate_panel: Callable[[list[str], Path, dict[str, str]], tuple[int, str]] = rig_module.generate_panel
     link_problems: Callable[[list, Path, set, bool], list[str]] = rig_module.link_problems
     replay_amp: Callable[[dict[str, float]], None] = rig_module._replay_amp
     link_tap: Callable[[Path], list[str]] = vistap.link
@@ -600,7 +598,7 @@ class Supervisor:
     # --------------------------------------------------------------------- up
 
     async def up(
-        self, config_name: str, *, rig: bool = False, headless: bool = False,
+        self, config_name: str, *,
         tuner: bool = True, amp: bool = True, amp_model: str | None = None,
         machine: str | None = None, visualiser_tap: bool = True,
     ) -> Outcome:
@@ -616,8 +614,8 @@ class Supervisor:
         self.doing = "preparing the rig (rig.prepare_launch: compiling it, reading the graph, the amp, the plan)"
         try:
             launch = await asyncio.to_thread(
-                self.world.prepare, config_name, headless=headless, tuner=tuner, amp=amp,
-                amp_model=amp_model, rig=rig, warn=warnings.append,
+                self.world.prepare, config_name, tuner=tuner, amp=amp,
+                amp_model=amp_model, warn=warnings.append,
                 visualiser_tap=visualiser_tap, **({"machine": machine} if machine else {}),
             )
         except Exception as exc:
@@ -648,7 +646,7 @@ class Supervisor:
                 rig_module.start_children, launch, env=env, logs=logs,
                 spawn=functools.partial(world.spawn, process_group=held.pgid),
                 start_qpwgraph=functools.partial(world.start_qpwgraph, process_group=held.pgid),
-                sushi_ready=world.sushi_ready, generate_panel=world.generate_panel,
+                sushi_ready=world.sushi_ready,
                 link_problems=world.link_problems, replay_amp=world.replay_amp,
                 on_start=held.add, step=step, abandoned=abandoned.is_set,
             )
@@ -687,7 +685,7 @@ class Supervisor:
             reason = failure + "".join(f"\n{line}" for line in also) + (f"\n{torn}" if torn else "")
             return Outcome(False, 1, "", _with_warnings(warnings + problems, reason))
         return Outcome(
-            True, 0, rig_module.up_summary(launch.config_name, launch.headless, held.record or {}),
+            True, 0, rig_module.up_summary(launch.config_name, held.record or {}),
             "".join(f"warning: {w}\n" for w in warnings + problems),
         )
 

@@ -108,14 +108,15 @@ listed, it does not fail, and it is not a pass for those links either — run
 `generate` builds a patchbay from the machine file's roles and the `source:` /
 `sink:` a track names, plus a tuner tap on the guitar role. It prints to stdout
 or the path you give. **`Patchbay/rig.qpwgraph` is generated** — from
-`config/src/guitar_vocal.yaml` and `machines/sonny-dewfall-XPS-9320.yaml` — and
+guitar_vocal's v1 source, `config/retired/v1/src/guitar_vocal.yaml` since the
+v1 configs were retired (#218), and `machines/sonny-dewfall-XPS-9320.yaml` — and
 a test asserts the committed file is byte-for-byte what the command produces, so
 editing it in qpwgraph's GUI fails the build. It is the v1 layout's patchbay:
-a rig of channels (`up --rig`, the web UI) never loads it and brings its own,
+a rig of channels (`up`, the web UI) never loads it and brings its own,
 generated at start from the rig and the machine file. Regenerate instead:
 
 ```bash
-sushi-rig patchbay generate config/src/guitar_vocal.yaml -o Patchbay/rig.qpwgraph
+sushi-rig patchbay generate config/retired/v1/src/guitar_vocal.yaml -o Patchbay/rig.qpwgraph
 ```
 
 A role with one port feeding a stereo bus is an error unless the role *declares*

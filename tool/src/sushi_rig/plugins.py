@@ -837,15 +837,18 @@ def preflight(
 
 def _add_requires(root: Path) -> set[str] | None:
     """What `sushi-rig plugins add` run in checkout `root` requires: the
-    manifest and every plugin `config/*.json` uses (`cli._plugins`), or None
-    where that cannot be read."""
-    import json
+    manifest and every plugin a rig of `config/rigs/` loads, compiled as
+    Sushi loads it (`cli._plugins`, `verify.config_to_check`), or None where
+    that cannot be read. (Every plugin `config/*.json` used, until the v1
+    configs were retired, #218.)"""
+    from .rigfile import RigFileError
+    from .verify import config_to_check, configs_to_check
 
     try:
         required = set(read_manifest((root / "plugin-manifest.txt").read_text()))
-        for path in sorted((root / "config").glob("*.json")):
-            required |= config_uris(json.loads(path.read_text()), str(path))
-    except (OSError, ValueError, PluginsError):
+        for path in configs_to_check(root):
+            required |= config_uris(config_to_check(path), str(path))
+    except (OSError, ValueError, PluginsError, RigFileError):
         return None
     return required
 

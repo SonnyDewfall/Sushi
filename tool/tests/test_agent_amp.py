@@ -105,10 +105,10 @@ CONFIG = {"tracks": [], "_amp": {"plugin": "nam", "model": "amp/models/First.nam
 class World:
     """The state file, the running config, `describe_rig`'s answer and Carla."""
 
-    def __init__(self, root, mode="headless", amp=True, alive=True, config=None):
+    def __init__(self, root, amp=True, alive=True, config=None):
         self.root = root
         self.state = {
-            "supervisor_pid": 10, "pgid": 10, "mode": mode, "config_name": "board",
+            "supervisor_pid": 10, "pgid": 10, "config_name": "board",
             "config": "/run/rigs/board.json", "started_at": "2026-11-02T10:00:00+00:00",
             "amp_model": "amp/models/First.nam" if amp else None, "amp_requested": True,
             "amp_model_requested": None, "children": {"sushi": 11, **({"amp": 12} if amp else {})},
@@ -121,10 +121,10 @@ class World:
     def described(self):
         if not self.running:
             return {"verdict": "absent", "running": False, "message": "No rig is running."}
-        return {"verdict": "running", "running": True, "config_name": "board", "mode": self.state.get("mode"),
+        return {"verdict": "running", "running": True, "config_name": "board",
                 "children": {n: {"pid": p, "alive": self.alive if n == "amp" else True}
                              for n, p in self.state["children"].items()},
-                "message": "board (headless mode), up 2m"}
+                "message": "board, up 2m"}
 
     def switching(self):
         return Switching(read_state=lambda: dict(self.state), read_config=lambda path: copy.deepcopy(self.config),
@@ -203,12 +203,6 @@ def test_no_amp_to_read_is_refused_with_the_reason(root, change, status, code, s
     agent, _ = amp_agent(root, world)
     got, body = call(agent, "GET", "/amp")
     assert (got, body["code"]) == (status, code) and said in body["reason"]
-
-
-def test_with_the_panel_running_the_amp_is_the_panels_and_says_so(root):
-    agent, world = amp_agent(root, World(root, mode="panel"))
-    status, body = call(agent, "GET", "/amp")
-    assert status == 200 and body["known"] == "panel" and "panel's faders" in body["known_note"]
 
 
 def test_a_carla_that_died_is_shown_and_not_written_to(root):
@@ -469,13 +463,6 @@ def test_a_send_that_fails_is_502_and_not_recorded(root):
     assert call(agent, "GET", "/live/log")[1]["log"] == []
 
 
-def test_with_the_panel_running_the_agent_writes_nothing(root):
-    agent, world = amp_agent(root, World(root, mode="panel"))
-    status, body = call(agent, "POST", "/amp/parameter", json={"name": "Output Lvl", "value": 3.0})
-    assert (status, body["code"]) == (409, "panel") and "run the rig headless" in body["reason"]
-    assert world.carla.sent == [] and world.carla.asked == 0
-
-
 def test_a_parameter_is_refused_while_a_lifecycle_command_runs(root):
     agent, world = amp_agent(root)
 
@@ -542,8 +529,7 @@ def test_undo_of_a_value_never_sent_before_is_stale_and_can_be_skipped(root):
 
 def test_undo_compares_with_what_was_last_sent_and_refuses_a_value_changed_since(root):
     """A restart replays the config, so what the change sent is no longer
-    what was last sent: stale. (A fader on a panel would not be seen: the
-    agent writes nothing while the panel runs.)"""
+    what was last sent: stale."""
     agent, world = amp_agent(root)
     call(agent, "POST", "/amp/parameter", json={"name": "Output Lvl", "value": 3.0})
     world.state["started_at"] = "2026-11-02T11:00:00+00:00"
@@ -732,7 +718,6 @@ def test_a_path_is_taken_from_this_machine_only(root, tmp_path):
 
 
 @pytest.mark.parametrize("change, code", [
-    (lambda w: w.state.update(mode="panel"), "panel"),
     (lambda w: w.state["children"].pop("amp"), "no_amp"),
     (lambda w: setattr(w, "running", False), "no_rig"),
 ])
@@ -828,21 +813,21 @@ def test_the_amps_project_is_read_off_the_plan_as_plan_children_builds_it(tmp_pa
     from sushi_rig.rig import amp_project_of, plan_children
 
     config = tmp_path / "c.json"
-    with_amp = plan_children(tmp_path, config, None, headless=True, tuner=False, amp_project=tmp_path / "amp.carxp")
+    with_amp = plan_children(tmp_path, config, tuner=False, amp_project=tmp_path / "amp.carxp")
     assert amp_project_of(with_amp) == tmp_path / "amp.carxp"
-    assert amp_project_of(plan_children(tmp_path, config, None, headless=True, tuner=False)) is None
+    assert amp_project_of(plan_children(tmp_path, config, tuner=False)) is None
 
 
 def test_the_state_after_a_model_change_is_what_restart_brings_back(tmp_path):
     from sushi_rig.rig import amp_restarted_state, restart_arguments
 
     state = {"config_name": "board", "children": {"sushi": 1, "amp": 2}, "amp_model": "amp/models/A.nam",
-             "amp_model_requested": None, "amp_requested": True, "mode": "headless", "rig": "config/rigs/board.yaml"}
+             "amp_model_requested": None, "amp_requested": True, "rig": "config/rigs/board.yaml"}
     after = amp_restarted_state(state, model="amp/models/B.nam", override="B.nam", pid=7)
     assert after["children"] == {"sushi": 1, "amp": 7} and state["children"]["amp"] == 2, "a copy"
     assert (after["amp_model"], after["amp_model_requested"]) == ("amp/models/B.nam", "B.nam")
-    assert restart_arguments(after) == ("board", {"headless": True, "tuner": False, "amp": True,
-                                                  "amp_model": "B.nam", "rig": True, "machine": None,
+    assert restart_arguments(after) == ("board", {"tuner": False, "amp": True,
+                                                  "amp_model": "B.nam", "machine": None,
                                                   "visualiser_tap": True})
 
 
@@ -882,23 +867,49 @@ def test_a_parameter_request_is_clamped_and_the_clamp_said(asked, sent, said):
     assert amp_live.clamped_said(name, got_asked, got_sent) == said
 
 
-def test_a_state_file_that_does_not_say_its_mode_is_the_panels_as_the_switch_reads_it(root):
-    """The one rule (`rig.runs_panel`): anything but "headless" is the panel,
-    as `state_blockers` and `restart_arguments` read it (review)."""
+@pytest.mark.parametrize("mode", [None, "headless"])
+def test_a_run_without_the_panel_has_the_agent_as_the_amps_writer(root, mode):
+    """The panel is retired (#139): nothing else writes to Carla for a run
+    this `up` started (no mode) or an older one started headless, so the
+    agent sets the amp, says its values are what it sent, and a restart
+    asks for no mode."""
     from sushi_rig.agent import state_blockers
-    from sushi_rig.rig import restart_arguments, runs_panel
+    from sushi_rig.rig import restart_arguments
 
     world = World(root)
-    del world.state["mode"]
+    if mode is not None:
+        world.state["mode"] = mode
     agent, _ = amp_agent(root, world)
     status, body = call(agent, "POST", "/amp/parameter", json={"name": "Output Lvl", "value": 1.0})
-    assert (status, body["code"]) == (409, "panel") and world.carla.sent == []
-    assert call(agent, "GET", "/amp")[1]["known"] == "panel"
-    for mode, panel in ((None, True), ("panel", True), ("headless", False), ("weird", True)):
-        state = {} if mode is None else {"mode": mode}
-        assert runs_panel(state) is panel
-        assert restart_arguments(state)[1]["headless"] is not panel
-        assert (["panel"] == [r.code for r in state_blockers(state)]) is panel
+    assert status == 200, body
+    assert world.carla.sent
+    assert call(agent, "GET", "/amp")[1]["known"] == "sent"
+    assert state_blockers(world.state) == []
+    assert "headless" not in restart_arguments(world.state)[1]
+
+
+@pytest.mark.parametrize("legacy", [{"mode": "panel"}, {"child": "listen"}, {"child": "open-stage-control"}])
+def test_a_run_an_older_up_started_with_the_panel_is_not_written_until_it_is_restarted(root, legacy):
+    """A run an older `up` started with the panel, before the pull that
+    retired it: its listener still writes to Carla, behind the agent's back.
+    So GET /amp says its values are only what the rig started with (`known:
+    "panel"`), every write is refused, 409 `panel`, saying to restart, and
+    nothing reaches Carla. The restart that fixes it asks for no panel."""
+    from sushi_rig.rig import restart_arguments
+
+    world = World(root)
+    if "mode" in legacy:
+        world.state["mode"] = legacy["mode"]
+    else:
+        world.state["children"] = {**world.state["children"], legacy["child"]: 4999}
+    agent, _ = amp_agent(root, world)
+    status, body = call(agent, "POST", "/amp/parameter", json={"name": "Output Lvl", "value": 1.0})
+    assert (status, body["code"]) == (409, "panel"), body
+    assert "restart the rig, which stops the panel" in body["reason"]
+    assert world.carla.sent == []
+    view = call(agent, "GET", "/amp")[1]
+    assert view["known"] == "panel" and "restart the rig" in view["known_note"]
+    assert "headless" not in restart_arguments(world.state)[1]
 
 
 @pytest.mark.parametrize("code", ["not_held", "no_amp", "project_unreadable", "no_state"])

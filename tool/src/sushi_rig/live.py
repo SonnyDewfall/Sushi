@@ -47,7 +47,7 @@ class LiveError(Exception):
 class ElkpyMissing(LiveError):
     """elkpy is not installed. Not Sushi's doing, and not a reason to exit the
     process from a library: the CLI turns it into an exit (`cli.main`), and a
-    long-running caller (the listener, the agent) reports it and carries on.
+    long-running caller (the agent, the recorder) reports it and carries on.
     """
 
 
@@ -438,9 +438,10 @@ def get_live_parameter_info(
 
     `value` is the current normalised value, i.e. whatever Sushi actually has
     loaded right now — the plugin's own default if nothing has changed it
-    yet, or a baked-in `initial_state` value otherwise. This exists for
-    `panel.py`: a fader's starting value must come from here, never from a
-    guessed constant like 0.5. Proven necessary the hard way — many LSP gain
+    yet, or a baked-in `initial_state` value otherwise. It was written for the
+    retired Open Stage Control panel, whose fader's starting value had to come
+    from here, never from a guessed constant like 0.5, and is what `read_rig`
+    gives the agent's GET /live. Proven necessary the hard way — many LSP gain
     parameters are linear amplitude multipliers with domains up to 1000
     (`Input gain`, `Output gain`, `Makeup gain`) or 63 (every graphic EQ band
     gain), where the real default sits near the *bottom* of the range. `0.5`
@@ -452,8 +453,8 @@ def get_live_parameter_info(
     starting value, dragging a fader across a domain that wide is nearly
     unusable — the entire musically useful ±12dB range of a graphic EQ band
     (domain `[~0.016, ~63]`) occupies the bottom ~6% of the fader's linear
-    travel. `panel.py` uses these bounds to decide which faders need
-    `logScale`.
+    travel. The page (rig.js) uses these bounds to decide which knobs turn
+    on a log scale.
     """
     own = controller is None
     controller = controller or _controller(address)
@@ -477,43 +478,6 @@ def get_live_parameter_info(
     finally:
         if own:
             close_controller(controller)
-
-    return result
-
-
-def get_live_bypass_state(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, bool]:
-    """Per-processor bypass state, as `{processor_name: bypassed}`.
-
-    Separate from `get_live_parameter_info` rather than folded into it,
-    because that function's values are keyed by parameter name and callers
-    iterate them as parameters — bypass is a property of the processor, not
-    one of its parameters, and Sushi treats it that way too.
-
-    This exists for `panel.py`'s bypass toggles. They need to *reflect* the
-    current state rather than impose one: a panel opening must not silently
-    un-bypass a pedal the saved config deliberately had switched off.
-
-    Bypass is a host-level facility, not a plugin feature — Sushi provides it
-    for every processor regardless of whether the plugin has its own bypass
-    parameter. That matters because plugin-provided bypass is unreliable to
-    build on: only some plugins have it (Guitarix does, MDA doesn't), and
-    where it exists its semantics can be undiscoverable — the Guitarix
-    pedals expose `BYPASS` with a default of 1.0, range 0-1 and no scale
-    points, so nothing in the metadata says whether 1 means active or
-    bypassed.
-    """
-    controller = _controller(address)
-    result: dict[str, bool] = {}
-    try:
-        for track in controller.audio_graph.get_all_tracks():
-            for proc in controller.audio_graph.get_track_processors(track.id):
-                state = _safe(
-                    controller.audio_graph.get_processor_bypass_state, proc.id
-                )
-                if state is not None:
-                    result[proc.name] = bool(state)
-    finally:
-        close_controller(controller)
 
     return result
 
@@ -745,84 +709,10 @@ def read_rig(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dic
         return state
 
 
-# How long to wait after `/SESSION/OPEN` before re-selecting the tab. Long
-# enough for open-stage-control to rebuild its widget tree (measured well under
-# half a second for a seven-plugin panel), short enough not to be noticed.
-TAB_RESELECT_DELAY = 0.75
-
-
-def _start_timer(delay: float, action: Callable[[], None]) -> None:
-    """Run `action` after `delay` seconds, on a thread of its own.
-
-    Deliberately NOT a daemon thread. A daemon dies with the process, and a
-    one-shot caller (`sushi-rig panel`, a script) exits long before the delay is
-    up — the reload lands, the re-select never goes out. Non-daemon costs a
-    long-lived caller at most `delay` on shutdown.
-    """
-    threading.Timer(delay, action).start()
-
-
-def refresh_panel(
-    panel_path: str,
-    select_tab: str | None = None,
-    host: str = "127.0.0.1",
-    port: int = 8080,
-    tab_delay: float = TAB_RESELECT_DELAY,
-    schedule: Callable[[float, Callable[[], None]], None] | None = None,
-) -> None:
-    """Tell a running open-stage-control to reload `panel_path`.
-
-    Uses open-stage-control's remote-control OSC API, which is documented in
-    the app's own bundled docs (`docs/docs/remote-control`) rather than
-    anywhere obvious in its source — this project previously concluded from
-    grepping the minified client that no remote reload existed, and wrote that
-    wrong conclusion into a status message and a comment.
-
-    `/SESSION/OPEN` reloads the whole session, which resets the visible tab to
-    the first one. `/TABS` then re-selects the tab the caller came from,
-    otherwise moving the reverb would bounce you to the compressor tab every
-    time.
-
-    The two messages cannot be sent back to back. `/SESSION/OPEN` returns
-    immediately while the client is still tearing down and rebuilding the
-    widget tree, and a `/TABS` that lands during that window is silently
-    dropped — verified against the running rig, where the reload worked but the
-    selection always fell back to the first tab. Sent on its own once the
-    rebuild has settled, the very same message selects the tab correctly. So
-    the re-select is deferred by `tab_delay`, on a timer rather than a sleep so
-    the caller (the OSC listener, which must stay responsive) isn't blocked.
-    `schedule(delay, action)` is how that deferral is carried out; it is a
-    parameter so a test can run the action itself instead of waiting out the
-    wall clock, and defaults (looked up at call time, so a test can replace
-    `_start_timer`) to a real `threading.Timer`.
-
-    Fire-and-forget: OSC is unacknowledged, so there is nothing to await and no
-    confirmation to check. A panel that failed to reload is a cosmetic problem;
-    the caller's actual work has already succeeded by this point.
-    """
-    from pythonosc.udp_client import SimpleUDPClient
-
-    client = SimpleUDPClient(host, port)
-    client.send_message("/SESSION/OPEN", str(panel_path))
-    if not select_tab:
-        return
-
-    def _reselect() -> None:
-        try:
-            SimpleUDPClient(host, port).send_message("/TABS", select_tab)
-        except Exception:  # noqa: BLE001,S110 - nobody is listening on this thread
-            pass
-
-    if tab_delay <= 0:
-        _reselect()
-    else:
-        (schedule or _start_timer)(tab_delay, _reselect)
-
-
 @dataclass(frozen=True)
 class Move:
     """What a request to move a processor found and did, as data, so no caller
-    has to read the panel's status line to learn how it went.
+    has to read a sentence to learn how it went.
 
     `outcome` is one of:
       "planned"   -- found, and not already at that end of its chain; the
@@ -858,7 +748,7 @@ class Move:
 
     @property
     def message(self) -> str:
-        """The panel's status line."""
+        """The move, said in a sentence."""
         if self.outcome == "absent":
             return f"no processor named {self.processor!r} on any track"
         if self.outcome == "unchanged":
@@ -869,11 +759,7 @@ class Move:
             return f"{self.processor} cannot move {where}: {self.why}"
         if self.outcome == "planned":
             return f"{self.processor} would move {where}"
-        # Deliberately says only what happened. It used to append
-        # "regenerate the panel to reorder tabs", which was both a chore to
-        # read on every move and based on a wrong belief that
-        # open-stage-control could not be told to reload -- see
-        # refresh_panel above. The listener now refreshes the panel itself.
+        # Deliberately says only what happened.
         return f"moved {self.processor} {where}"
 
 
@@ -948,9 +834,7 @@ def plan_live_move(
 
     With `uids`, Sushi's session is read too (`session_uids`), so a send or
     return is known by its uid and not only its name: the agent asks for that.
-    The panel's listener does not, and keeps the name rule alone, because the
-    session read is not yet verified against Sushi and the listener's moves
-    worked without it.
+    Without it the name rule alone applies, as `move_live_processor` uses it.
     """
     with _connection(address, controller) as c:
         chains, ids = _walk_chains(c)
@@ -967,8 +851,8 @@ def send_live_move(
     planned -- sending is not something to do by guess.
 
     The ids are those of the walk the plan was made on. If the chain was
-    rearranged since (the panel's listener also moves processors, and is not
-    behind the agent's lock) Sushi still gets a well-formed command about the
+    rearranged since (a gRPC client of its own can move processors, and is
+    not behind the agent's lock) Sushi still gets a well-formed command about the
     same processor, and either applies it or refuses it; it is not re-planned.
     """
     if move.outcome != "planned" or move.command is None:
@@ -1240,7 +1124,7 @@ def push(rig, address: str = DEFAULT_GRPC_ADDRESS) -> None:
 
 def protected_processor(track: str, processor: str, uid: str | None = None) -> str | None:
     """What makes `processor` on `track` the compiler's, or None: one rule for
-    the agent's add, remove and move, and the listener's move.
+    the agent's add, remove and move, and `move_live_processor`.
 
     A channel's send is `<track>_send` (`rigfile.SEND_SUFFIX`) or any processor
     Sushi reports with the send's uid; the master's return is `master_return`

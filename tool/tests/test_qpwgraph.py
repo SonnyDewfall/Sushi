@@ -69,19 +69,19 @@ def test_qpwgraph_is_detached_from_the_desktop_session_manager():
     This is the second, independent half of issue #14 — the stale lock socket
     is the first, and fixing either alone still leaves it broken."""
     children = plan_children(
-        Path("/rig"), Path("/rig/config/x.json"), "y.yaml",
-        headless=False, tuner=True,
+        Path("/rig"), Path("/rig/config/x.json"), tuner=True,
+        amp_project=Path("/rig/amp.carxp"), recorder_socket=Path("/run/recorder.sock"),
     )
     qpwgraph = next(c for c in children if c["name"] == "qpwgraph")
     assert "SESSION_MANAGER" in qpwgraph["env_unset"]
 
 
 def test_nothing_else_has_its_environment_stripped():
-    """Sushi and the listener have no business losing environment; keep the
+    """Sushi, Carla and the recorder have no business losing environment; keep the
     workaround aimed at the one thing that needs it."""
     children = plan_children(
-        Path("/rig"), Path("/rig/config/x.json"), "y.yaml",
-        headless=False, tuner=True,
+        Path("/rig"), Path("/rig/config/x.json"), tuner=True,
+        amp_project=Path("/rig/amp.carxp"), recorder_socket=Path("/run/recorder.sock"),
     )
     for child in children:
         if child["name"] != "qpwgraph":

@@ -78,32 +78,3 @@ def collect_parameter_names(dump: Any) -> dict[str, set[str]]:
 
     visit(dump)
     return found
-
-
-def collect_parameter_info(dump: Any) -> dict[str, dict[str, dict[str, Any]]]:
-    """Like `collect_parameter_names`, but keeps each parameter's full record
-    (id, label, osc_path) rather than just its name.
-
-    `panel.py` needs `osc_path` verbatim — Sushi replaces spaces with
-    underscores in it, so an address built from the parameter name directly
-    would not match.
-    """
-    found: dict[str, dict[str, dict[str, Any]]] = {}
-
-    def visit(node: Any) -> None:
-        if isinstance(node, dict):
-            name = node.get("name")
-            params = node.get("parameters")
-            if isinstance(params, list) and isinstance(name, str):
-                bucket = found.setdefault(name, {})
-                for param in params:
-                    if isinstance(param, dict) and isinstance(param.get("name"), str):
-                        bucket[param["name"]] = param
-            for value in node.values():
-                visit(value)
-        elif isinstance(node, list):
-            for item in node:
-                visit(item)
-
-    visit(dump)
-    return found

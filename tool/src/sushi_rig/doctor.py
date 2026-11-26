@@ -46,7 +46,6 @@ changing one field, and says which field.
 from __future__ import annotations
 
 import ctypes
-import json
 import math
 import re
 import shutil
@@ -567,8 +566,8 @@ def record_ports_check(columns: list, ports: list) -> Check:
     be refused at that step. Added after the rig, on 2026-11-02, passed 11
     checks while every RECORD was refused: the machine file names the guitar
     by its PipeWire alias, and the recorder looked among JACK's names alone.
-    The message gives each port the machine file names that JACK knows by
-    another name, so the two can be compared.
+    The plan now names each port as JACK does (`transport.jack_port`, off
+    the live graph), and this checks that JACK lists each one by that name.
     """
     from .capture import match_sources
 
@@ -577,16 +576,11 @@ def record_ports_check(columns: list, ports: list) -> Check:
         return Check(
             "record-ports", FAULT,
             f"a take of the running rig would be refused: {'; '.join(problems)}",
-            "the machine file names each port by its PipeWire alias, as qpwgraph shows it; "
-            "compare it with `pw-jack jack_lsp -A`, which lists every JACK port with its "
-            "aliases, and the recorder matches either",
+            "the machine file names each port by its PipeWire alias, as qpwgraph shows it, and "
+            "the plan names it as JACK does from the live graph (pw-dump); compare them with "
+            "`pw-jack jack_lsp -A`, which lists every JACK port with its aliases",
         )
-    renamed = [f"{c.source} is {c.jack}" for c in matched if c.jack != c.source]
-    return Check(
-        "record-ports", OK,
-        f"the recorder's {len(matched)} column(s) are all JACK ports"
-        + (f" ({'; '.join(renamed)}, by alias)" if renamed else ""),
-    )
+    return Check("record-ports", OK, f"the recorder's {len(matched)} column(s) are all JACK ports")
 
 
 def record_check(root: Path, rig: dict, state: dict | None, *,
@@ -603,17 +597,18 @@ def record_check(root: Path, rig: dict, state: dict | None, *,
     (`list_ports`, `capture.list_jack_ports` by default, which runs one under
     `pw-jack`): "needs JACK", never green."""
     from .capture import CaptureError, JackUnreachable, list_jack_ports, plan_columns
-    from .transport import PlanError, plan_for_run
+    from .transport import GraphUnreadable, PlanError, plan_for_run
 
     if not rig.get("running") or not state:
         return Check("record-ports", UNCHECKED,
                      "no rig is running, so there is no take to plan and no port to look for",
-                     "run `sushi-rig up --rig <name>` and check again")
+                     "run `sushi-rig up <name>` and check again")
     if not (isinstance(state.get("rig"), str) and state["rig"]):
         return Check("record-ports", UNCHECKED,
-                     f"{state.get('config_name') or 'the running config'} is a v1 config, and takes are "
-                     "planned only for a rig of channels, so recording is off for this run",
-                     "start a rig of channels (`sushi-rig up --rig <name>`) to record")
+                     f"{state.get('config_name') or 'the running config'} was started from a v1 config by an "
+                     "older sushi-rig, and takes are planned only for a rig of channels, so recording is off "
+                     "for this run",
+                     "restart it (`sushi-rig restart`), which runs the rig of channels of its name, to record")
 
     def absolute(value: Any) -> Path | None:
         if not isinstance(value, str) or not value:
@@ -624,10 +619,17 @@ def record_check(root: Path, rig: dict, state: dict | None, *,
         plan = plan_for_run(absolute(state["rig"]), absolute(state.get("config")),
                             machine_file=absolute(state.get("machine")), root=Path(root))
         columns = plan_columns(plan.stems)
+    except GraphUnreadable as exc:
+        # Cannot look, as for JACK below: the ports are named off the live
+        # graph, and a graph that will not read says nothing of them.
+        return Check("record-ports", UNCHECKED,
+                     "needs PipeWire: the recorder's ports are named off the live graph, and it could not "
+                     f"be read here: {'; '.join(exc.problems)}",
+                     "run doctor on the rig machine with the rig up; `pw-dump` must run there")
     except (PlanError, CaptureError) as exc:
         return Check("record-ports", FAULT,
                      f"no take can be planned for the running rig: {'; '.join(exc.problems)}",
-                     "the record panel says the same; fix what it names and restart the rig")
+                     "the record bar says the same; fix what it names and restart the rig")
     except Exception as exc:  # noqa: BLE001 -- the recorder's own rule, and doctor goes on
         return Check("record-ports", FAULT,
                      f"planning a take of the running rig failed unexpectedly: {type(exc).__name__}: {exc}",
@@ -1278,18 +1280,18 @@ def _free_bytes(path: Path) -> tuple[int | None, str]:
 
 
 def _largest_rig(root: Path) -> tuple[int, str]:
-    """The stems a take of the largest rig in config/ records, and its name."""
+    """The stems a take of the largest rig in config/rigs/ records, and its name."""
+    from .rigfile import load_rig
     from .verify import configs_to_check
 
     stems, name = STEMS_PER_CHANNEL, ""
     for config in configs_to_check(root):
         try:
-            tracks = json.loads(config.read_text()).get("tracks", [])
-            # Inside the try: `"tracks": null` or a number parses, and is a
-            # TypeError only once something iterates it. An unreadable config is
-            # skipped, as one that is not JSON is.
-            count = STEMS_PER_CHANNEL * len([t for t in tracks if isinstance(t, dict)])
-        except (OSError, ValueError, AttributeError, TypeError):
+            # Its channels, as the file has them: each is recorded dry and
+            # processed. A file that is not a rig is skipped:
+            # test_rig_fixtures.py says which.
+            count = STEMS_PER_CHANNEL * len(load_rig(config).channels)
+        except Exception:  # noqa: BLE001 -- one bad rig must not cost doctor its answer
             continue
         if count > stems:
             stems, name = count, config.stem
@@ -1310,16 +1312,16 @@ def _describe(path: Path, used_by: tuple[str, ...]) -> ModelInfo:
 
 
 def _models(root: Path) -> tuple[ModelInfo, ...]:
-    """Every model the rig can play: the library, and what each config points at."""
+    """Every model the rig can play: the library, and what each rig points at."""
     from .amp import CONFIG_KEY, AmpError, model_library, resolve_model
-    from .verify import configs_to_check
+    from .verify import config_to_check, configs_to_check
 
     users: dict[Path, list[str]] = {}
     missing: list[ModelInfo] = []
     for config in configs_to_check(root):
         try:
-            amp = json.loads(config.read_text()).get(CONFIG_KEY)
-        except (OSError, ValueError, AttributeError):
+            amp = config_to_check(config).get(CONFIG_KEY)
+        except Exception:  # noqa: BLE001 -- a rig that does not compile is test_rig_fixtures.py's to name
             continue
         model = amp.get("model") if isinstance(amp, dict) else None
         if not isinstance(model, str):

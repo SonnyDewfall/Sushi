@@ -130,6 +130,39 @@ def test_a_run_no_take_can_be_planned_for_says_why_before_record(duo, tmp_path):
     assert refused["code"] == "unavailable" and refused["reason"] == answer["reason"]
 
 
+def test_a_status_refused_for_a_port_the_graph_lacks_is_planned_again_after_a_while(duo, monkeypatch):
+    """The one resolver is strict (#217): a port the live graph lacks refuses
+    the plan, and the graph changes without the run's files (Sushi registering
+    after the recorder starts, a device plugged in). A status's refusal is
+    planned again after `REPLAN_S`; a plan that was made is kept until the
+    files change, as before."""
+    from sushi_rig import recorder_process, transport
+
+    graphs = []
+
+    class Graph(dict):
+        def get(self, port, default=None):
+            return None if graphs[-1] == "no sushi" and port.startswith("sushi:") else [port]
+
+    def read():
+        return Graph()
+
+    monkeypatch.setattr(transport, "_live_jack_names", read)
+    clock = FakeClock()
+    recorder = RecorderCore(engine=Pushing, clock=clock, say=lambda m: None)
+    graphs.append("no sushi")
+    first = asked(recorder, {"op": "status", "run": duo})
+    assert first["state"] == "unavailable" and "sushi:audio_output_2 is no capture port" in first["reason"]
+    graphs.append("sushi up")
+    clock.advance(recorder_process.REPLAN_S / 2)
+    assert asked(recorder, {"op": "status", "run": duo})["state"] == "unavailable", "not every poll"
+    clock.advance(recorder_process.REPLAN_S)
+    assert asked(recorder, {"op": "status", "run": duo})["state"] == "idle"
+    graphs.append("no sushi")
+    clock.advance(recorder_process.REPLAN_S * 3)
+    assert asked(recorder, {"op": "status", "run": duo})["state"] == "idle", "a plan is kept until the files change"
+
+
 def test_without_jack_client_the_reason_says_how_to_get_it(duo):
     """Found once, at the process's start (`main`), and said by every status
     without making an engine; a start that tries says the same."""
@@ -312,27 +345,22 @@ def test_close_finishes_a_running_take(duo):
 # The child the rig plans
 # --------------------------------------------------------------------------- #
 
-def test_a_headless_rig_of_channels_plans_a_recorder_under_pw_jack_in_the_listeners_place(tmp_path):
+def test_a_rig_of_channels_plans_a_recorder_under_pw_jack(tmp_path):
     from sushi_rig.rig import QUANTUM, RATE, plan_children
 
     socket_path = tmp_path / "run" / "recorder.sock"
-    plan = plan_children(tmp_path, tmp_path / "run" / "duo.json", "config/rigs/duo.yaml", headless=True,
-                         tuner=False, recorder_socket=socket_path)
+    plan = plan_children(tmp_path, tmp_path / "run" / "duo.json", tuner=False, recorder_socket=socket_path)
     names = [c["name"] for c in plan]
     assert names == ["qpwgraph", "recorder", "sushi"]
     recorder = plan[1]
     assert recorder["command"][0] == "pw-jack" and recorder["command"][2:] == ["recorder", "--socket", str(socket_path)]
     assert recorder["env_set"] == {"PIPEWIRE_QUANTUM": f"{QUANTUM}/{RATE}"}, "the quantum Sushi runs at"
     assert recorder["optional"] is True, "a rig that cannot record still plays"
-    # In panel mode the listener records, and there is no recorder.
-    panel = plan_children(tmp_path, tmp_path / "run" / "duo.json", "config/rigs/duo.yaml", headless=False,
-                          tuner=False, recorder_socket=socket_path)
-    assert "recorder" not in [c["name"] for c in panel] and "listen" in [c["name"] for c in panel]
     assert "recorder" not in [c["name"] for c in plan_children(
-        tmp_path, tmp_path / "run" / "duo.json", None, headless=True, tuner=False)]
+        tmp_path, tmp_path / "run" / "duo.json", tuner=False)]
 
 
-def test_up_plans_a_recorder_for_a_headless_rig_of_channels_only(monkeypatch, tmp_path, runtime):
+def test_up_plans_a_recorder_for_every_rig(monkeypatch, tmp_path, runtime):
     from sushi_rig import rig
 
     seen = []
@@ -344,10 +372,8 @@ def test_up_plans_a_recorder_for_a_headless_rig_of_channels_only(monkeypatch, tm
     monkeypatch.setattr(rig, "prepare_rig", lambda *a, **k: {
         "config": tmp_path / "c.json", "patchbay": None, "source": "config/rigs/x.yaml", "warnings": [],
         "machine": None})
-    monkeypatch.setattr(rig, "resolve_rig_yaml", lambda *a, **k: "config/rigs/x.yaml")
-    rig.prepare_launch("x", headless=True, rig=True, amp=False, tuner=False)
-    rig.prepare_launch("x", headless=False, rig=True, amp=False, tuner=False)
-    assert seen == [runtime / "recorder.sock", None]
+    rig.prepare_launch("x", amp=False, tuner=False)
+    assert seen == [runtime / "recorder.sock"], "every run is a rig of channels since #218, and has one"
 
 
 # --------------------------------------------------------------------------- #
@@ -383,6 +409,18 @@ class Engine:
         self.running.clear()
         self.thread.join()
         return None
+
+# No live graph is read here, as in conftest.py: each port is its own name to
+# JACK (`transport._live_jack_names`, the one resolver, #217).
+from sushi_rig import transport
+
+
+class AsWritten(dict):
+    def get(self, port, default=None):
+        return [port]
+
+
+transport._live_jack_names = AsWritten
 
 sys.exit(serve(sys.argv[1], RecorderCore(engine=Engine)))
 """
@@ -530,8 +568,7 @@ def test_the_planned_recorder_crashing_is_a_crash_in_health_and_is_not_restarted
     (root / "config").mkdir(parents=True)
     config = root / "config" / "t.json"
     config.write_text("{}")
-    plan = plan_children(root, config, "config/rigs/t.yaml", headless=True, tuner=False,
-                         recorder_socket=runtime / "recorder.sock")
+    plan = plan_children(root, config, tuner=False, recorder_socket=runtime / "recorder.sock")
     started = []
 
     def spawn(command, *, cwd, env, log, process_group):
@@ -545,20 +582,20 @@ def test_the_planned_recorder_crashing_is_a_crash_in_health_and_is_not_restarted
         started.append(proc)
         return proc
 
-    launch = Launch(root=root, config_name="t", config=config, children=plan, headless=True, amp_model=None,
+    launch = Launch(root=root, config_name="t", config=config, children=plan, amp_model=None,
                     amp_values={}, tuner_requested=False, amp_requested=False, amp_model_requested=None,
                     rig_source="config/rigs/t.yaml", machine_file=None)
     world = World(prepare=lambda *a, **k: launch, spawn=spawn,
                   start_qpwgraph=lambda child, root, env, logs, process_group=None: spawn(
                       child["command"], cwd=root, env=env, log=logs / "qpwgraph.log", process_group=process_group),
-                  sushi_ready=lambda alive: True, generate_panel=lambda *a: (0, ""),
+                  sushi_ready=lambda alive: True,
                   link_problems=lambda *a: [], replay_amp=lambda values: None,
                   shutdown_steps=((signal.SIGINT, 1.0), (signal.SIGKILL, 1.0)), watch_interval=0.05)
     said = []
     supervisor = Supervisor(world, say=said.append)
 
     async def go():
-        assert (await supervisor.up("t", headless=True, rig=True)).ok
+        assert (await supervisor.up("t")).ok
         deadline = asyncio.get_running_loop().time() + 5
         while not supervisor.crashed:
             assert asyncio.get_running_loop().time() < deadline, "no crash seen"

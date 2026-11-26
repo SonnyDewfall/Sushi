@@ -55,6 +55,13 @@ walks through it, including how to reach it from a phone.
 After a `git pull`, stop the agent and start it again: it keeps running the
 code it was started with.
 
+The page is the rig's only control surface, and a rig is always a rig of
+channels from `config/rigs/`. The Open Stage Control panel and the v1 configs,
+`config/*.json`, that came before them are retired (#139, #218):
+`sushi-rig up` starts no panel and runs no v1 config, and
+[the v1 workflow](docs/reference/v1-workflow.md#the-open-stage-control-panel-retired)
+says how each of the panel's jobs is done now.
+
 ## User guides
 
 For playing the rig. Plain steps, a few minutes each.
@@ -94,7 +101,7 @@ For looking things up.
 | [Environment](docs/reference/environment.md) | Setting up a machine, and `doctor` |
 | [Dependencies](docs/reference/dependencies.md) | What the rig runs on, the versions, and how to check for newer ones |
 | [Tests and CI](docs/reference/testing.md) | Running the suites; the rule about `config/rigs/` |
-| [The v1 workflow](docs/reference/v1-workflow.md) | The older Open Stage Control panel and its loop |
+| [The v1 workflow](docs/reference/v1-workflow.md) | The retired v1 configs and Open Stage Control panel: what each part, and each of the panel's jobs, is now |
 | [Repository layout](docs/reference/repository-layout.md) | What each folder is for |
 
 ## Design

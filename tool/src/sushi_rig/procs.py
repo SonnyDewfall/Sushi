@@ -224,9 +224,9 @@ def wait_for_grpc(
 ) -> bool:
     """Block until Sushi's gRPC accepts a connection, or give up.
 
-    The panel is generated from the *live* rig, so asking for one before Sushi
-    is listening fails in a way that looks like a tool bug rather than a timing
-    problem.
+    Everything after Sushi's start reads the *live* rig (the amp's replay,
+    the patchbay check), so asking before Sushi is listening fails in a way
+    that looks like a tool bug rather than a timing problem.
 
     `still_starting` reports whether *our* Sushi is alive. Without it this waits
     for a port rather than for a process, and a port is not proof of anything:

@@ -1,5 +1,5 @@
 """The record bar turned on (#57): which ports a take records, and the session
-the listener runs.
+the recorder runs.
 
 No JACK and no PipeWire anywhere: the port plan is pure, the engine is stood
 in, and each fallback is a sentence checked here. Whether those ports carry
@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from rig_fixtures import FROZEN_MACHINE, FROZEN_SRC, frozen, frozen_v1
 
-from sushi_rig import capture, cli, transport
+from sushi_rig import capture, transport
 from sushi_rig import take as take_module
 from sushi_rig.capture import CaptureUnavailable, plan_columns
 from sushi_rig.machine import MachineSpec
@@ -27,16 +27,31 @@ from sushi_rig.transport import (
     NoEngine,
     PlanError,
     TakeSession,
-    Transport,
+    TransportError,
     jack_port,
     record_session,
     rig_stems,
 )
-# Bound at import, before `no_live_graph` rebinds the module's own attribute:
+# Bound at import, before conftest's `_no_test_reads_the_live_graph` rebinds the module's own attribute:
 # the one test that means to run the real reader needs the real one.
 from sushi_rig.transport import _live_jack_names as live_jack_names
 
 ROOT = checkout_root()
+class Graph(dict):
+    """A live graph's alias -> JACK names, as `patchbay.jack_port_names`
+    gives it, for the ports a test names; any other port is its own name, as
+    Sushi's are, unless `strict`, where only the ports named are there."""
+
+    def __init__(self, names, strict=False):
+        super().__init__(names)
+        self.strict = strict
+
+    def get(self, port, default=None):
+        if port in self:
+            return self[port]
+        return default if self.strict else [port]
+
+
 GUITAR_VOCAL = frozen("guitar_vocal")  # the rig as these tests know it (rig_fixtures.py)
 THIS_MACHINE = FROZEN_MACHINE
 
@@ -81,15 +96,6 @@ def stems_of(rig_path, machine) -> tuple:
 # The real `pw-dump` from the rig, the same capture test_patchbay.py asserts
 # against: the one evidence here of what a JACK client calls the rig's ports.
 CAPTURED = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
-
-
-@pytest.fixture(autouse=True)
-def no_live_graph(monkeypatch):
-    """No test here reads the live graph. A plan resolves its ports through
-    `pw-dump` (`transport._live_jack_names`), which on a machine with a rig up
-    would make every assertion below depend on what is plugged into it; the
-    tests that mean to resolve pass a map themselves."""
-    monkeypatch.setattr(transport, "_live_jack_names", lambda: {})
 
 
 def write(path: Path, text: str) -> Path:
@@ -227,17 +233,26 @@ def test_a_stereo_role_resolves_every_port_it_is_captured_from(tmp_path):
     ]
 
 
-def test_a_port_the_graph_does_not_have_is_left_for_the_engine_to_name():
-    """`up` starts the listener before Sushi, so a plan made then sees no
-    `sushi:` port. Leaving it as written is what lets the next RECORD resolve
-    it; refusing the plan here would say recording is unavailable for a rig
-    that is simply still starting, and the engine's own check names what is in
-    the graph anyway."""
-    assert jack_port("sushi:audio_output_0", {}) == ("sushi:audio_output_0", None)
-    assert jack_port("iface:capture_AUX0", {"other:port": ["x:port"]}) == ("iface:capture_AUX0", None)
-    # No map at all: every port as it was written, which is what the plan did
-    # before the graph was read.
+def test_a_port_the_graph_does_not_have_is_refused_not_passed_on():
+    """The one resolver is strict (#217). A port the live graph does not list
+    used to be passed on as written, for the engine to look for among JACK's
+    aliases: a second resolver, there for the OSC listener, which planned
+    before Sushi registered, and one the rig never showed working. The
+    recorder plans at RECORD, with the rig up, so a port the graph lacks is
+    a device gone or a machine file that names it otherwise, and is said."""
+    port, why = jack_port("iface:capture_AUX0", {"other:port": ["x:port"]})
+    assert port == "iface:capture_AUX0"
+    assert why.startswith("iface:capture_AUX0 is no capture port of the live graph")
+    assert "machine file" in why
+    assert jack_port("sushi:audio_output_0", {})[1] is not None, "Sushi's ports too"
+    # No map at all is a plan from the files alone: every port as written.
     assert jack_port("Audient iD14:capture_AUX0", None) == ("Audient iD14:capture_AUX0", None)
+
+
+def test_a_port_the_graph_does_not_have_refuses_the_whole_plan(duo, tmp_path, monkeypatch):
+    monkeypatch.setattr(transport, "_live_jack_names", lambda: Graph({"iface:capture_AUX2": []}))
+    said = no_engine(session_for(duo, tmp_path))
+    assert "iface:capture_AUX2 is no capture port of the live graph" in said
 
 
 def test_an_alias_two_live_nodes_answer_to_is_refused_not_guessed():
@@ -253,6 +268,34 @@ def test_an_alias_two_live_nodes_answer_to_is_refused_not_guessed():
     assert "2 nodes at once" in why and "Audient iD14 Multichannel:capture_AUX0" in why
 
 
+def test_two_of_one_interface_are_two_nodes_though_they_share_a_jack_name():
+    """Two of the same interface: two nodes with one alias and one
+    description, so both give one JACK name. Counted by node, not by name,
+    they are two sockets and refused; counted by name they were taken for one
+    (review of #217)."""
+    from sushi_rig.patchbay import jack_port_names
+
+    def node(id_, name):
+        return {"id": id_, "type": "PipeWire:Interface:Node", "info": {"props": {
+            "node.name": name, "node.nick": "Audient iD14", "node.description": "Audient iD14 Multichannel"}}}
+
+    def port(id_, node_id):
+        return {"id": id_, "type": "PipeWire:Interface:Port", "info": {"props": {
+            "node.id": node_id, "port.alias": "Audient iD14:capture_AUX0", "port.name": "capture_AUX0",
+            "port.direction": "out"}}}
+
+    dump = json.dumps([node(1, "alsa_input.usb-Audient_iD14-00.multichannel-input"), port(11, 1),
+                       node(2, "alsa_input.usb-Audient_iD14-01.multichannel-input"), port(21, 2)])
+    names = jack_port_names(dump, "out")
+    assert names["Audient iD14:capture_AUX0"] == ["Audient iD14 Multichannel:capture_AUX0"] * 2
+    port_, why = jack_port("Audient iD14:capture_AUX0", names)
+    assert port_ == "Audient iD14:capture_AUX0"
+    assert why is not None and "2 nodes at once" in why
+    # One of them alone is the one socket.
+    one = jack_port_names(json.dumps([node(1, "alsa_input.a"), port(11, 1)]), "out")
+    assert jack_port("Audient iD14:capture_AUX0", one) == ("Audient iD14 Multichannel:capture_AUX0", None)
+
+
 def test_an_ambiguous_port_refuses_the_whole_plan():
     rig = load_rig(GUITAR_VOCAL)
     machine = MachineSpec.load(THIS_MACHINE)
@@ -265,12 +308,12 @@ def test_an_ambiguous_port_refuses_the_whole_plan():
 
 def test_the_live_graph_is_read_for_every_take_planned(duo, tmp_path, monkeypatch):
     """A device that came back under another profile is resolved afresh at the
-    next RECORD, not held from the listener's start."""
+    next RECORD, not held from an earlier plan."""
     reads = []
 
     def read():
         reads.append(1)
-        return {"iface:capture_AUX0": [f"profile-{len(reads)}:capture_AUX0"]}
+        return Graph({"iface:capture_AUX0": [f"profile-{len(reads)}:capture_AUX0"]})
 
     monkeypatch.setattr(transport, "_live_jack_names", read)
     first = session_for(duo, tmp_path).plan
@@ -279,32 +322,98 @@ def test_the_live_graph_is_read_for_every_take_planned(duo, tmp_path, monkeypatc
     assert [s.port for s, _ in second.stems if s.tap == DRY][0] == "profile-2:capture_AUX0"
 
 
-def test_a_graph_that_cannot_be_read_still_plans_a_take(monkeypatch, capsys):
-    """`pw-dump` missing or hung must not be the reason RECORD does nothing:
-    the ports stay as they were written, exactly as before the graph was read,
-    and the engine says if they are not there."""
+def test_a_graph_that_cannot_be_read_refuses_the_plan_and_says_why(monkeypatch):
+    """`pw-dump` missing or hung used to leave the ports as they were
+    written, for the engine's match by alias: the second resolver (#217). A
+    take that cannot be named as JACK sees it is refused, saying what failed."""
     from sushi_rig import patchbay
 
     def no_dump(*a, **kw):
         raise patchbay.PatchbayError(["pw-dump is not installed"])
 
     monkeypatch.setattr(patchbay, "read_pw_dump", no_dump)
-    assert live_jack_names() == {}
-    said = capsys.readouterr().err
-    assert "could not read the graph" in said and "pw-dump is not installed" in said, said
+    with pytest.raises(PlanError) as refused:
+        live_jack_names()
+    assert "could not be read" in refused.value.problems[0] and "pw-dump is not installed" in refused.value.problems[0]
 
     def exploded(*a, **kw):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(patchbay, "read_pw_dump", exploded)
-    assert live_jack_names() == {}
-    assert "RuntimeError: boom" in capsys.readouterr().err
+    with pytest.raises(PlanError, match="RuntimeError: boom"):
+        live_jack_names()
 
     # And it really is the reader, not a stand-in: a graph it can read answers.
     monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **kw: CAPTURED)
     assert live_jack_names()["Audient iD14:capture_AUX0"] == [
         "Audient iD14 Multichannel:capture_AUX0"
     ]
+
+
+def test_an_unreadable_graph_is_the_takes_refusal(duo, tmp_path, monkeypatch):
+    def unread():
+        raise PlanError(["the live graph could not be read to name the take's ports as JACK sees them (x)"])
+
+    monkeypatch.setattr(transport, "_live_jack_names", unread)
+    said = no_engine(session_for(duo, tmp_path))
+    assert said.endswith("the live graph could not be read to name the take's ports as JACK sees them (x)")
+
+
+# --------------------------------------------------------------------------- #
+# Which ports a take records (#217): mono and stereo channels, and the amp
+# --------------------------------------------------------------------------- #
+
+AMPED = TWO_CHANNELS.replace("name: duo", "name: duo\namp: {plugin: nam, model: amp/models/x.nam}")
+
+# What a JACK client calls the stand-in interface: its description, where the
+# machine file's alias carries its nick, as the iD14's do on the rig.
+GRAPH = {
+    "iface:capture_AUX0": ["iface Multichannel:capture_AUX0"],
+    "iface:capture_AUX2": ["iface Multichannel:capture_AUX2"],
+    "iface:capture_AUX3": ["iface Multichannel:capture_AUX3"],
+    **{f"sushi:audio_output_{n}": [f"sushi:audio_output_{n}"] for n in range(8)},
+    # The amp's own output, which is not a take's: the guitar's dry tap is the
+    # interface's port, before the amp, and its stem is Sushi's, after it.
+    "NAM:Output": ["NAM:Output"],
+}
+
+
+@pytest.mark.parametrize("amp", [False, True], ids=["no amp", "amp"])
+def test_a_take_records_these_ports_for_a_mono_and_a_stereo_channel(tmp_path, monkeypatch, amp):
+    """Pinned whole (#217): which port each stem of a take of a rig with a
+    mono channel (on one input port, widened in Sushi) and a stereo one (on
+    two) is linked from, as JACK names it, with the amp in front of the
+    guitar and without. The amp changes none of it: a channel's stem is its
+    own track's output on Sushi, after the amp, and its dry tap the
+    interface's port, before it."""
+    rig_path = write(tmp_path / "config" / "rigs" / "duo.yaml", AMPED if amp else TWO_CHANNELS)
+    machine_path = write(tmp_path / "machines" / "box.yaml", MACHINE)
+    config = config_of(load_rig(rig_path))
+    assert ("_amp" in config) is amp
+    config_path = write(tmp_path / "run" / "duo.json", json.dumps(config))
+    monkeypatch.setattr(transport, "_live_jack_names", lambda: Graph(GRAPH, strict=True))
+    session = session_for((rig_path, config_path, machine_path), tmp_path)
+    assert isinstance(session, TakeSession), session
+    assert [(s.filename, s.port, width) for s, width in session.plan.stems] == [
+        ("guitar.wav", "sushi:audio_output_2", 2),
+        ("guitar-dry.wav", "iface Multichannel:capture_AUX0", 1),
+        ("keys.wav", "sushi:audio_output_4", 2),
+        ("keys-dry.wav", "iface Multichannel:capture_AUX2", 2),
+        ("master.wav", "sushi:audio_output_0", 2),
+    ]
+    columns = plan_columns(session.plan.stems)
+    assert [c.source for c in columns] == [
+        "sushi:audio_output_2", "sushi:audio_output_3", "iface Multichannel:capture_AUX0",
+        "sushi:audio_output_4", "sushi:audio_output_5",
+        "iface Multichannel:capture_AUX2", "iface Multichannel:capture_AUX3",
+        "sushi:audio_output_0", "sushi:audio_output_1",
+    ]
+    # The engine finds every one by that name among what JACK lists, and the
+    # amp's port is never among them.
+    listing = [capture.JackPort(name, (alias,)) for alias, (name,) in GRAPH.items()]
+    matched, problems = capture.match_sources(columns, listing)
+    assert problems == [] and [c.jack for c in matched] == [c.source for c in columns]
+    assert "NAM:Output" not in {c.source for c in columns}
 
 
 def test_a_channel_whose_input_role_is_not_in_the_machine_file_is_refused(duo, tmp_path):
@@ -370,7 +479,7 @@ def test_a_channel_the_loaded_config_lacks_is_refused(duo):
 
 
 # --------------------------------------------------------------------------- #
-# The session the listener runs
+# The session the recorder runs
 # --------------------------------------------------------------------------- #
 
 def test_the_pieces_in_place_make_a_take_session(duo, tmp_path):
@@ -423,8 +532,8 @@ def test_a_v1_rig_of_tracks_has_no_stems_to_record(tmp_path):
     assert said == (
         f"recording is not available: no take can be planned for this run: {v1} is a "
         "rig.yaml of tracks, and takes are planned only for a rig of channels, where "
-        "each channel has an output of its own to record; run it with "
-        "`sushi-rig up --rig <name>`"
+        "each channel has an output of its own to record: run a rig of config/rigs/ "
+        "with `sushi-rig up <name>`"
     )
 
 
@@ -432,8 +541,7 @@ def test_no_rig_file_at_all(tmp_path):
     said = no_engine(record_session(None, None, engine=StandInEngine))
     assert said == (
         "recording is not available: no take can be planned for this run: this run has "
-        "no rig file (the listener was given no --rig), so there is nothing to say which "
-        "ports a take records"
+        "no rig file, so there is nothing to say which ports a take records"
     )
 
 
@@ -442,8 +550,7 @@ def test_no_config_to_carry(duo, tmp_path):
     said = no_engine(record_session(rig_path, None, machine_file=machine_path,
                                     engine=StandInEngine))
     assert said.endswith(
-        "the listener was given no --panel-config, so it does not know the config "
-        "Sushi loaded, which every take carries")
+        "this run names no config Sushi loaded, which every take carries")
 
 
 def test_a_config_with_no_sample_rate(duo, tmp_path):
@@ -482,7 +589,7 @@ def test_an_engine_that_cannot_be_made_is_named(duo, tmp_path):
     assert said == "recording is not available: the capture engine could not be made: no libjack today"
 
 
-def test_nothing_unexpected_stops_the_listener_starting(duo, tmp_path, monkeypatch):
+def test_nothing_unexpected_stops_a_session_being_made(duo, tmp_path, monkeypatch):
     def explode(*a, **k):
         raise KeyError("surprise")
 
@@ -492,95 +599,27 @@ def test_nothing_unexpected_stops_the_listener_starting(duo, tmp_path, monkeypat
                     "unexpected error: 'surprise'")
 
 
-def test_record_on_a_refused_run_shows_the_reason_on_the_panel():
-    said = Transport(NoEngine("no take can be planned for this run: because")).on_record()
-    assert said == "record failed: recording is not available: no take can be planned for this run: because"
+def test_record_on_a_refused_run_says_the_reason():
+    """What the recorder answers RECORD with on a run it cannot plan a take
+    for: the session's own sentence, and nothing started."""
+    refused = NoEngine("no take can be planned for this run: because")
+    with pytest.raises(TransportError) as said:
+        refused.start("riff-idea")
+    assert str(said.value) == "recording is not available: no take can be planned for this run: because"
     assert NoEngine().message == NoEngine.MESSAGE
 
 
-# --------------------------------------------------------------------------- #
-# The listener is given it
-# --------------------------------------------------------------------------- #
-
-def run_listen(monkeypatch, argv):
-    seen = {}
-    monkeypatch.setattr("sushi_rig.listen.serve", lambda *a, **kw: seen.update(kw))
-    assert cli.main(["listen", *argv]) == 0
-    return seen["session"]
-
-
-def test_the_listener_gets_a_take_session_when_the_pieces_are_there(duo, tmp_path, monkeypatch, capsys):
-    rig_path, config_path, machine_path = duo
-    monkeypatch.setattr(transport, "_capture_engine", StandInEngine)
-    session = run_listen(monkeypatch, [
-        "--rig", str(rig_path), "--panel-config", str(config_path),
-        "--machine", str(machine_path), "--takes-dir", str(tmp_path / "takes"),
-    ])
-    assert isinstance(session, TakeSession)
-    assert session.plan.takes_dir == tmp_path / "takes"
-    assert "RECORD records guitar.wav from sushi:audio_output_2" in capsys.readouterr().err
-
-
-def test_the_listeners_session_names_an_unnamed_take_for_its_rig_file(duo, tmp_path, monkeypatch):
-    """#134 on the panel's path: the session `sushi-rig listen --rig` builds
-    answers the default from the rig file it was given and its takes folder,
-    by the rule the agent's takes are named by (`take.next_name`)."""
-    rig_path, config_path, machine_path = duo
-    monkeypatch.setattr(transport, "_capture_engine", StandInEngine)
-    session = run_listen(monkeypatch, [
-        "--rig", str(rig_path), "--panel-config", str(config_path),
-        "--machine", str(machine_path), "--takes-dir", str(tmp_path / "takes"),
-    ])
+def test_a_session_names_an_unnamed_take_for_its_rig_file(duo, tmp_path):
+    """#134 on `record_session`'s path, which the recorder plans each take
+    by: the default comes from the rig file it was given and its takes
+    folder, by the rule the agent's takes are named by (`take.next_name`)."""
+    session = session_for(duo, tmp_path)
     now = datetime(2026, 11, 12, 21, 0)
     assert session.default_name(now) == "duo-2026-11-12-take-01"
     (tmp_path / "takes" / "duo-2026-11-12-take-01").mkdir(parents=True)
     (tmp_path / "takes" / "_archive" / "duo-2026-11-12-take-04").mkdir(parents=True)
     assert session.default_name(now) == "duo-2026-11-12-take-05"
     assert session.default_name(now) == take_module.next_name(tmp_path / "takes", "duo", now)
-
-
-def test_the_listener_says_at_start_why_record_is_off(monkeypatch, capsys):
-    session = run_listen(monkeypatch, [])
-    assert isinstance(session, NoEngine)
-    assert f"RECORD is off — {session.message}" in capsys.readouterr().err
-
-
-def test_each_take_carries_the_amp_as_the_listener_last_sent_it(duo, tmp_path, monkeypatch):
-    """The session is built with the amp hook over the listener's own dict,
-    and `serve` updates that dict, not a copy, as a fader moves."""
-    pytest.importorskip("pythonosc")
-    import pythonosc.dispatcher
-    import pythonosc.osc_server
-
-    from sushi_rig.listen import AMP_ADDRESS_PREFIX, serve
-
-    handlers = {}
-
-    class Dispatcher:
-        def map(self, address, handler):
-            handlers[address] = handler
-
-    class Server:
-        def __init__(self, *a, **k):
-            pass
-
-        def serve_forever(self):
-            # A fader move arrives, then the listener is stopped.
-            handlers[AMP_ADDRESS_PREFIX + "*"](AMP_ADDRESS_PREFIX + "Input Lvl", 0.75)
-            raise KeyboardInterrupt
-
-        def server_close(self):
-            pass
-
-    monkeypatch.setattr(pythonosc.dispatcher, "Dispatcher", Dispatcher)
-    monkeypatch.setattr(pythonosc.osc_server, "BlockingOSCUDPServer", Server)
-    amp = {"Input Lvl": 0.25}
-    session = session_for(duo, tmp_path, amp_model="amp/x.nam", amp_parameters=amp)
-    assert session.amend_config({})["_amp"]["parameters"]["Input Lvl"] == 0.25
-    serve(None, tmp_path, tmp_path, amp_model="amp/x.nam", amp_parameters=amp, session=session)
-    config = session.amend_config(json.loads(json.dumps(session.plan.config)))
-    assert config["_amp"]["model"] == "amp/x.nam"
-    assert config["_amp"]["parameters"]["Input Lvl"] == 0.75
 
 
 def test_a_run_without_an_amp_records_none(duo, tmp_path):
@@ -595,8 +634,10 @@ def test_a_config_that_cannot_be_made_is_the_takes_own_refusal(duo, tmp_path):
         raise KeyError("Input Lvl")
 
     session.amend_config = broken
-    said = Transport(session, clock=lambda: datetime(2026, 11, 12, 21, 0)).on_record()
-    assert said.startswith("record failed: cannot record duo-2026-11-12-take-01: ")
+    with pytest.raises(TransportError) as refused:
+        session.start(session.default_name(datetime(2026, 11, 12, 21, 0)))
+    said = str(refused.value)
+    assert said.startswith("cannot record duo-2026-11-12-take-01: ")
     assert said.endswith("the config it would carry could not be made (KeyError: 'Input Lvl')")
     assert not (tmp_path / "takes").exists()
 
@@ -614,26 +655,8 @@ def test_a_config_at_another_rate_is_refused_when_planned(duo, tmp_path):
         "take could not be captured at the rate it would declare")
 
 
-def test_up_starts_the_listener_under_pw_jack_with_the_machine_and_quantum(tmp_path):
-    from sushi_rig.rig import QUANTUM, RATE, plan_children
-
-    machine = tmp_path / "machines" / "box.yaml"
-    listen = next(c for c in plan_children(
-        tmp_path, tmp_path / "run" / "duo.json", "config/rigs/duo.yaml",
-        headless=False, tuner=False, machine_file=machine,
-    ) if c["name"] == "listen")
-    command = listen["command"]
-    assert command[0] == "pw-jack" and command[2] == "listen"
-    assert command[command.index("--machine") + 1] == str(machine.resolve())
-    assert listen["env_set"] == {"PIPEWIRE_QUANTUM": f"{QUANTUM}/{RATE}"}
-    sushi = next(c for c in plan_children(
-        tmp_path, tmp_path / "run" / "duo.json", None, headless=False, tuner=False,
-    ) if c["name"] == "sushi")
-    assert sushi["env_set"] == listen["env_set"]
-
-
 # --------------------------------------------------------------------------- #
-# A whole take, through the session the listener would run
+# A whole take, through the session the recorder would run
 # --------------------------------------------------------------------------- #
 
 class Pushing:
@@ -664,9 +687,10 @@ def test_a_take_of_the_planned_stems_checks_clean(tmp_path, monkeypatch):
     """Real folder, real recorder, real stems, and the real capture engine,
     over guitar_vocal on this machine's file and the ports JACK listed on the
     rig: only JACK itself stands in (`jack_fake.py`, whose aliases are a
-    guess). The machine file's `Audient iD14:capture_AUX0` is not a JACK name,
-    `Audient iD14 Multichannel:capture_AUX0` is and carries it as an alias, and
-    the take must link the second for the first. The stand-in this replaced pushed blocks
+    guess) and the live graph is the rig's captured `pw-dump`. The machine
+    file's `Audient iD14:capture_AUX0` is not a JACK name, `Audient iD14
+    Multichannel:capture_AUX0` is, and the take must link the second for the
+    first: the plan names it so off the graph, the one resolver (#217). The stand-in this replaced pushed blocks
     without asking which ports, and so passed while the rig could not record
     at all (2026-11-02)."""
     np = pytest.importorskip("numpy")
@@ -679,6 +703,9 @@ def test_a_take_of_the_planned_stems_checks_clean(tmp_path, monkeypatch):
     levels = {port: (i + 1) / 40 for i, port in enumerate(JACK_PORTS)}
     jack = FakeJack(levels=levels)
     jack.install(monkeypatch)
+    from sushi_rig.patchbay import jack_port_names
+
+    monkeypatch.setattr(transport, "_live_jack_names", lambda: jack_port_names(CAPTURED, "out"))
     config = config_of(load_rig(GUITAR_VOCAL))
     config_path = write(tmp_path / "run" / "guitar_vocal.json", json.dumps(config))
     session = record_session(
@@ -694,7 +721,8 @@ def test_a_take_of_the_planned_stems_checks_clean(tmp_path, monkeypatch):
     take = load_take(folder)
     assert check_take(take) == [] and take.complete
     meta = yaml.safe_load((folder / "take.yaml").read_text())
-    assert {s["file"]: s["port"] for s in meta["stems"]}["guitar-dry.wav"] == ALIAS, "named as the machine file names it"
+    assert {s["file"]: s["port"] for s in meta["stems"]}["guitar-dry.wav"] == JACK_NAME, \
+        "named as the plan resolved it, which is as JACK names it"
     assert meta["capture"]["engine"]["sources"]["guitar-dry.wav"] == JACK_NAME, "linked as JACK names it"
     from sushi_rig.signals import read_wav
 
@@ -719,7 +747,7 @@ def test_a_shared_dry_tap_makes_a_take_that_checks_clean(tmp_path):
 
 def test_the_rig_file_and_library_are_read_at_each_record(duo, tmp_path, monkeypatch):
     """A SAVE rewrites the rig file and a commit moves the library while the
-    listener runs; each take says where they were when it was made."""
+    rig runs; each take says where they were when it was made."""
     pytest.importorskip("numpy")
     commits = iter(["aaa", "bbb"])
     monkeypatch.setattr(transport, "library_state",

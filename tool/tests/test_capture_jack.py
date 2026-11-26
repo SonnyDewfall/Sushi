@@ -46,8 +46,10 @@ def test_the_port_attributes_the_engine_uses_exist(name):
 
 @pytest.mark.parametrize("name", capture.JACK_PORT_ATTRIBUTES)
 def test_the_listed_port_attributes_the_engine_matches_on_exist(name):
-    """`aliases` is how a machine-file port, written by its PipeWire alias, is
-    found among JACK's (`capture.match_sources`)."""
+    """`name` is what the engine matches a planned port by, the name the plan
+    resolved off the live graph (`transport.jack_port`, #217); `aliases` is
+    only listed, beside each port the engine says it could not find
+    (`capture.JackPort`), so a refusal shows which port is which."""
     assert hasattr(jack.Port, name)
 
 

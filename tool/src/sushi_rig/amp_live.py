@@ -15,19 +15,20 @@ which can fail ("amp parameters not restored", in `up`'s warnings); each
 value says where it came from (`source`: "replayed" or "sent"), so a page can
 tell a value the agent sent from one it assumes `up` did.
 
-## When the panel runs, the panel owns the amp
+## The agent is the amp's one writer
 
-In panel mode the Open Stage Control panel's faders reach Carla through the
-listener (listen.py `_on_amp`), which remembers what it sent for SAVE and
-the record bar. Two writers that cannot see each other would each hold a
-record the other made wrong, so with the panel running the agent does not
-write at all: GET /amp says `known: "panel"`, its values only what `up`
-replayed, and every write is refused, 409 `panel`. Chosen over the listener
-forwarding its amp messages to the agent because that is a second channel
-from the listener to the agent for a mode the web UI never starts (it starts
-rigs headless), and the listener would still keep its own record for SAVE:
-two records again, one of them a copy. A rig switch already refuses to be
-made live in panel mode for the same reason (agent `state_blockers`).
+The Open Stage Control panel's faders once reached Carla through its
+listener, and the agent refused to write while the panel ran (409 `panel`),
+since two writers that cannot see each other would each hold a record the
+other made wrong. The panel and its listener are retired (#139, #218), so the
+agent is the only thing that writes to Carla while a rig runs, and GET /amp's
+values are what it last sent (`known: "sent"`).
+
+But for one run: a rig an older `up` started with the panel, before the pull
+that retired it (`rig.started_with_panel`). Its listener and panel run on in
+the rig's group, the old code, until the rig is stopped; so for it GET /amp
+says `known: "panel"`, and every write is refused, 409 `panel`, saying to
+restart the rig, which stops them.
 
 ## How the agent knows Carla answered
 
@@ -58,7 +59,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .rig import runs_panel
+from .rig import started_with_panel
 from .amp import (
     CARLA_OSC_PORT, PANEL_PARAMETERS, PARAMETER_INDEX, PARAMETER_RANGE, PARAMETER_UNIT,
     RIG_SAMPLE_RATE, AmpError, clamp, describe_model, model_library, parameter_message, read_amp,
@@ -67,7 +68,7 @@ from .amp import (
 
 # What GET /amp says of where its values come from.
 KNOWN_SENT = "sent"    # what the agent last sent Carla: not what Carla holds
-KNOWN_PANEL = "panel"  # the panel's listener writes to Carla, and the agent cannot see what
+KNOWN_PANEL = "panel"  # a run an older `up` started with the retired panel, whose listener writes to Carla
 
 # Where a value came from.
 REPLAYED = "replayed"  # the config's `_amp`, which `up` replays when Carla starts
@@ -75,8 +76,8 @@ SENT = "sent"          # sent by this agent since
 
 KNOWN_NOTE = {
     KNOWN_SENT: "what this agent last sent Carla, not what Carla holds: Carla cannot be asked",
-    KNOWN_PANEL: "the panel is running and writes to Carla itself, so these are only what the rig "
-                 "started with; the panel's faders may have moved them since",
+    KNOWN_PANEL: "the rig was started with the retired Open Stage Control panel, whose listener still writes "
+                 "to Carla, so these are only what the rig started with: restart the rig to set the amp here",
 }
 
 # The ops an amp change is logged as. `amp` is a parameter, `amp_model` the model.
@@ -159,8 +160,8 @@ def amp_problem(state: dict[str, Any] | None, described: dict[str, Any], *, writ
     - no rig up: 409 `no_rig`;
     - no amp child: 409 `no_amp` (started with --no-amp, a config with no
       `_amp`, or a Carla that did not start, which `up` warned of);
-    - writing in panel mode: 409 `panel` (see the module docstring), by
-      `rig.runs_panel`, so a state file that does not say is the panel's;
+    - writing to a run an older `up` started with the retired panel: 409
+      `panel` (`rig.started_with_panel`; the module docstring says why);
     - writing to an amp child that is dead: 502 `carla_down`, since Carla is
       the one that would have to answer. A read still answers, saying so
       (GET /amp's `carla`).
@@ -178,11 +179,11 @@ def amp_problem(state: dict[str, Any] | None, described: dict[str, Any], *, writ
         else:
             why = "Carla did not start with it (see the warnings of the up that started it, and amp.log)"
         return AmpRefused(f"the running rig has no amp: {why}", 409, "no_amp")
-    if writing and runs_panel(state):
+    if writing and started_with_panel(state):
         return AmpRefused(
-            "the panel is running and writes to the amp itself (its faders go to Carla through the "
-            "listener), and two writers that cannot see each other would each be wrong about what the "
-            "amp is at: change it on the panel, or run the rig headless", 409, "panel")
+            "the rig was started with the retired Open Stage Control panel by an older sushi-rig, and its "
+            "listener still writes to the amp, so two writers that cannot see each other would each be "
+            "wrong about what the amp is at: restart the rig, which stops the panel, then set it", 409, "panel")
     if writing and children["amp"].get("alive") is not True:
         return AmpRefused(
             f"Carla (pid {children['amp'].get('pid')}) is not running, so the amp cannot be set: "
@@ -412,8 +413,8 @@ def model_view(model: str | None, root: Path, shelf: ModelShelf) -> dict[str, An
 
 def parameters_view(amp: AmpState) -> list[dict[str, Any]]:
     """Each parameter in Carla's order: its value (None where nothing was
-    sent), range, unit, whether the panel puts it on a fader (`panel`, not
-    Quality: amp.PANEL_PARAMETERS says why), and where the value came from."""
+    sent), range, unit, whether the page's amp card puts it on a fader
+    (`panel`, not Quality: amp.PANEL_PARAMETERS says why), and where the value came from."""
     out = []
     for name in PARAMETER_INDEX:
         low, high = PARAMETER_RANGE[name]
@@ -429,7 +430,7 @@ def amp_view(amp: AmpState, state: dict[str, Any], model: dict[str, Any] | None)
     """GET /amp's answer for a rig with an amp; `model` is `model_view`'s,
     which the agent keeps per run and model rather than reading the file's
     status and summary again on every page's poll. Pure."""
-    known = KNOWN_PANEL if runs_panel(state) else KNOWN_SENT
+    known = KNOWN_PANEL if started_with_panel(state) else KNOWN_SENT
     return {
         "ok": True, "known": known, "known_note": KNOWN_NOTE[known],
         "model": model,
@@ -451,8 +452,7 @@ TOLERANCE = 1e-9
 def undo_check(entry: dict[str, Any], amp: AmpState, root: Path) -> None:
     """`AmpRefused` (409 `stale`) unless the amp is still as `entry` left it,
     by what the agent last sent: a later change, a rig switch's step or a
-    restart's replay is caught; a fader on the panel is not, since it is not
-    seen (and in panel mode nothing is written). `previous` None is a value
+    restart's replay is caught. `previous` None is a value
     never sent: there is nothing to put back."""
     args = entry["args"]
     if entry["op"] == "amp":

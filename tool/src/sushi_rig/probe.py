@@ -40,9 +40,10 @@ it by atom ports would have marked an IR loader as fully configurable.
 
 ## Why the flags matter more than they look
 
-`logarithmic` is the one worth calling out. `panel.py` currently decides
-fader scaling with a domain-ratio heuristic (`LOG_SCALE_DOMAIN_THRESHOLD`)
-because at the time it had no better signal — Sushi normalises every port
+`logarithmic` is the one worth calling out. The retired Open Stage Control
+panel (`panel.py`, #139) decided fader scaling with a domain heuristic
+(`LOG_SCALE_DOMAIN_THRESHOLD`), and the page still does for a plugin with no
+profile (rig.js `makeControl`), because Sushi normalises every port
 linearly and drops the hint. But the hint exists in the TTL, and lilv can read
 it. That makes it available to replace a guess with the plugin author's actual
 declaration.
@@ -347,8 +348,8 @@ def parameter_units(uri: str) -> dict[str, str]:
     means going to lilv, as `probe` already does.
 
     Returns `{}` rather than raising if lilv is missing or the plugin isn't
-    installed: units are a labelling nicety, and a panel with bare numbers is
-    far better than no panel at all.
+    installed: units are a labelling nicety, and a control with bare numbers
+    is far better than no control at all.
     """
     try:
         import lilv  # noqa: F401 - presence check; _world does the import
@@ -367,32 +368,4 @@ def parameter_units(uri: str) -> dict[str, str]:
         symbol = _unit_symbol(world, port)
         if symbol is not None:
             units[str(port.get_name())] = symbol
-    return units
-
-
-def units_for_config(config_path) -> dict[str, dict[str, str]]:
-    """Unit symbols for every LV2 plugin in a Sushi config, keyed by processor.
-
-    The panel needs units per *processor* ("eq"), but they live per *plugin URI*
-    — and the `--dump-plugins` output the panel is otherwise built from doesn't
-    carry URIs. The config does, so the mapping is made here.
-    """
-    import json
-    from pathlib import Path
-
-    try:
-        config = json.loads(Path(config_path).read_text())
-    except (OSError, ValueError):
-        return {}
-
-    by_uri: dict[str, dict[str, str]] = {}
-    units = {}
-    for track in config.get("tracks", []):
-        for plugin in track.get("plugins", []):
-            uri = plugin.get("uri")
-            if not uri:
-                continue
-            if uri not in by_uri:
-                by_uri[uri] = parameter_units(uri)
-            units[plugin["name"]] = by_uri[uri]
     return units

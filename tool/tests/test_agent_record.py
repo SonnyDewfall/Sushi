@@ -85,14 +85,14 @@ def root(tmp_path):
 
 class World:
     """The state file, `describe_rig`'s answer and the lifecycle commands for
-    `duo`, up headless as `up --rig --headless` starts it, with a recorder
+    `duo`, up as `up --rig` starts it, with a recorder
     child. `run` records each lifecycle command and does what it says to the
     rig's being up."""
 
-    def __init__(self, root, *, mode="headless", rig="config/rigs/duo.yaml", amp=True, recorder=True):
+    def __init__(self, root, *, rig="config/rigs/duo.yaml", amp=True, recorder=True):
         self.root = root
         self.state = {
-            "supervisor_pid": 10, "pgid": 10, "mode": mode, "config_name": "duo",
+            "supervisor_pid": 10, "pgid": 10, "config_name": "duo",
             "config": str(root / "run" / "rigs" / "duo.json"), "machine": str(root / "machines" / "box.yaml"),
             "started_at": "2026-11-02T10:00:00+00:00", "amp_model": "amp/models/First.nam" if amp else None,
             "amp_requested": amp, "amp_model_requested": None,
@@ -109,9 +109,9 @@ class World:
         if not self.running:
             return {"verdict": "absent", "running": False, "message": "No rig is running."}
         return {"verdict": "running", "running": True, "config_name": self.state["config_name"],
-                "mode": self.state.get("mode"), "rig": self.state.get("rig"), "config": self.state["config"],
+                "rig": self.state.get("rig"), "config": self.state["config"],
                 "children": {n: {"pid": p, "alive": self.alive.get(n, True)} for n, p in self.state["children"].items()},
-                "message": f"{self.state['config_name']} ({self.state.get('mode')} mode), up 2m"}
+                "message": f"{self.state['config_name']}, up 2m"}
 
     def switching(self):
         def compile(name, root, machine):
@@ -129,7 +129,7 @@ class World:
         self.ran.append(list(args))
         if args[0] == "up" and self.running:
             # As `up` refuses: rig.prepare_launch, before anything starts.
-            return Outcome(False, 1, "", "error: a rig is already running: duo (headless mode)\n")
+            return Outcome(False, 1, "", "error: a rig is already running: duo, up 2m\n")
         if args[0] == "down":
             self.running = False
         elif args[0] == "up":
@@ -236,12 +236,17 @@ def test_a_name_the_take_rule_refuses_is_refused_before_anything_is_asked(body, 
 def test_what_cannot_be_recorded_from_here_is_refused_with_a_code_and_why(root):
     world = World(root)
     assert record_refusal(world.state, world.described()) is None
+    assert record_refusal({**world.state, "mode": "headless"}, world.described()) is None
+    # A run an older `up` started with the panel: its listener's record bar
+    # would record beside the agent's, so refused until it is restarted.
     reason, code = record_refusal({**world.state, "mode": "panel"}, world.described())
-    assert code == "panel" and "whose record bar owns recording" in reason and "panel's RECORD" in reason
+    assert code == "panel" and "restart it, which stops them, then record" in reason
+    listening = {**world.state, "children": {**world.state["children"], "listen": 1}}
+    assert record_refusal(listening, world.described())[1] == "panel"
     no_rig = {k: v for k, v in world.state.items() if k != "rig"}
     reason, code = record_refusal(no_rig, world.described())
-    assert code == "v1" and reason.startswith("duo is a v1 config, not a rig of channels started with --rig")
-    assert "up --rig" in reason
+    assert code == "v1" and reason.startswith("duo was started from a v1 config by a sushi-rig from before")
+    assert "Restart it, which runs config/rigs/duo.yaml" in reason
     world.running = False
     assert record_refusal(world.state, world.described())[1] == "no_rig"
 
@@ -437,7 +442,6 @@ def test_a_rig_with_a_long_name_records_under_a_shortened_default(root):
 
 @pytest.mark.parametrize("change, code", [
     (lambda w: setattr(w, "running", False), "no_rig"),
-    (lambda w: w.state.update(mode="panel"), "panel"),
     (lambda w: w.state.pop("rig"), "v1"),
 ])
 def test_with_no_rig_to_record_there_is_no_default_and_an_unnamed_start_is_refused(root, change, code):
@@ -519,8 +523,7 @@ def test_a_bad_name_is_400_and_nothing_is_asked(root):
 
 @pytest.mark.parametrize("change, code, said", [
     (lambda w: setattr(w, "running", False), "no_rig", "no rig is running to record"),
-    (lambda w: w.state.update(mode="panel"), "panel", "whose record bar owns recording"),
-    (lambda w: w.state.pop("rig"), "v1", "is a v1 config, not a rig of channels"),
+    (lambda w: w.state.pop("rig"), "v1", "was started from a v1 config"),
 ])
 def test_what_cannot_be_recorded_from_here_is_refused_and_said_as_unavailable(root, change, code, said):
     world = World(root)
@@ -634,7 +637,7 @@ def test_up_with_nothing_running_asks_the_recorder_nothing(root):
     world = World(root)
     world.running = False
     agent, _, link, _ = record_agent(root, world)
-    status, answer = call(agent, "POST", "/rig/up", json={"config_name": "duo", "rig": True, "headless": True})
+    status, answer = call(agent, "POST", "/rig/up", json={"config_name": "duo", "rig": True})
     assert status == 200 and "take" not in answer
     assert link.asked == []
 
@@ -740,7 +743,7 @@ def test_an_up_refused_for_a_running_rig_leaves_the_take_recording(root):
     take for it would end the take for nothing."""
     agent, world, _, _ = record_agent(root)
     _, (status, answer), (_, now), (_, log) = calls(
-        agent, START, ("POST", "/rig/up", {"json": {"config_name": "duo", "rig": True, "headless": True}}),
+        agent, START, ("POST", "/rig/up", {"json": {"config_name": "duo", "rig": True}}),
         STATUS, ("GET", "/live/log", {}))
     assert status == 409 and "a rig is already running" in answer["reason"] and "take" not in answer
     assert (now["state"], now["name"]) == ("recording", "riff-idea")

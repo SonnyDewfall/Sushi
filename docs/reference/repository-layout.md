@@ -10,24 +10,22 @@ then.
 .                               ── RIG (root): what you run daily
 ├── config/
 │   ├── rigs/                     the rigs: one file each, channels and a master.
-│   │                             What the web UI starts, switches and saves into
-│   ├── *.json                    the v1 configs, one tone each (`sushi-rig up <name>`
-│   │                             without --rig; electric_board.json is its default)
-│   ├── src/                      hand-authored v1 sources (electric_board,
-│   │                             electric_stereo, guitar_vocal; the built
-│   │                             electric_stereo.json is in retired/)
+│   │                             What `sushi-rig up <name>` and the web UI start,
+│   │                             switch and save into; electric_board is `up`'s default
 │   ├── sound/                    nulltest references: what each rig (`<name>.yaml`, or
 │   │                             `<name>.<channel>.yaml`, with the rig it was made
-│   │                             from) and v1 config (`<name>.v1-mono.yaml`) sounds like
-│   ├── archive/                  auto-written version snapshots of v1 configs,
-│   │                             config/archive/<name>/vX.Y.json
+│   │                             from) sounds like
+│   ├── archive/                  version snapshots the v1 configs' saves wrote,
+│   │                             config/archive/<name>/vX.Y.json; nothing writes here now
 │   └── retired/                  hand-retired configs (incl. empty.json), kept
 │                                 for recovery only; a retired rig of channels is
-│                                 in retired/rigs/, its references in retired/sound/
+│                                 in retired/rigs/, its references in retired/sound/;
+│                                 the v1 configs, their sources and references in
+│                                 retired/v1/ (#218)
 ├── Patchbay/                   qpwgraph sessions
 │   ├── rig.qpwgraph              the v1 layout's routing; generated from
-│   │                             config/src/guitar_vocal.yaml, held by a test.
-│   │                             A rig of channels generates its own at start
+│   │                             guitar_vocal's v1 source (now in config/retired/v1/src/),
+│   │                             held by a test. A rig of channels generates its own at start
 │   ├── Default.qpwgraph          hand-made in qpwgraph on the rig, kept as a
 │   │                             sample; nothing in the tool reads it
 │   └── Test_1.qpwgraph           the same: a hand-made session, not read
@@ -55,10 +53,10 @@ then.
 │
 ├── tool/                       ── TOOL: the `sushi-rig` package
 │   ├── pyproject.toml
-│   ├── src/sushi_rig/            47 modules and __init__, one job each:
+│   ├── src/sushi_rig/            45 modules and __init__, one job each:
 │   │                             spec, rigfile, rigedit, convert, emit, dump, probe,
-│   │                             probes, profile, plugins, library, live, panel,
-│   │                             listen, save, saves, state, procs, rig, supervisor,
+│   │                             probes, profile, plugins, library, live,
+│   │                             save, saves, state, procs, rig, supervisor,
 │   │                             qpwgraph, patchbay, machine, amp, amp_live, top,
 │   │                             doctor, verify, render, nulltest, signals, analysis,
 │   │                             selftest, take, transport, recorder,

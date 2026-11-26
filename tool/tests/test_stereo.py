@@ -15,7 +15,8 @@ on both channels that `mono_to_stereo` gives a channel:
   null tests render it (`rigfile.heard`), and the same with the compiler's
   copies to stereo taken out, which is what the rig was before them;
 - each of those plugins as the compiler compiles it alone on a channel;
-- each v1 config, as `nulltest --all` renders it;
+- each v1 config (the frozen copies, tests/fixtures/v1/, since config/'s
+  were retired, #218), as `nulltest` renders a v1 config;
 - an empty track, and the compiler's send and return with an empty chain.
 
 Each render's left and right RMS and their correlation go into a table that
@@ -64,7 +65,7 @@ import stereo_table  # noqa: E402
 from sushi_rig import nulltest, rigfile, stereo  # noqa: E402
 from sushi_rig.analysis import channel_balance, check_finite  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
-from rig_fixtures import committed_that, compiled_to_render, valid_committed  # noqa: E402
+from rig_fixtures import FROZEN_V1, committed_that, compiled_to_render, valid_committed  # noqa: E402
 from sushi_rig.render import Stimulus, channels_of, render_offline  # noqa: E402
 
 ROOT = checkout_root()
@@ -72,7 +73,13 @@ SUSHI = ROOT / "sushi"
 # Every committed rig that is one, whatever it holds: balance is asked of any
 # rig, and one that does not compile is test_rig_fixtures.py's to fail on.
 RIGS = valid_committed()
-V1_CONFIGS = sorted((ROOT / "config").glob("*.json"))
+# The v1 configs, as frozen in tests/fixtures/v1/: config/ held them until
+# they were retired to config/retired/v1/ (#218), and a glob of config/ then
+# came back empty, so this measured nothing and was skipped (CI's slow job,
+# review of PR #253). The frozen copies are what the v1 renderer is tested
+# on elsewhere (test_render.py), and `test_the_v1_configs_measured_are_there`
+# fails fast should they go.
+V1_CONFIGS = sorted(FROZEN_V1.glob("*.json"))
 
 # The null tests' sweep, shorter: level and correlation need no low band
 # resolved, and there are seventy renders. Two channels of the same samples
@@ -303,12 +310,18 @@ def test_the_port_table_is_what_lilv_reads():
     assert wrong == []
 
 
+def test_the_v1_configs_measured_are_there():
+    """A parametrisation over nothing is a skip, which CI's slow job refuses:
+    this says so in the fast suite instead, naming where they are looked for."""
+    assert len(V1_CONFIGS) >= 10, f"the frozen v1 configs are gone from {FROZEN_V1}"
+
+
 @needs_sushi
 @pytest.mark.slow
 @pytest.mark.parametrize("config", V1_CONFIGS, ids=lambda p: p.stem)
 def test_each_v1_config(config, tmp_path, request):
     for channel in channels_of(json.loads(config.read_text()), config):
-        _record(request, "each v1 config, as nulltest --all renders it",
+        _record(request, "each v1 config (frozen), as nulltest renders one",
                 channel.name, "", _render(tmp_path, channel.name, channel.config))
 
 

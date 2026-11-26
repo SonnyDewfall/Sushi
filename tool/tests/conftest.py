@@ -45,6 +45,58 @@ def _config_rigs_is_read_only_on_purpose(request):
         pytest.fail(rig_fixtures.said(stray), pytrace=False)
 
 
+@pytest.fixture(autouse=True)
+def _the_checkouts_rigs_to_check_are_the_frozen_ones(request, monkeypatch):
+    """`verify.configs_to_check` lists config/rigs/: what `verify --all`,
+    `plugins` and `doctor` take, and what a refusal's `plugins add` advice is
+    worked out over (`plugins._add_requires`), since the v1 configs it once
+    listed were retired (#218). For the real checkout, a test not marked
+    `committed_rigs` gets the frozen rigs (rig_fixtures.py) instead, so that
+    what it is told does not change with the owner's saves and no read of
+    config/rigs/ is made that it did not mean. Another root, a test's own
+    checkout, is listed as it is."""
+    if request.node.get_closest_marker(rig_fixtures.MARKER):
+        yield
+        return
+    from sushi_rig import verify
+    from sushi_rig.paths import checkout_root
+
+    real = verify.configs_to_check
+    here = checkout_root().resolve()
+
+    def listed(root):
+        if Path(root).resolve() == here:
+            return sorted(rig_fixtures.FROZEN.glob("*.yaml"))
+        return real(root)
+
+    monkeypatch.setattr(verify, "configs_to_check", listed)
+    yield
+
+
+class GraphAsWritten(dict):
+    """A live graph in which every port is one JACK client sees by the name
+    it is written with: `patchbay.jack_port_names` of a graph that holds
+    whatever a plan asks for, once. What Sushi's own ports are, and what
+    every test's stand-in ports are."""
+
+    def get(self, port, default=None):
+        return [port]
+
+
+@pytest.fixture(autouse=True)
+def _no_test_reads_the_live_graph(monkeypatch):
+    """A take's plan names each port as JACK sees it, off the live `pw-dump`
+    (`transport._live_jack_names`), and refuses where it cannot (#217). No
+    test reads the machine's graph: on one with a rig up every assertion
+    would depend on what is plugged in, and on one with none every plan
+    would be refused. Each port is its own name here (`GraphAsWritten`); a
+    test of the resolver gives its own map, and the reader's own tests bind
+    it at import."""
+    from sushi_rig import transport
+
+    monkeypatch.setattr(transport, "_live_jack_names", lambda: GraphAsWritten())
+
+
 @pytest.fixture
 def real_dump() -> dict:
     """The real `--dump-plugins` output captured from Sushi 1.3.0.

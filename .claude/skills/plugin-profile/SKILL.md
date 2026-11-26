@@ -5,7 +5,7 @@ description: Write or revise a sushi-rig component profile — the file that dec
 
 # Writing a component profile
 
-A **component profile** describes one plugin and how to present it: which controls show, how they group, what they are called, what scale they use, and which matter on a phone. The rig's panel generator reads it, so a good profile is the difference between four meaningful knobs and twenty-four meaningless ones.
+A **component profile** describes one plugin and how to present it: which controls show, how they group, what they are called, what scale they use, and which matter on a phone. The web page reads it to draw the plugin's card, so a good profile is the difference between four meaningful knobs and twenty-four meaningless ones.
 
 ## The one rule that matters
 
@@ -145,7 +145,7 @@ Everything else you propose is `draft`, including judgements you are confident a
 
 **Group by what the controls do, not by port order.** Threshold and ratio belong together; attack and release belong together. The plugin's own GUI layout is the best evidence available, which is why a screenshot is worth asking for.
 
-**`db` is for values the plugin declares in decibels**, or whose range makes it unambiguous. `log` is for values best moved logarithmically, such as frequency or time. Note that Sushi normalises every control linearly and ignores the LV2 `logarithmic` hint — so this field is purely about presentation, and compensating for it is the panel's job, not the profile's.
+**`db` is for values the plugin declares in decibels**, or whose range makes it unambiguous. `log` is for values best moved logarithmically, such as frequency or time. Note that Sushi normalises every control linearly and ignores the LV2 `logarithmic` hint — so this field is purely about presentation, and compensating for it is the page's job, not the profile's.
 
 ## Validate, every time
 

@@ -120,7 +120,7 @@ def test_a_graph_with_every_source_has_nothing_missing():
 def test_a_missing_source_is_named_with_every_port_and_its_aliases():
     listed = ports([s for s in EVERY_SOURCE if "AUX0" not in s]) + [capture.JackPort("x:y", ("x alias:y",))]
     _, problems = capture.match_sources(COLUMNS, listed)
-    assert problems[0] == "no JACK port is called or aliased 'Audient iD14:capture_AUX0' (for guitar-dry.wav)"
+    assert problems[0] == "no JACK port is called 'Audient iD14:capture_AUX0' (for guitar-dry.wav)"
     assert problems[-1].startswith("the output ports JACK lists are: ")
     assert "Audient iD14:capture_AUX1 (no aliases)" in problems[-1] and "x:y (aliases: x alias:y)" in problems[-1]
     assert problems[-1].count("(") == len(listed), "every port, not the first eight"

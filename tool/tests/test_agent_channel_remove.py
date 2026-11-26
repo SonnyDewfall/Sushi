@@ -286,9 +286,6 @@ def test_a_channel_the_rig_does_not_have_another_rig_and_a_bad_body_are_refused(
     assert "the running rig is guitar_vocal, not accustomed" in body["reason"]
     status, body = call(agent, "POST", "/rig/channels/vocal/remove", json={"channel": "vocal"})
     assert status == 400, body
-    world.state["mode"] = "panel"
-    status, body = remove(agent, "vocal")
-    assert status == 409 and body["code"] == "panel", body
     assert rig_file(root, "guitar_vocal").read_bytes() == before and fake.tracks == ["guitar", "vocal", "master"]
 
 

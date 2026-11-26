@@ -862,7 +862,7 @@ def test_the_focus_goes_somewhere_sensible_when_what_it_came_from_has_gone(brows
         p.get_by_role("button", name="Browse the library…").click()
         expect(drawer(p)).to_be_visible()
         # A rig comes up meanwhile, from elsewhere: the button it came from is gone.
-        assert post(served, "/rig/up", {"config_name": "electric_board", "rig": True, "headless": True})["ok"]
+        assert post(served, "/rig/up", {"config_name": "electric_board", "rig": True})["ok"]
         expect(p.locator(".add-slot")).to_have_count(4, timeout=8000)
         p.keyboard.press("Escape")
         expect(slot(p, "Add at the start…")).to_be_focused()

@@ -6,8 +6,8 @@ PipeWire's. What this cannot say is anything about PipeWire; that is the
 engine's question, and the rig machine's.
 
 Its own module because it needs numpy, and `importorskip` mid-module skips
-everything in the file: the transport's decisions are in test_transport.py and
-run on a machine with no numpy.
+everything in the file. The session is driven as the recorder drives it
+(recorder_process.py): `default_name`, `start`, `stop`.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from sushi_rig.transport import (  # noqa: E402
     NOT_MEASURED,
     TakePlan,
     TakeSession,
-    Transport,
     TransportError,
 )
 
@@ -92,10 +91,9 @@ class FakeEngine:
 
 def test_a_take_from_record_to_stop(tmp_path):
     engine = FakeEngine()
-    transport = Transport(TakeSession(plan(tmp_path), engine))
-    transport.on_name("riff-idea")
-    assert transport.on_record() == "recording riff-idea"
-    assert transport.on_stop() == "recorded riff-idea: 0.5 s"
+    session = TakeSession(plan(tmp_path), engine)
+    assert session.start("riff-idea") == "recording riff-idea"
+    assert session.stop() == "recorded riff-idea: 0.5 s"
 
     finished = take.load_take(tmp_path / "riff-idea")
     assert finished.complete
@@ -123,10 +121,9 @@ def test_the_engines_account_is_kept_in_the_take_beside_the_recorders(tmp_path):
             super().stop()
             return {"xruns": 2, "skipped_frames": 0, "skipped_blocks": 0, "quantum_changes": 0, "error": ""}
 
-    transport = Transport(TakeSession(plan(tmp_path), Reporting()))
-    transport.on_name("riff-idea")
-    transport.on_record()
-    said = transport.on_stop()
+    session = TakeSession(plan(tmp_path), Reporting())
+    session.start("riff-idea")
+    said = session.stop()
     assert said.startswith("recorded riff-idea: 0.5 s — 1 problem(s): the audio server reported 2 xrun(s)")
     kept = take.load_take(tmp_path / "riff-idea").metadata["capture"]
     assert kept["engine"]["xruns"] == 2
@@ -174,27 +171,25 @@ def test_a_column_that_goes_silent_mid_take_is_on_the_panel_and_in_the_file(tmp_
     the recorder keeps reads zero; the take names the port anyway."""
     audio = source(0.5)
     audio[10 * Q:11 * Q, 5] = 0.0  # the vocal's dry tap, one block
-    transport = Transport(TakeSession(plan(tmp_path), FakeEngine(audio)))
-    transport.on_name("riff-idea")
-    transport.on_record()
-    said = transport.on_stop()
+    session = TakeSession(plan(tmp_path), FakeEngine(audio))
+    session.start("riff-idea")
+    said = session.stop()
     assert "vocal-dry.wav (captured from Audient iD14:capture_AUX1) went silent 1 time(s)" in said
     kept = take.load_take(tmp_path / "riff-idea").metadata["capture"]
     assert kept["lost_frames"] == 0 and kept["dropouts"] == [] and kept["error"] == ""
     assert kept["silent_blocks"] == {"vocal-dry.wav": {"count": 1, "first_at_seconds": round(10 * Q / SR, 3)}}
 
 
-def test_a_take_from_a_v2_rig_carries_the_rig_and_the_library_through_the_transport(tmp_path):
+def test_a_take_from_a_v2_rig_carries_the_rig_and_the_library_through_the_session(tmp_path):
     """The plan carries them; the session hands them on; the folder has them."""
     import dataclasses
 
     rig_text = frozen("guitar_vocal").read_text()
     library = {"commit": "0123456789abcdef0123456789abcdef01234567", "dirty": True}
     with_rig = dataclasses.replace(plan(tmp_path), rig_text=rig_text, library=library)
-    transport = Transport(TakeSession(with_rig, FakeEngine()))
-    transport.on_name("riff-idea")
-    transport.on_record()
-    transport.on_stop()
+    session = TakeSession(with_rig, FakeEngine())
+    session.start("riff-idea")
+    session.stop()
     finished = take.load_take(tmp_path / "riff-idea")
     assert (finished.folder / take.RIG_FILE).read_text() == rig_text
     assert finished.metadata["rig"] == take.RIG_FILE
@@ -205,48 +200,51 @@ def test_a_take_from_a_v2_rig_carries_the_rig_and_the_library_through_the_transp
 def test_takes_recorded_without_a_name_are_numbered_for_the_rig_and_the_day(tmp_path):
     """#134 through the real session, recorder and folders: RECORD with
     nothing typed is `<rig file's name>-<date>-take-<nn>`, counted from the
-    takes folder at each RECORD, the day by the listener's (local) clock."""
+    takes folder at each RECORD, the day by the recorder's (local) clock. The
+    recorder asks the session for the name (`default_name`) and starts the
+    take under it, as here."""
     import dataclasses
 
-    clock = [NOW]
     with_rig = dataclasses.replace(plan(tmp_path), rig_path=frozen("guitar_vocal"))
     session = TakeSession(with_rig, FakeEngine())
-    transport = Transport(session, clock=lambda: clock[0])
-    assert transport.on_record() == "recording guitar_vocal-2026-10-31-take-01"
-    assert transport.on_stop() == "recorded guitar_vocal-2026-10-31-take-01: 0.5 s"
+
+    def record(now=NOW):
+        return session.start(session.default_name(now))
+
+    assert record() == "recording guitar_vocal-2026-10-31-take-01"
+    assert session.stop() == "recorded guitar_vocal-2026-10-31-take-01: 0.5 s"
     session.engine = FakeEngine()
-    assert transport.on_record() == "recording guitar_vocal-2026-10-31-take-02"
-    transport.on_stop()
+    assert record() == "recording guitar_vocal-2026-10-31-take-02"
+    session.stop()
     assert take.check_take(take.load_take(tmp_path / "guitar_vocal-2026-10-31-take-02")) == []
     # A take recorded over is archived, and one archived keeps its number.
     session.engine = FakeEngine()
-    transport.on_name("guitar_vocal-2026-10-31-take-02")
-    assert "the earlier guitar_vocal-2026-10-31-take-02 is in _archive/" in transport.on_record()
-    transport.on_stop()
+    assert "the earlier guitar_vocal-2026-10-31-take-02 is in _archive/" in session.start(
+        "guitar_vocal-2026-10-31-take-02")
+    session.stop()
     shutil.rmtree(tmp_path / "guitar_vocal-2026-10-31-take-02")
     session.engine = FakeEngine()
-    transport.on_name("")
-    assert transport.on_record() == "recording guitar_vocal-2026-10-31-take-03"
-    transport.on_stop()
-    clock[0] = datetime(2026, 11, 1, 0, 0, 1)
+    assert record() == "recording guitar_vocal-2026-10-31-take-03"
+    session.stop()
     session.engine = FakeEngine()
-    assert transport.on_record() == "recording guitar_vocal-2026-11-01-take-01"
-    transport.on_stop()
+    assert record(datetime(2026, 11, 1, 0, 0, 1)) == "recording guitar_vocal-2026-11-01-take-01"
+    session.stop()
     assert take.take_names(tmp_path) == [
         "guitar_vocal-2026-10-31-take-01", "guitar_vocal-2026-10-31-take-03", "guitar_vocal-2026-11-01-take-01"]
 
 
 def test_a_run_with_no_rig_file_has_no_default_name_and_says_to_type_one(tmp_path):
     """No rig, no default: refused in words, and nothing is written. No run
-    of the listener makes such a plan (`plan_for_run` refuses first)."""
-    transport = Transport(TakeSession(plan(tmp_path), FakeEngine()), clock=lambda: NOW)
-    assert transport.on_record() == (
-        "record failed: this take has no name, and the run has no rig file to name it after: "
+    of the recorder makes such a plan (`plan_for_run` refuses first)."""
+    session = TakeSession(plan(tmp_path), FakeEngine())
+    with pytest.raises(TransportError) as refused:
+        session.default_name(NOW)
+    assert str(refused.value) == (
+        "this take has no name, and the run has no rig file to name it after: "
         "type a name for the take")
-    assert transport.recording is None and list(tmp_path.iterdir()) == []
-    transport.on_name("riff-idea")
-    assert transport.on_record() == "recording riff-idea"
-    transport.on_stop()
+    assert list(tmp_path.iterdir()) == []
+    assert session.start("riff-idea") == "recording riff-idea"
+    session.stop()
 
 
 def test_recording_over_a_name_keeps_the_earlier_take_and_says_where(tmp_path):
@@ -326,10 +324,9 @@ def test_a_recorder_that_will_not_start_leaves_a_take_that_says_so(tmp_path):
 
 
 def test_an_engine_that_will_not_stop_still_gives_a_finished_take(tmp_path):
-    transport = Transport(TakeSession(plan(tmp_path), FakeEngine(stop_error=RuntimeError("stuck"))))
-    transport.on_name("riff-idea")
-    transport.on_record()
-    said = transport.on_stop()
+    session = TakeSession(plan(tmp_path), FakeEngine(stop_error=RuntimeError("stuck")))
+    session.start("riff-idea")
+    said = session.stop()
     assert said.startswith("recorded riff-idea: 0.5 s — 1 problem(s):")
     assert "did not stop cleanly: stuck" in said
     assert take.load_take(tmp_path / "riff-idea").complete

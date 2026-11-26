@@ -68,7 +68,11 @@ def test_only_what_the_browser_reads_is_sent_and_no_range():
     flat, _ = panel_profile(gxts9_profile())
     assert set(flat["parameters"][0]) == {
         "name", "label", "group", "visibility", "scale", "control", "phone", "description",
-        "unit", "integer", "toggled", "scale_points"}
+        "unit", "integer", "toggled", "scale_points", "symbol"}
+    # The port's symbol, a fact, which a card's All reads to leave out the
+    # plugin's own bypass (R.ownSwitch).
+    symbols = {p["name"]: p["symbol"] for p in gxts9_profile()["parameters"]}
+    assert {p["name"]: p["symbol"] for p in flat["parameters"]} == symbols and symbols["BYPASS"] == "BYPASS"
 
 
 def test_ungrouped_parameters_go_last_in_their_own_order():
@@ -486,6 +490,126 @@ def test_a_card_without_a_profile_shows_every_parameter_read_only_ones_too(blank
                                ["Crispness", False], ["Formant Preserving", False], ["Wet-Dry Mix", False]]]
 
 
+def test_a_control_no_profile_judged_is_on_a_log_scale_where_its_range_is_positive_and_wider_than_ten(blank):
+    """#139's second gap: a plugin with no profile got linear knobs however
+    wide its range, where the retired Open Stage Control panel had put a wide
+    range on a log drag (its LOG_SCALE_DOMAIN_THRESHOLD, a top of 10 or more).
+    A log knob needs a bottom above zero, so the rule is a range above zero
+    whose top is more than ten times its bottom; a profile's own scale still
+    wins, linear where it says linear."""
+    out = rigjs(blank, """
+      const info = (min, max) => ({automatable: true, value: 0, min_domain_value: min, max_domain_value: max});
+      const plain = (min, max) => R.makeControl('x', info(min, max), null).scale;
+      const f = R.makeControl('Freq', info(20, 20000), null);
+      return {
+        scales: [plain(20, 20000), plain(0.016, 63), plain(100, 1000), plain(0, 1000), plain(-12, 12),
+                 plain(0, 1), plain(1, 10.5)],
+        mid: R.realOf(f, R.valueAt(f, 0.5)),
+        profiled: R.makeControl('Freq', info(20, 20000), {scale: 'linear'}).scale,
+        unjudged: R.makeControl('Freq', info(20, 20000), {label: 'Freq'}).scale,
+        notProfiled: R.unitPanel({Extra: info(20, 20000)}, {groups: [], parameters: []}).advanced[0].scale,
+        ratio: R.LOG_RANGE_RATIO,
+      };""")
+    assert out["scales"] == ["log", "log", "linear", "linear", "linear", "linear", "log"], \
+        "positive and wider than ten: log; ten exactly, reaching zero or crossing it: linear"
+    assert abs(out["mid"] - 632.4555) < 1e-3, "halfway is the geometric mean, as a profile's log is"
+    assert out["profiled"] == "linear" and out["unjudged"] == "linear", "a profile's entry keeps the profile's word"
+    assert out["notProfiled"] == "log", "a parameter the profile does not name is drawn as no profile would"
+    assert out["ratio"] == 10
+
+
+def test_a_card_keeps_what_its_profile_hides_for_its_all_drawn_plainly(blank, served):
+    """#139's first gap: a parameter a profile hides was out of reach from the
+    page. `unitPanel` keeps each hidden one the running plugin has and can be
+    set, drawn plainly: the plugin's own name, its unit and toggle from the
+    profile's facts, none of the profile's judgements. Not the plugin's own
+    bypass, though (review of #139): the GxTS9 profile hides only its BYPASS,
+    which Sushi's bypass stands for, so its card offers no All at all; Level,
+    hidden here for the test, is offered by its own name, with no unit, since
+    the plugin declares none (a unit is a fact, never invented)."""
+    profile = rigjs(blank, "return (await (await fetch('/profiles')).json()).profiles[arg];", GXTS9)
+    info = copy.deepcopy(served.rig.info["overdrive"])
+    out = rigjs(blank, """
+      const profile = JSON.parse(JSON.stringify(arg.profile));
+      const shown = (c) => [c.name, c.label, c.scale, c.unit, c.profiled, c.visibility, c.readOnly];
+      const asShipped = R.unitPanel(arg.info, profile);
+      const level = profile.parameters.find((e) => e.name === 'Level');
+      level.visibility = 'hidden';
+      level.label = 'Volume';
+      const p = R.unitPanel(arg.info, profile);
+      // A read-only parameter the profile hides is not offered: it cannot be set.
+      const info = JSON.parse(JSON.stringify(arg.info));
+      info.Level.automatable = false;
+      const plain = R.unitPanel(arg.info, null);
+      return {shipped: asShipped.hidden.map(shown), hidden: p.hidden.map(shown),
+              readOnly: R.unitPanel(info, profile).hidden.length,
+              plain: plain.hidden, shownElsewhere: R.primaryControls(p).concat(p.advanced).map((c) => c.name)};""",
+                {"info": info, "profile": profile})
+    assert out["shipped"] == [], "the profile hides only BYPASS, the plugin's own bypass: no All"
+    assert out["hidden"] == [["Level", "Level", "linear", None, False, "primary", False]], \
+        "the plugin's name, not the profile's label 'Volume'; no unit, as the plugin declares none"
+    assert out["readOnly"] == 0
+    assert out["plain"] == [], "a card with no profile hides nothing"
+    assert "BYPASS" not in out["shownElsewhere"] and "Level" not in out["shownElsewhere"]
+
+
+def test_a_cards_all_leaves_out_the_plugins_own_bypass_or_on_switch(blank):
+    """The profiles hide GxTS9's BYPASS, calf's Bypass, a-reverb's Enable and
+    string-machine's Enabled (symbol lv2_enabled): Sushi's bypass is what
+    switches a pedal. Matched as whole words, in any case, in the name or
+    the symbol; a word that only contains one is not."""
+    out = rigjs(blank, """
+      const own = (name, symbol) => R.ownSwitch({name, symbol});
+      return [own('BYPASS', 'BYPASS'), own('Bypass', 'bypass'), own('Enable', 'enable'),
+              own('Enabled', 'lv2_enabled'), own('On', 'lv2_enabled'), own('Fx Bypass', null),
+              own('Bypassed', 'byp'), own('Enabler', 'x'), own('Tone', 'fslider1_'), own('Level', null)];""")
+    assert out == [True, True, True, True, True, True, False, False, False, False]
+
+
+def test_a_hidden_parameter_the_plugin_names_the_values_of_is_a_selector_of_them(blank):
+    """A hidden enumerated parameter is drawn as one a profile shows is: a
+    selector of the plugin's own names for its values (review of #139)."""
+    out = rigjs(blank, """
+      const info = {automatable: true, value: 0, min_domain_value: 0, max_domain_value: 2};
+      const points = [{value: 0, label: 'Off'}, {value: 1, label: 'Soft'}, {value: 2, label: 'Hard'}];
+      const entry = R.plainEntry({name: 'Mode', label: 'Clip', unit: null, integer: true, scale_points: points,
+                                  visibility: 'hidden', scale: 'linear', control: 'knob'});
+      const c = R.makeControl('Mode', info, entry);
+      const none = R.makeControl('Mode', info, R.plainEntry({name: 'Mode', integer: true}));
+      return {entry, scale: c.scale, control: c.control, choices: c.choices, label: c.label,
+              noneScale: none.scale, noneControl: none.control};""")
+    assert out["entry"]["scale_points"] == [{"value": 0, "label": "Off"}, {"value": 1, "label": "Soft"},
+                                            {"value": 2, "label": "Hard"}]
+    assert (out["scale"], out["control"], out["label"]) == ("enum", "selector", "Mode")
+    assert [c["label"] for c in out["choices"]] == ["Off", "Soft", "Hard"]
+    assert (out["noneScale"], out["noneControl"]) == ("linear", "knob"), "no named values: a knob"
+
+
+def test_an_integer_on_a_log_scale_steps_by_at_least_one_whole_number(blank):
+    """A hidden 1 to 64 integer is drawn on a log scale (wider than ten), and
+    a wheel notch or an arrow key of a log knob is a hundredth of its travel,
+    which near 1 rounds back to 1: it never moved (review of #139). Each
+    step now moves it one whole number at least, the way it was turned, and
+    holds at its ends."""
+    out = rigjs(blank, """
+      const info = {automatable: true, value: 0, min_domain_value: 1, max_domain_value: 64};
+      const c = R.makeControl('Voices', info, R.plainEntry({name: 'Voices', integer: true}));
+      const at = (real) => R.normalisedOf(c, real);
+      const real = (v) => Math.round(R.realOf(c, v));
+      const up = [], down = [];
+      let v = at(1);
+      for (let i = 0; i < 5; i++) { v = R.stepped(c, v, 1); up.push(real(v)); }
+      v = at(6);
+      for (let i = 0; i < 6; i++) { v = R.stepped(c, v, -1); down.push(real(v)); }
+      return {scale: c.scale, up, down, scroll: real(R.scrolled(c, at(2), 1)), fine: real(R.stepped(c, at(3), 1, true)),
+              top: real(R.stepped(c, at(64), 1)), far: real(R.stepped(c, at(32), 10))};""")
+    assert out["scale"] == "log"
+    assert out["up"] == [2, 3, 4, 5, 6] and out["down"] == [5, 4, 3, 2, 1, 1]
+    assert out["scroll"] == 3 and out["fine"] == 4, "a notch and a fine step move it too"
+    assert out["top"] == 64, "held at the top"
+    assert out["far"] > 33, "ten steps high up the range are a log knob's ten, more than one each"
+
+
 def test_the_rack_keeps_the_send_and_return_apart_by_role_or_by_name(blank, served):
     live = served.rig.snapshot(served.rig.connect())
     plugins = served.rig.plugins(None)
@@ -718,16 +842,18 @@ def test_the_page_checks_a_name_by_the_rule_the_agent_saves_by(blank, name):
 
 def test_save_is_offered_whenever_a_rig_saveable_from_here_is_up(blank):
     """Not only while the unsaved list has something: it is what the agent
-    saw, and the panel, pedals mapped in Sushi, or an agent restarted since
-    leave the rig differing from its file with nothing listed (review,
-    2026-11-02). A v1 run and one with its panel are not offered, with how."""
+    saw, and pedals mapped in Sushi, or an agent restarted since, leave the
+    rig differing from its file with nothing listed (review, 2026-11-02). A
+    v1 run is not offered, with how; nor is a run an older `up` started
+    with the retired panel (#139), which /health says (`panel`) because its
+    SAVE listener still runs beside it until a restart."""
     def view(rig, busy=None, items=1, pending=None, log=None, agent_started="2026-11-02T09:00:00+00:00"):
         health = {"ok": True, "body": {"rig": rig, "agent": {"busy": busy, "started_at": agent_started}}}
         return rigjs(blank, "return R.saveView(arg.health, {items: new Array(arg.items).fill({})}, arg.pending, arg.log);",
                      {"health": health, "items": items, "pending": pending, "log": log})
 
     up = {"running": True, "config_name": "electric_board", "rig": "config/rigs/electric_board.yaml",
-          "mode": "headless", "started_at": "2026-11-02T10:00:00+00:00"}
+          "started_at": "2026-11-02T10:00:00+00:00"}
     v = view(up)
     assert (v["save"]["label"], v["save"]["disabled"], v["saveAs"]["disabled"]) == ("Save to electric_board", False, False)
     assert "not committed" in v["note"]
@@ -752,12 +878,15 @@ def test_save_is_offered_whenever_a_rig_saveable_from_here_is_up(blank):
     assert v["save"]["disabled"] and v["saveAs"]["disabled"] and v["note"] == "No rig is running to save."
     v = view({**up, "rig": None, "config_name": "guitar_vocal"})
     assert v["save"]["disabled"] and v["saveAs"]["disabled"]
-    assert v["note"] == ("guitar_vocal is a v1 config, not a rig of channels started with --rig, so it is not saved "
-                         "from here. Save it on the rig with: sushi-rig save <name> --rig <its rig.yaml>")
-    for mode in ("panel", None):
-        v = view({**up, "mode": mode})
-        assert v["save"]["disabled"] and v["saveAs"]["disabled"]
-        assert "save with the panel's SAVE button" in v["note"]
+    assert v["note"] == ("guitar_vocal was started from a v1 config by an older sushi-rig, so it has no rig file to "
+                         "save into. Restart it, which runs config/rigs/guitar_vocal.yaml, and save that.")
+    v = view({**up, "mode": "panel", "panel": False})
+    assert not v["save"]["disabled"] and not v["saveAs"]["disabled"], "only the agent's word, `panel`, blocks"
+    assert "panel" not in v["note"]
+    v = view({**up, "panel": True})
+    assert v["save"]["disabled"] and v["saveAs"]["disabled"]
+    assert v["note"] == ("electric_board was started with the retired panel by an older sushi-rig, and its panel "
+                         "and SAVE listener still run beside it. Restart it, which stops them, and save from here.")
 
 
 def test_a_saves_answer_says_what_was_written_and_what_git_says_of_the_file(blank):
@@ -1503,11 +1632,11 @@ def test_xruns_are_counted_per_node_so_one_missing_then_back_adds_nothing(blank)
     assert steps == [[0, 0], [0, 0], [0, 0], [3, 3], [3, 0], [4, 1]]
 
 
-def test_a_start_is_a_headless_rig_of_channels_and_a_switch_names_its_rig(blank):
+def test_a_start_is_a_rig_of_channels_and_a_switch_names_its_rig(blank):
     calls = rigjs(blank, """return [R.lifecycleCall('start', 'electric-delay'), R.lifecycleCall('stop', 'x'),
                                     R.lifecycleCall('switch', 'accustomed')];""")
     assert calls == [
-        {"path": "/rig/up", "json": {"config_name": "electric-delay", "rig": True, "headless": True}},
+        {"path": "/rig/up", "json": {"config_name": "electric-delay", "rig": True}},
         {"path": "/rig/down", "json": {}},
         {"path": "/rig/switch", "json": {"config_name": "accustomed"}},
     ]
@@ -1571,7 +1700,7 @@ def test_what_a_lifecycle_answer_says_how_and_why_a_switch_was_made(blank):
     assert said[2] == {"ok": False, "title": "Not switched to accustomed (by restart)",
                        "reason": "up failed; electric_board was brought back. It restarted because amp: x"}
     assert said[3] == {"ok": False, "title": "Not switched to accustomed", "reason": "busy: 'up' is still running"}
-    assert said[4]["text"] == "Started electric_board, headless. Warnings: a patchbay link was not made"
+    assert said[4]["text"] == "Started electric_board. Warnings: a patchbay link was not made"
     assert said[5] == {"ok": False, "title": "Not started: electric_board", "reason": "error: a rig is already running"}
     assert said[6]["text"] == "Stopped electric_board."
 
@@ -1631,7 +1760,7 @@ def rack_page(browser, served):
     return page
 
 
-def test_a_rig_is_started_from_the_picker_headless_and_busy_is_shown_meanwhile(browser):
+def test_a_rig_is_started_from_the_picker_and_busy_is_shown_meanwhile(browser):
     from ui_fake import UiLifecycle
 
     world = UiLifecycle(up=None)
@@ -1646,8 +1775,8 @@ def test_a_rig_is_started_from_the_picker_headless_and_busy_is_shown_meanwhile(b
         expect(p.locator(".activity .rig-busy")).to_have_text("Starting electric_board…")
         expect(p.get_by_role("button", name="Start electric_board")).to_be_disabled()
         expect(p.locator(".rig-name")).to_have_text("electric_board")  # the agent's busy line meanwhile
-        expect(p.locator(".activity .notice")).to_have_attribute("title", re.compile(re.escape("Started electric_board, headless.")), timeout=8000)
-        assert world.calls == [["up", "electric_board", "--rig", "--headless"]]
+        expect(p.locator(".activity .notice")).to_have_attribute("title", re.compile(re.escape("Started electric_board.")), timeout=8000)
+        assert world.calls == [["up", "electric_board"]]
         expect(p.locator(".rig.up")).to_have_text("electric_boardup now")
         expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"])
         expect(p.locator(".unit")).to_have_count(3)
@@ -1669,7 +1798,7 @@ def test_a_refused_start_shows_the_agents_reason_and_nothing_starts(browser):
         expect(alert).to_contain_text("Not started: electric-delay")
         expect(alert).to_have_attribute("title", re.compile(re.escape("error: no machine file for this host (test)")))
         expect(p.locator(".rig-name")).to_have_text("Rig down")
-        assert world.calls == [["up", "electric-delay", "--rig", "--headless"]]
+        assert world.calls == [["up", "electric-delay"]]
         page.close()
 
 
@@ -1868,7 +1997,9 @@ def test_the_amp_card_has_faders_for_the_panels_parameters_and_quality_shown_bes
 
 
 @pytest.mark.parametrize("over, options, why", [
-    ({"known": "panel"}, {}, "The panel is running and owns the amp"),
+    # A run an older sushi-rig started with the retired panel, whose
+    # listener still writes to Carla: nothing is offered until a restart.
+    ({"known": "panel"}, {}, "started with the retired panel, which still writes to the amp: restart the rig"),
     ({"carla": {"pid": 4244, "alive": False}}, {}, "Carla is not running"),
     ({"held": False}, {}, "did not start the running rig"),
     ({}, {"locked": True}, "Locked: changing the amp's model cuts the sound"),
@@ -2081,16 +2212,6 @@ def test_a_model_change_that_failed_says_so_and_whether_the_old_one_is_back(brow
     expect(alert).to_contain_text("Amp model not changed: Edge")
     expect(alert).to_have_attribute("title", re.compile(re.escape("Carla exited as it started (status 1); the previous model was brought back")))
     expect(p.locator(".amp-card .amp-model")).to_have_text("Clean Room")
-    page.close()
-
-
-def test_with_the_panel_running_the_amp_card_writes_nothing_and_says_why(browser, amp_served):
-    amp_served.amp.mode = "panel"
-    page = amp_rack(browser, amp_served)
-    p = page.page
-    expect(p.get_by_role("slider", name="amp Output Lvl")).to_be_disabled()
-    expect(p.locator(".amp-card .sub")).to_have_attribute("title", re.compile("the panel's faders may have moved them since"))
-    expect(p.get_by_role("combobox", name="Amp model")).to_have_attribute("title", re.compile("The panel is running and owns the amp"))
     page.close()
 
 
@@ -2512,19 +2633,6 @@ def test_a_name_the_rule_refuses_is_said_before_sending_and_a_taken_one_by_the_a
     page.close()
 
 
-def test_in_panel_mode_save_is_not_offered_and_says_how_to_save(browser, save_served):
-    save_served.save.state["mode"] = "panel"
-    page = save_rack(browser, save_served)
-    p = page.page
-    turn_drive_down(p)
-    expect(p.get_by_role("button", name="Save to electric_board")).to_be_disabled()
-    expect(p.get_by_role("button", name="Save as…")).to_be_disabled()
-    expect(p.locator(".save-note")).to_contain_text("The rig runs with its panel")
-    expect(p.locator(".save-note")).to_have_attribute("title", re.compile("save with the panel's SAVE button"))
-    assert drive_of(rig_file(save_served)) is None
-    page.close()
-
-
 def test_a_refusal_from_the_agent_is_shown_with_its_reason(browser, save_served):
     """What the page cannot know ahead: a chain changed live (a plugin
     removed), which the agent refuses with why."""
@@ -2576,7 +2684,7 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
         R.recordBar({ok: false, reason: "x"}, null, "", null),
         R.recordBar({ok: true, body: {rig: {running: false}, agent: {}}}, null, "", null),
         R.recordBar(arg.busy, idle, "", null),
-        R.recordBar(up, {ok: true, body: {state: "unavailable", reason: "the rig runs with its panel (test)"}}, "", null),
+        R.recordBar(up, {ok: true, body: {state: "unavailable", reason: "no take can be planned for this run (test)"}}, "", null),
         R.recordBar(up, idle, "", null),
         R.recordBar(up, idle, "Riff Idea", null),
         R.recordBar(up, idle, "riff", null),
@@ -2590,7 +2698,7 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
     off = [v for v in views[:4]]
     assert [v["reason"] for v in off] == [
         "The agent is not answering.", "No rig is running to record.", "restart is running: recording waits for it.",
-        "the rig runs with its panel (test)"]
+        "no take can be planned for this run (test)"]
     assert all(v["record"]["disabled"] and v["stop"]["disabled"] for v in off), "nothing to press"
     idle = views[4]
     assert (idle["state"], idle["record"], idle["stop"]["disabled"]) == ("idle", {"label": "Record", "disabled": False}, True)
@@ -3308,8 +3416,7 @@ def test_text_the_browser_enlarges_past_its_computed_size_is_measured_as_it_is_d
 
 
 @pytest.mark.parametrize("change, said", [
-    (lambda s: s.save.state.update(mode="panel"), "whose record bar owns recording"),
-    (lambda s: s.save.state.update(rig=None), "is a v1 config, not a rig of channels"),
+    (lambda s: s.save.state.update(rig=None), "was started from a v1 config"),
     (lambda s: setattr(s.recorder.link, "down", "no recorder is listening (test)"), "the recorder is not answering"),
 ])
 def test_why_recording_is_off_is_said_on_the_bar(browser, record_served, change, said):

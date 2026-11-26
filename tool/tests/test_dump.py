@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sushi_rig.dump import collect_parameter_info, collect_parameter_names, dump_plugins
+from sushi_rig.dump import collect_parameter_names, dump_plugins
 
 
 def _fake_run(stdout: str, returncode: int = 0, stderr: str = ""):
@@ -67,19 +67,6 @@ def test_collect_parameter_names_holds_up_against_differently_nested_shape():
     }
     found = collect_parameter_names(synthetic)
     assert found == {"proc_a": {"Gain", "Mix"}}
-
-
-def test_collect_parameter_info_keeps_osc_path(real_dump):
-    info = collect_parameter_info(real_dump)
-    param = info["compressor_mono"]["Show pre-mix overlay"]
-    assert param["osc_path"] == "/parameter/compressor_mono/Show_pre-mix_overlay"
-
-
-def test_collect_parameter_info_every_param_has_osc_path(real_dump):
-    info = collect_parameter_info(real_dump)
-    for processor, params in info.items():
-        for name, record in params.items():
-            assert "osc_path" in record, f"{processor}.{name} missing osc_path"
 
 
 def test_dump_plugins_runs_sushi_in_the_environment_it_is_given():

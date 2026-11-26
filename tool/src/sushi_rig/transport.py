@@ -1,43 +1,29 @@
-"""Record and stop: what the panel's record bar drives, and the web UI's.
+"""Record and stop: what the web UI's record bar drives.
 
-Issue #57. The listener already takes a name and a save over OSC; this is the
-same shape for a take. A name arrives as its own message, RECORD starts a take
-under the last name received (with none, under the session's default,
-`<rig>-<date>-take-<nn>`, #134), STOP finishes it, and every outcome goes back to
-the panel as a sentence. The two buttons carry no payload, for the reason
-`listen.py`'s docstring gives for the save button.
-
-## Two buttons, not a toggle
-
-A toggle on the panel holds its own idea of whether a take is running, and
-that idea can be wrong: a panel reloaded mid-take, a second panel open on a
-phone, a take refused before it started. Then the button shows the opposite of
-the truth and the next press does the opposite of what the player meant. Two
-buttons that each say what they want, with the listener deciding, cannot
-disagree with it. RECORD while recording and STOP while stopped are refused
-with a message, not acted on.
+Issue #57. A take is started under a name (with none, under the session's
+default, `<rig>-<date>-take-<nn>`, #134) and finished by STOP, and every
+outcome goes back as a sentence. It was first built for the Open Stage Control
+panel's record bar, through the OSC listener; the panel and the listener are
+retired (#139, #218), and the web UI records through the recorder.
 
 ## What is here, and what is not
 
-Here: the decisions (`Transport`, which is pure and tested on its own), the
-effects (`TakeSession`, which composes `take.start_take`, `recorder.Recorder`
-and a capture engine into one take, and finishes it with what the recorder
-says it captured), and which ports a take records (`rig_stems`, below), from
-which `record_session` builds the session the listener runs.
+Here: the effects (`TakeSession`, which composes `take.start_take`,
+`recorder.Recorder` and a capture engine into one take, and finishes it with
+what the recorder says it captured), and which ports a take records
+(`rig_stems`, below), from which `record_session` builds a session.
 
-The web UI records the same way, through another process: a headless rig has
-no listener, so `sushi-rig recorder` (recorder_process.py), a child of the
-rig, builds a session with `record_session` at each RECORD the agent sends it,
-from the run's files as they are then, and runs `TakeSession` start and stop.
-Same ports, same refusals, same take. The one difference: the listener reads
-the config Sushi loaded once, at its start, while the recorder reads it at
-each RECORD, since a live switch (#93) rewrites it under a running rig.
+The web UI records through another process: `sushi-rig recorder`
+(recorder_process.py), a child of the rig, builds a session with
+`record_session` at each RECORD the agent sends it, from the run's files as
+they are then (a live switch, #93, rewrites the config under a running rig),
+and runs `TakeSession` start and stop. Whether a take is running is the
+recorder's to say: RECORD while recording and STOP while stopped are refused
+with a message, not acted on.
 
-The engine is `capture.CaptureEngine` (#53). When the listener cannot have one
-it runs `NoEngine`, which refuses every take with a sentence naming the reason.
-That is deliberate: a record button that silently did nothing would be worse
-than none, and a listener that would not start because recording cannot would
-take SAVE and the reorder buttons down with it.
+The engine is `capture.CaptureEngine` (#53). When a run cannot have one the
+session is `NoEngine`, which refuses every take with a sentence naming the
+reason: a record button that silently did nothing would be worse than none.
 
 ## Which ports a take records
 
@@ -73,9 +59,9 @@ The plan names those ports as the machine file does, by PipeWire alias
 client links from: through `pw-jack` the same port is `Audient iD14
 Multichannel:capture_AUX0`, and an engine that looked the alias up among JACK's
 names alone refused every take on the rig (2026-11-02, the MANIFEST). The
-engine finds each port at each RECORD among the ports its client lists, by name
-or by JACK alias (`capture.match_sources`), because JACK is only there to ask
-at RECORD: the listener plans before Sushi has started.
+plan names each port as a JACK client sees it, off the live graph
+(`jack_port`, below), and the engine finds each by that name among the ports
+its client lists at RECORD (`capture.match_sources`).
 
 Channels that play from one input (a blend of two chains on one guitar) share
 one dry tap, recorded once and named for the role, `guitar-in-dry.wav`: it is
@@ -96,8 +82,10 @@ profile of the device shares. For Sushi they are all `sushi`.
 
 So the plan resolves every port through `jack_port` before it checks anything,
 with the map `patchbay.jack_port_names` reads off a live `pw-dump`
-(`_live_jack_names`). `take.yaml` then records the name the column was really
-linked from, and the panel's stem list shows it.
+(`_live_jack_names`): the one resolver of a take's ports (#217), and a strict
+one. A port the graph does not have, or has under two nodes, and a graph that
+cannot be read, refuse the plan. `take.yaml` then records the name the column
+was really linked from, and the record bar's stem list shows it.
 
 This is the defect the record button's first live run found, on 2026-11-06: the
 machine file's alias is no port to the engine, so `capture.missing_sources`
@@ -107,20 +95,21 @@ with nothing in them. It had been written down as unknown since 2026-11-02 --
 client sees through `pw-jack`". They are not.
 
 A rig.yaml of tracks (v1) gets no plan. Its outputs are whatever its routing
-says, and the routing that ships sums every track into the monitor bus
+says, and the routing that shipped summed every track into the monitor bus
 (`take.py`, "No two stems from one port"), so there is no stem of one track to
-tap. `sushi-rig up --rig <name>` runs the rig of channels, which has them.
+tap. `sushi-rig up <name>` runs a rig of channels, which has them, and is
+all it runs since the v1 configs were retired (#218).
 
 The rate is the compiled config's `host_config.samplerate`, and it must be
 `rig.RATE`: `up` runs PipeWire at that rate whatever the config says, so a
 config at another is refused when the plan is made rather than by the engine
 at every RECORD. The quantum is `rig.QUANTUM`, the one `up` gives Sushi and the
-listener. The config a take carries is the one Sushi loaded, read when the
-listener starts, with the amp as the listener last set it (the session is built
-with that hook, `amp.write_amp`, the rule SAVE uses). Parameters moved on Sushi
+recorder. The config a take carries is the one Sushi loaded, read at RECORD,
+with the amp as the agent last sent it (the session is built with that hook,
+`amp.write_amp`, the rule SAVE uses). Parameters moved on Sushi
 since `up` are not in it: a take does not capture Sushi's state the way SAVE
 does. The rig file and the library's commit are read at each RECORD, since a
-SAVE rewrites the one and a commit moves the other while the listener runs.
+SAVE rewrites the one and a commit moves the other while the rig runs.
 
 **NOT VERIFIED: no take has been recorded this way.** Nothing here has run
 against a live PipeWire past the refusal above; the tests plan ports and stand
@@ -154,7 +143,6 @@ from .take import (
     PROCESSED,
     Stem,
     TakeError,
-    check_name,
     check_stems,
     check_take,
     default_takes_dir,
@@ -171,7 +159,7 @@ NOT_MEASURED = "not measured: the record button does not measure offsets yet"
 
 class TransportError(Exception):
     """A take that could not be started or finished. The message is what the
-    player reads on the panel, so it is a sentence, not a code."""
+    player reads on the page, so it is a sentence, not a code."""
 
 
 # --------------------------------------------------------------------------- #
@@ -181,7 +169,7 @@ class TransportError(Exception):
 class Session(Protocol):
     """One take at a time: `start` begins it, `stop` ends it.
 
-    Both return the sentence the panel shows, and raise `TransportError` with
+    Both return the sentence the page shows, and raise `TransportError` with
     one if they cannot do what was asked. `default_name` is what a take
     started at `now` (local time) is called when the player gave no name, by
     the one rule for that (`take.default_name`, #134); it raises
@@ -196,7 +184,7 @@ class Session(Protocol):
 
 
 class NoEngine:
-    """The session a listener runs when it cannot record, saying why.
+    """The session of a run that cannot record, saying why.
 
     `reason` is the sentence's second half, the thing to fix; without one the
     message is the generic `MESSAGE`.
@@ -247,8 +235,8 @@ class TakePlan:
 
     `rig_path` and `library_root`, when set, are read again at every RECORD
     and win over `rig_text` and `library`: a SAVE rewrites the rig file and a
-    commit moves the library while the listener runs, and a take must say
-    where they were when it was made, not when the listener started.
+    commit moves the library while the rig runs, and a take must say
+    where they were when it was made, not when the plan was.
     """
 
     takes_dir: Path
@@ -280,8 +268,8 @@ class TakeSession:
         self.plan = plan
         self.engine = engine
         # Given a copy of `plan.config` at RECORD, returns the config the take
-        # carries. The listener sets it to write in the amp as it last sent it,
-        # which changes while the rig runs and the plan does not.
+        # carries. `record_session` sets it to write in the amp as it was
+        # last sent, which changes while the rig runs and the plan does not.
         self.amend_config = amend_config
         self._recorder_factory = recorder_factory
         self._clock = clock
@@ -292,11 +280,11 @@ class TakeSession:
         """`<rig>-<date>-take-<nn>` for a take started at `now`
         (`take.next_name`): the rig is the run's rig file, by its file's
         name, which is what the agent calls the running rig too (the state
-        file's `rig`), so a take is named alike from the panel and the page.
+        file's `rig`), so a take is named alike by the recorder and the page.
         Counted from the takes folder as it is now, at each RECORD.
 
         A plan with no rig file has no rig to name a take after. No run of
-        the listener or the recorder makes one (`plan_for_run` refuses a run
+        the recorder makes one (`plan_for_run` refuses a run
         without a rig file); said as a refusal, not papered over with
         another kind of name."""
         from .take import next_name
@@ -324,7 +312,7 @@ class TakeSession:
                 ) from exc
         rig_text, library = plan.rig_text, plan.library
         try:
-            # Read now, not at the listener's start: see `TakePlan`.
+            # Read now, not when the plan was made: see `TakePlan`.
             if plan.rig_path is not None:
                 rig_text = Path(plan.rig_path).read_text()
         except OSError as exc:
@@ -376,7 +364,7 @@ class TakeSession:
             raise TransportError(f"cannot record {name}: {reason}") from exc
         self._folder, self._recorder = folder, recorder
         if replacing:
-            # Said on the panel, not only in the folder: a player pressing
+            # Said on the page, not only in the folder: a player pressing
             # RECORD again under the same name should know the last attempt
             # moved rather than wonder where it went.
             return f"recording {name} — the earlier {name} is in {ARCHIVE_DIR}/{name}/"
@@ -444,8 +432,16 @@ class PlanError(Exception):
         super().__init__("; ".join(self.problems))
 
 
+class GraphUnreadable(PlanError):
+    """The live graph could not be read (`pw-dump` missing, hung, failing, or
+    unparseable), so no port could be named as JACK sees it. A plan refused
+    for it says nothing of the rig's ports: doctor reports it as a check it
+    could not make, not a fault (`doctor.record_check`)."""
+
+
 def jack_port(port: str, jack_names: Mapping[str, Sequence[str]] | None) -> tuple[str, str | None]:
     """The name a JACK client connects `port` by, and why that cannot be said.
+    A take's one resolver of its ports (#217).
 
     `jack_names` is `patchbay.jack_port_names(dump, "out")`: port alias -> the
     name(s) a JACK client sees it under. A machine file names a port by its
@@ -459,18 +455,26 @@ def jack_port(port: str, jack_names: Mapping[str, Sequence[str]] | None) -> tupl
     Sushi's own ports come back unchanged, since its description, nick and
     `node.name` are all `sushi`.
 
-    Pure, and forgiving by design. A port that is not in `jack_names` is
-    returned as it came, with no problem: either it is not in the graph, and
-    the engine's own `capture.missing_sources` says so in a sentence naming
-    what *is* there, or the graph was read before the client registered --
-    which is the normal case for Sushi, since `up` starts the listener first.
-    Only ambiguity is refused here, because only it cannot be left to the
-    engine: two names means two live nodes answering to one alias (two
-    profiles of a device, or two of the same interface), and linking a take's
-    column from either would be a guess at which socket the player meant.
+    Strict, and pure. A port the graph lists under one name is that name. One
+    it lists under two (two live nodes answering to one alias: two profiles of
+    a device, or two of the same interface) is refused, since linking a take's
+    column from either would be a guess at which socket the player meant. One
+    it does not list at all is refused too: the device is gone, or the machine
+    file names it otherwise than qpwgraph does. It used to be passed on as
+    written, for the capture engine to look for among JACK's aliases at the
+    start; that was a second resolver, needed while the OSC listener planned
+    its takes before Sushi had registered, which could disagree with this one
+    and was never seen to work on the rig. The recorder plans each take at
+    RECORD, with the rig up, so there is nothing left for it to do.
+
+    `jack_names` None is no graph at all, for a plan made from the files alone
+    (the tests of what a plan holds): every port as written.
     """
     if jack_names is None:
         return port, None
+    # One entry per live node's port, never de-duplicated by name: two of the
+    # same interface share a description, so both give one JACK name, and
+    # counting names would take two sockets for one.
     names = list(jack_names.get(port) or [])
     if len(names) == 1:
         return names[0], None
@@ -481,7 +485,11 @@ def jack_port(port: str, jack_names: Mapping[str, Sequence[str]] | None) -> tupl
             f"the alias names the socket and not the profile, so leave one profile "
             f"of the device live, or name the node in the machine file"
         )
-    return port, None
+    return port, (
+        f"{port} is no capture port of the live graph: no node has a port called or aliased "
+        f"{port}, so a take cannot be linked from it; is the device connected, and does the "
+        f"machine file name the port as qpwgraph shows it?"
+    )
 
 
 def _consecutive(ports: Sequence[str]) -> str | None:
@@ -520,8 +528,8 @@ def rig_stems(rig: Any, machine: Any, config: dict[str, Any],
     it by (`jack_port`), before the checks below, so that each one -- the
     consecutive numbering, two stems on one port -- is made on the names that
     will actually be linked and not on the aliases they were written as.
-    Without it the ports stay as the machine file and the config name them,
-    which is what every test of this plan asserts.
+    With None the ports stay as the machine file and the config name them, a
+    plan from the files alone; `plan_for_run` always gives the live graph's.
 
     Channels that share an input role (a blend of two chains on one guitar)
     share one dry tap, recorded once and named for the role, since it is one
@@ -622,10 +630,10 @@ def rig_stems(rig: Any, machine: Any, config: dict[str, Any],
 def _capture_engine(sample_rate: int, quantum: int) -> Engine:
     """The real engine, or `CaptureUnavailable` if JACK-Client cannot load.
 
-    Loaded here, at the listener's start, so a machine without it says so
-    before anyone presses RECORD. `CaptureEngine.prepare` is not called: the
-    listener starts before Sushi, so the graph's quantum is not yet the one
-    Sushi will hold, and a read now could be wrong for every take. The first
+    Loaded here, when a take is planned, so a machine without it says so in
+    the refusal. `CaptureEngine.prepare` is not called: the recorder starts
+    before Sushi, so the graph's quantum need not yet be the one Sushi will
+    hold, and a read now could be wrong for every take. The first
     `start` reads it on its own client instead, half a second paid once.
     """
     from .capture import CaptureEngine, load_jack
@@ -636,33 +644,27 @@ def _capture_engine(sample_rate: int, quantum: int) -> Engine:
 
 def _live_jack_names() -> dict[str, list[str]]:
     """Port alias -> the name a JACK client sees it under, for every live
-    capture port; `{}` when the graph cannot be read.
+    capture port, read off `pw-dump`; `GraphUnreadable`, a `PlanError`, when
+    the graph cannot be read.
 
-    Empty on failure rather than raising, because a plan is worth making
-    either way: with no map every port stays as it was written, which is what
-    the engine was given before this existed, and its own check still names
-    what is in the graph. A `pw-dump` that is missing or hung must not be the
-    reason RECORD does nothing.
+    Refused rather than planned with no map, since #217: with no map the
+    ports stayed as the machine file writes them, and only the capture
+    engine's match by JACK alias could still have found them, a second
+    resolver the rig never showed working. A take that cannot be named as
+    JACK sees it is not started.
 
     Capture ports only (`"out"`, the direction from the node's side): every
     source a take records is something that produces audio, and the filter is
     what keeps `Audient iD14:playback_FL` from answering for a dry tap.
     """
-    import sys
-
     from .patchbay import PatchbayError, jack_port_names, read_pw_dump
 
     try:
         return jack_port_names(read_pw_dump(), "out")
-    except Exception as exc:  # noqa: BLE001 — a plan is made with no map; see above
-        # Said, not swallowed: without the map a take falls back to the
-        # engine's alias match, which the rig has not yet shown to work, and
-        # a refusal then would otherwise give no hint that this step failed.
+    except Exception as exc:  # noqa: BLE001 -- said as the plan's refusal
         kind = "" if isinstance(exc, PatchbayError) else f"{type(exc).__name__}: "
-        print(f"sushi-rig: could not read the graph to name ports as JACK sees them "
-              f"({kind}{exc}); the take's ports stay as the machine file writes them",
-              file=sys.stderr, flush=True)
-        return {}
+        raise GraphUnreadable([f"the live graph could not be read to name the take's ports as JACK sees them "
+                         f"({kind}{exc})"]) from exc
 
 
 def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
@@ -671,14 +673,14 @@ def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
     """The plan for every take of this run, or `PlanError` saying why there is
     none.
 
-    `rig_path` is the listener's `--rig`; `config_path` its `--panel-config`,
-    the config Sushi loaded (for a `--rig` run, the one `prepare_rig` compiled);
+    `rig_path` is the run's rig file; `config_path` the config Sushi loaded
+    (for a `--rig` run, the one `prepare_rig` compiled);
     `machine_file` what that was compiled against, this host's file by default.
 
     Reads the live graph once (`_live_jack_names`) to name the ports the way
     the capture engine does. Called at every RECORD, so a device that came
     back under another profile is resolved afresh for the next take rather
-    than held from the listener's start.
+    than held from an earlier plan.
     """
     from .machine import MachineError, MachineSpec, machine_path
     from .paths import checkout_root
@@ -686,8 +688,8 @@ def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
 
     if rig_path is None:
         raise PlanError([
-            "this run has no rig file (the listener was given no --rig), so there "
-            "is nothing to say which ports a take records"
+            "this run has no rig file, so there is nothing to say which ports a "
+            "take records"
         ])
     try:
         rig = load_any(rig_path)
@@ -698,13 +700,12 @@ def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
     if not isinstance(rig, Rig):
         raise PlanError([
             f"{rig_path} is a rig.yaml of tracks, and takes are planned only for a "
-            f"rig of channels, where each channel has an output of its own to record; "
-            f"run it with `sushi-rig up --rig <name>`"
+            f"rig of channels, where each channel has an output of its own to record: "
+            f"run a rig of config/rigs/ with `sushi-rig up <name>`"
         ])
     if config_path is None:
         raise PlanError([
-            "the listener was given no --panel-config, so it does not know the "
-            "config Sushi loaded, which every take carries"
+            "this run names no config Sushi loaded, which every take carries"
         ])
     try:
         config = json.loads(Path(config_path).read_text())
@@ -748,7 +749,7 @@ def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
         sample_rate=rate,
         quantum=quantum,
         # Both read again at every RECORD: a SAVE rewrites the rig file and a
-        # commit moves the library while the listener runs (`TakePlan`).
+        # commit moves the library while the rig runs (`TakePlan`).
         rig_path=Path(rig_path),
         library_root=root,
     )
@@ -760,16 +761,15 @@ def record_session(rig_path: Path | None, config_path: Path | None, *,
                    amp_model: str | None = None,
                    amp_parameters: dict[str, float] | None = None,
                    engine: Callable[[int, int], Engine] | None = None) -> Session:
-    """The session the listener runs: a `TakeSession` when this run can be
-    recorded, otherwise a `NoEngine` whose message says exactly why not.
+    """The session for a take of this run: a `TakeSession` when this run can
+    be recorded, otherwise a `NoEngine` whose message says exactly why not.
 
     The take's config carries the amp by SAVE's rule (`amp.write_amp`): the
-    model this run has, `amp_model`, and `amp_parameters`, which is the
-    listener's own record of what it last sent and is read at each RECORD,
-    so the caller passes the dict the listener updates.
+    model this run has, `amp_model`, and `amp_parameters`, the values last
+    sent, read when the take starts.
 
-    Never raises. The listener serves SAVE and the reorder buttons too, and
-    must not fail to start because recording cannot. `engine(sample_rate,
+    Never raises: the recorder answers every RECORD, and a refusal is a
+    sentence, not a crash. `engine(sample_rate,
     quantum)` makes the engine, `capture.CaptureEngine` by default, and raises
     `capture.CaptureUnavailable` when JACK-Client is not there; the tests stand
     it in.
@@ -794,86 +794,3 @@ def record_session(rig_path: Path | None, config_path: Path | None, *,
     amp = amp_parameters if amp_parameters is not None else {}
     return TakeSession(plan, made,
                        amend_config=lambda config: write_amp(config, amp_model, amp))
-
-
-# --------------------------------------------------------------------------- #
-# Decisions
-# --------------------------------------------------------------------------- #
-
-class Transport:
-    """What RECORD, STOP and the name field mean. Never raises.
-
-    Every method returns the sentence for the panel's record status. It is
-    driven from the listener's one OSC thread, so it needs no locking.
-    """
-
-    def __init__(self, session: Session | None = None,
-                 clock: Callable[[], datetime] = datetime.now):
-        self.session = session if session is not None else NoEngine()
-        self._clock = clock
-        self.name = ""
-        self.recording: str | None = None
-
-    def on_name(self, name: str) -> None:
-        self.name = name.strip()
-
-    def on_record(self) -> str:
-        if self.recording is not None:
-            return f"already recording {self.recording} — press STOP first"
-        name = self.name
-        if not name:
-            # No name typed: the session's, `<rig>-<date>-take-<nn>`, by the
-            # rule the web UI's takes are named by (`take.default_name`).
-            try:
-                name = self.session.default_name(self._clock())
-            except TransportError as exc:
-                return f"record failed: {exc}"
-            except Exception as exc:  # noqa: BLE001 — the listener must survive
-                return f"record failed: unexpected error: {exc}"
-        problems = check_name(name)
-        if problems:
-            return f"record refused: {problems[0]}"
-        try:
-            said = self.session.start(name)
-        except TransportError as exc:
-            return f"record failed: {exc}"
-        except Exception as exc:  # noqa: BLE001 — the listener must survive
-            return f"record failed: unexpected error: {exc}"
-        self.recording = name
-        return said
-
-    def on_stop(self) -> str:
-        if self.recording is None:
-            return "not recording"
-        name, self.recording = self.recording, None
-        # Idle afterwards whatever happens: a session that raised on stop has
-        # stopped as far as it can, and staying "recording" would leave the
-        # player unable to start another take.
-        try:
-            return self.session.stop()
-        except TransportError as exc:
-            return f"stop failed for {name}: {exc}"
-        except Exception as exc:  # noqa: BLE001 — the listener must survive
-            return f"stop failed for {name}: unexpected error: {exc}"
-
-    def on_panel_reloaded(self) -> str | None:
-        """The listener regenerated the panel, so its name field is empty again.
-
-        Forgetting the name keeps the two in step: RECORD on a field showing
-        nothing must not record under a name typed before the reload. Returns
-        what the record status should show, because a reload blanks that too
-        and a running take must not look stopped.
-        """
-        self.name = ""
-        return f"recording {self.recording}" if self.recording is not None else None
-
-    def close(self) -> str | None:
-        """Finish a running take as the listener shuts down, so Ctrl-C ends a
-        take instead of abandoning it.
-
-        `sushi-rig down` sends SIGINT first, which lands here too, but it sends
-        SIGTERM three seconds later and nothing catches that: a stop slower
-        than three seconds — a writer far behind on a slow disk — is cut off,
-        and leaves a take that says it is unfinished. How long a stop takes is
-        for the rig machine to measure."""
-        return self.on_stop() if self.recording is not None else None

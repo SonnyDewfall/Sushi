@@ -84,15 +84,15 @@ class World:
     def __init__(self, root, rig="guitar_vocal"):
         self.rig = rig
         self.state = {} if rig is None else {
-            "supervisor_pid": 10, "pgid": 10, "mode": "headless", "config_name": rig,
+            "supervisor_pid": 10, "pgid": 10, "config_name": rig,
             "config": f"/run/rigs/{rig}.json", "rig": f"config/rigs/{rig}.yaml",
             "started_at": "2026-11-16T10:00:00+00:00", "children": {"sushi": 11}}
 
     def described(self):
         if self.rig is None:
             return {"verdict": "absent", "running": False, "message": "No rig is running."}
-        return {"verdict": "running", "running": True, "config_name": self.rig, "mode": "headless",
-                "rig": self.state["rig"], "config": self.state["config"], "message": f"{self.rig} (headless mode)"}
+        return {"verdict": "running", "running": True, "config_name": self.rig, 
+                "rig": self.state["rig"], "config": self.state["config"], "message": f"{self.rig}"}
 
     def switching(self):
         return Switching(read_state=lambda: copy.deepcopy(self.state),

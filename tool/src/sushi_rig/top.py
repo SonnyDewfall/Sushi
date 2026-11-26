@@ -123,8 +123,8 @@ def parse_pw_top(output: str) -> list[dict[str, Any]]:
 
 
 # Which PipeWire nodes belong to each thing the supervisor started. Only the
-# children that actually process audio appear: the listener, the panel and the
-# patchbay do no DSP and would be noise here.
+# children that actually process audio appear: the recorder and the patchbay
+# are not in the audio path and would be noise here.
 #
 # The amp is two nodes — Carla's own client and the plugin's, which Carla names
 # after the project's plugin entry. The plugin node is where the work happens;
@@ -454,7 +454,7 @@ def top(interval: float = 1.0, once: bool = False) -> int:
         while True:
             state = read_state()
             title = (
-                f"{state.get('config_name')} ({state.get('mode')} mode)"
+                f"{state.get('config_name')}"
                 if state else "no rig recorded — showing whatever is running"
             )
             nodes = rig_nodes(sample(), (state or {}).get("children"))

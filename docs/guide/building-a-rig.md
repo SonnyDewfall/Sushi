@@ -187,5 +187,5 @@ folder's `.gitignore` where it is.
 - **It mentions unsaved changes.** Save, then try again.
 - **The restart is refused because of changes since.** The bar offers
   **Restart anyway**, which drops them. Save instead if you want to keep them.
-- **The left column says no rig is running**, or that the rig is a "v1 config".
+- **The left column says no rig is running**, or that the rig was started from a "v1 config" (before an update).
   Start a rig from the list under **RIGS** first.
