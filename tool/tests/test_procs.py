@@ -205,6 +205,90 @@ def test_stop_group_escalates_past_a_signal_that_is_ignored_and_reaps_via_poll()
         child.stdout.close()
 
 
+def test_a_step_every_member_ignores_is_not_waited_out():
+    """#236: the group's one member ignores SIGINT, so SIGTERM is sent at
+    once rather than after SIGINT's whole grace."""
+    child = _spawn_group()
+    try:
+        assert child.stdout.readline().strip() == "ready"  # handler installed
+        steps = ((signal.SIGINT, 3.0), (signal.SIGTERM, 3.0), (signal.SIGKILL, 2.0))
+        started = time.monotonic()
+        assert procs.stop_group(child.pid, steps, poll=child.poll, interval=0.02)
+        took = time.monotonic() - started
+        assert child.returncode == -signal.SIGTERM
+        assert took < 2.0, f"waited out SIGINT's 3 s: {took:.2f}s"
+    finally:
+        if child.poll() is None:
+            os.kill(child.pid, signal.SIGKILL)
+            child.wait()
+        child.stdout.close()
+
+
+def test_a_step_is_waited_out_while_a_member_still_acts_on_it():
+    """One member ignores SIGINT, one takes half a second to finish on it:
+    the second gets its time, and the stop moves on once only the first is
+    left."""
+    deaf = subprocess.Popen(  # `_spawn_group`'s, in a group of this session, for the second to join
+        [sys.executable, "-c",
+         "import signal, time\n"
+         "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+         "print('ready', flush=True)\n"
+         "time.sleep(60)\n"],
+        stdout=subprocess.PIPE, text=True, process_group=0,
+    )
+    slow = subprocess.Popen(
+        [sys.executable, "-c",
+         "import signal, sys, time\n"
+         "def finish(*_):\n"
+         "    time.sleep(0.5)\n"
+         "    sys.exit(7)\n"
+         "signal.signal(signal.SIGINT, finish)\n"
+         "print('ready', flush=True)\n"
+         "time.sleep(60)\n"],
+        stdout=subprocess.PIPE, text=True, process_group=deaf.pid,
+    )
+    try:
+        assert deaf.stdout.readline().strip() == "ready" and slow.stdout.readline().strip() == "ready"
+
+        def reap():
+            deaf.poll()
+            slow.poll()
+
+        steps = ((signal.SIGINT, 3.0), (signal.SIGTERM, 3.0), (signal.SIGKILL, 2.0))
+        started = time.monotonic()
+        assert procs.stop_group(deaf.pid, steps, poll=reap, interval=0.02)
+        took = time.monotonic() - started
+        assert slow.returncode == 7, "it finished on SIGINT, given its time"
+        assert deaf.returncode == -signal.SIGTERM
+        assert 0.5 <= took < 2.5, f"{took:.2f}s"
+    finally:
+        for proc in (slow, deaf):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdout.close()
+
+
+def test_what_a_process_ignores_is_read_from_proc():
+    child = _spawn_group()
+    try:
+        assert child.stdout.readline().strip() == "ready"
+        assert procs.ignores(child.pid, signal.SIGINT) is True
+        assert procs.ignores(child.pid, signal.SIGTERM) is False
+        assert procs.group_ignores(child.pid, signal.SIGINT) is True
+        assert procs.group_ignores(child.pid, signal.SIGTERM) is False
+        os.kill(child.pid, signal.SIGKILL)
+        os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+        assert procs.ignores(child.pid, signal.SIGINT) is None, "a zombie ignores nothing"
+        assert procs.group_ignores(child.pid, signal.SIGINT) is False, "nor does a group of zombies"
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+        child.stdout.close()
+    assert procs.ignores(child.pid, signal.SIGINT) is None, "gone"
+
+
 def test_stop_group_of_a_group_that_is_already_gone_is_success():
     assert procs.stop_group(_exited_child(start_new_session=True))
 
@@ -261,6 +345,31 @@ def test_stop_group_gives_each_step_its_grace_before_the_next(monkeypatch):
     assert procs.stop_group(pgid, ((signal.SIGINT, 3.0), (signal.SIGKILL, 2.0))) is False
     (_, first), (_, second) = sent
     assert second - first >= 3.0
+
+
+def test_a_recorded_process_that_ignores_a_signal_is_sent_the_next_at_once(tmp_path):
+    """`stop_recorded`, as `stop_group` (#236)."""
+    from sushi_rig import vistap
+    from sushi_rig.procs import stop_recorded
+
+    link = tmp_path / "pw-loopback"
+    link.symlink_to(sys.executable)
+    proc = subprocess.Popen([str(link), "-c", "import signal, time\n"
+                             "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+                             "print('ready', flush=True)\n"
+                             "time.sleep(60)\n"], stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout.readline().strip() == "ready"
+        started = time.monotonic()
+        assert stop_recorded(proc.pid, vistap.starttime(proc.pid), "pw-loopback",
+                             ((signal.SIGINT, 3.0), (signal.SIGTERM, 3.0))) == []
+        assert proc.wait(timeout=5) == -signal.SIGTERM
+        assert time.monotonic() - started < 2.0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        proc.stdout.close()
 
 
 def test_a_recorded_process_is_stopped_through_a_pidfd_only_if_it_is_the_one_recorded(tmp_path):

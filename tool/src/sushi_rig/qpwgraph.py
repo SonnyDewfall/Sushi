@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Callable, Any
 
+from .procs import stop_signals_preexec
+
 
 # How long to wait for a killed qpwgraph to actually exit before starting ours.
 QPWGRAPH_EXIT_TIMEOUT = 5.0
@@ -280,6 +282,7 @@ def start_qpwgraph(
                 proc = subprocess.Popen(
                     child["command"], cwd=root, env=child_env,
                     stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
+                    preexec_fn=stop_signals_preexec(),  # #236
                     **({} if process_group is None else {"process_group": process_group}),
                 )
             except OSError:

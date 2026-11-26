@@ -46,7 +46,7 @@ from typing import Any, Callable
 
 from .paths import checkout_root, log_dir, recorder_socket, runtime_dir, state_path
 from .procs import (
-    SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, stop_group, wait_for_grpc,
+    SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, stop_group, stop_signals_preexec, wait_for_grpc,
 )
 from .qpwgraph import QPWGRAPH_ATTEMPTS, start_qpwgraph
 from .state import clear_state, is_real_id, liveness, read_state, write_state
@@ -827,14 +827,17 @@ def link_problems(plan: list[dict[str, Any]], root: Path, running: set[str], rig
 
 
 def spawn_child(command: list[str], *, cwd: Path, env: dict[str, str], log: Path | None) -> subprocess.Popen:
-    """Start one child, its output to `log` (or nowhere), its stdin closed.
+    """Start one child, its output to `log` (or nowhere), its stdin closed,
+    SIGINT and SIGTERM at their defaults (`procs.stop_signals_preexec`, #236:
+    after `_honour_stop_signals`, nothing is needed between fork and exec).
     The forked supervisor's spawn; the agent's adds the group it holds."""
     if log is None:
         return subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                preexec_fn=stop_signals_preexec())
     with open(log, "wb") as sink:
         return subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                stdout=sink, stderr=sink)
+                                stdout=sink, stderr=sink, preexec_fn=stop_signals_preexec())
 
 
 def start_child(
@@ -1015,6 +1018,19 @@ def start_children(
 # --- process helpers --------------------------------------------------------
 
 
+def _honour_stop_signals() -> None:
+    """For the forked supervisor, the group's leader: honour `down`'s polite
+    signals as one started from a terminal does, whatever `up` was started
+    with (#236). SIGINT is Python's own handler again, so it is a
+    KeyboardInterrupt and then `_fork_supervisor`'s `os._exit`; SIGTERM its
+    default. Only an inherited "ignored" is changed. Its children have theirs
+    reset by `spawn_child`."""
+    if signal.getsignal(signal.SIGINT) == signal.SIG_IGN:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+    if signal.getsignal(signal.SIGTERM) == signal.SIG_IGN:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 def _supervise(launch: "Launch", *, ready_w: int) -> None:
     """The supervisor process: own the group, start the children, then wait.
 
@@ -1034,6 +1050,7 @@ def _supervise(launch: "Launch", *, ready_w: int) -> None:
     failure as a failure rather than returning a cheerful prompt.
     """
     os.setsid()
+    _honour_stop_signals()
     root = launch.root
     logs = log_dir()
     logs.mkdir(parents=True, exist_ok=True)

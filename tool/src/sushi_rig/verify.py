@@ -40,7 +40,7 @@ from typing import Any
 
 from .dump import collect_parameter_names, dump_plugins
 from .paths import checkout_root
-from .procs import port_is_open, stop_group
+from .procs import port_is_open, stop_group, stop_signals_preexec
 
 def sushi_env(root: Path, base: dict[str, str] | None = None) -> dict[str, str]:
     """The environment every Sushi this module starts runs in.
@@ -327,6 +327,7 @@ def capture_headless(config: Path, sushi_bin: str, root: Path) -> dict[str, Any]
         cwd=root, env=env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, start_new_session=True,
+        preexec_fn=stop_signals_preexec(),  # so its SIGINT is heard (#236)
     )
     try:
         deadline = time.monotonic() + START_TIMEOUT

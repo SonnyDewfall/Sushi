@@ -7677,3 +7677,35 @@ never cut on a laptop: the tiles' second words go to their titles. (12) While
 phone a question, "+n" and Undo fit one row. Tested in Chromium, the
 reviewer's two repro tests among them. Not tried on a real phone or in
 Safari. *(2026-11-26)*
+
+**A stop's SIGINT is heard however the rig was started (#236).** A process
+started with SIGINT ignored (a background job of a non-interactive shell, a
+script or service wrapper, and pytest started that way) passed it to every
+child, since exec keeps "ignored": each child then sat through the SIGINT step
+of a stop and died of the next signal, its clean exit never run. Measured here,
+with the test process ignoring SIGINT: a restart through the agent's supervisor
+(`test_a_restart_by_an_agent_started_with_sigint_ignored_stops_its_children_at_sigint`,
+real `SHUTDOWN_STEPS`, stand-in children) took 3.12 to 3.13 s, the children
+dying of SIGTERM, before; 0.12 to 0.19 s after, each dying of SIGINT. The
+timing test that PR #235's review met
+(`test_stopping_a_verification_sushi_does_not_wait_out_the_grace_period`, under
+`python3 -c 'import signal,sys,pytest; signal.signal(signal.SIGINT, signal.SIG_IGN); ...'`)
+failed at 2.56 to 2.57 s before and passes in 0.05 to 0.06 s after. Two changes.
+(1) Every spawn of a child the rig stops (`rig.spawn_child`,
+`supervisor._spawn`, `start_qpwgraph`, a verification's Sushi) passes
+`procs.stop_signals_preexec()`: None where neither SIGINT nor SIGTERM is
+ignored, so nothing runs between fork and exec (the running agent: aiohttp
+handles both, and exec resets a handled signal); where one is ignored, a
+`preexec_fn` that resets the two and does nothing else. Popen's
+`restore_signals` does not cover them (SIGPIPE, SIGXFZ, SIGXFSZ only). The
+forked supervisor, the group's leader, puts back Python's own SIGINT handler
+and SIGTERM's default after its `setsid` (`rig._honour_stop_signals`). (2)
+`stop_group` and `stop_recorded` do not wait out a step whose signal every
+member left ignores (`procs.ignores`, `/proc/<pid>/status` `SigIgn`; zombies
+ignore nothing): the next is sent at once, so a child that ignores SIGINT
+itself, or one started before (1), costs nothing either; the #235 test, whose
+child is a plain Popen of pytest's, passes by this. Each change was taken out
+in turn and its tests failed (five without (1), three without (2)).
+`group_members` moved from `supervisor.py` to `procs.py`. Tested with real
+processes (`test_child_signals.py`, `test_procs.py`, `test_supervisor.py`); not
+with a real Sushi, qpwgraph or Carla, nor on the rig. *(2026-11-26)*
