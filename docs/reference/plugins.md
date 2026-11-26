@@ -379,8 +379,8 @@ No rig runs it any more. The octave pair (gx_detune_, as `octave_down` and
 and electric-octave-up, which existed for its octave up, was retired to
 `config/retired/`. Its replacement is `electric-octave`, on Rubber Band 4.0
 ([above](#rubber-band-40-built-for-the-octave)). gx_detune_ stays in
-`plugin-manifest.txt` for the frozen rigs and the v1 config below. Only the v1 config `electric_board.json` (and its
-source), retired to `config/retired/v1/` with the other v1 configs (#218), still runs it, at no shift.
+`plugin-manifest.txt` for the frozen rigs, and for the v1 config `electric_board.json` (and its source),
+retired to `config/retired/v1/` with the other v1 configs (#218), which runs it at no shift.
 
 What was found, for whoever puts it back: an octave up (gx_detune_ at +12)
 has a plugin bug: on one or two loads in a hundred it starts putting out NaN

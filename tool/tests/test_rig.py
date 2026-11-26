@@ -1152,6 +1152,23 @@ def test_describe_rig_is_status_as_data(world, monkeypatch):
     assert described["log_dir"] == state["log_dir"]
     assert "supervisor_pid" not in described, "the group is the handle, as for down"
     assert "machine" not in described, "a v1 run records none, and none is shown"
+    assert described["panel"] is False
+
+
+@pytest.mark.parametrize("over", [{"mode": "panel"},
+                                  {"children": {"sushi": 4002, "listen": 4004}},
+                                  {"children": {"sushi": 4002, "open-stage-control": 4005}}])
+def test_a_run_an_older_up_started_with_the_panel_is_described_as_one(world, over):
+    """A pull does not stop a run an older `up` started with the panel: its
+    listener and panel run on beside the rig until it is stopped. The state
+    file says so by its mode or by those children, and /health says it, so
+    the page and the agent hold their writes until a restart."""
+    world()
+    state_file.write_state(running_state(**over))
+    assert rig.started_with_panel(state_file.read_state())
+    assert rig.describe_rig()["panel"] is True
+    assert not rig.started_with_panel(running_state(mode="headless"))
+    assert not rig.started_with_panel(running_state())
 
 
 def test_the_machine_file_a_rig_was_compiled_against_is_described_and_shown(world, capsys):

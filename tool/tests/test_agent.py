@@ -2974,14 +2974,37 @@ def test_a_rig_changed_since_it_came_up_is_planned_from_the_reading_or_restarted
     assert fake.writes() == [], "nothing applied to a rig the plan was not made for"
 
 
-def test_an_amp_override_restarts_and_a_state_file_saying_panel_does_not():
+def test_an_amp_override_restarts_and_so_does_a_run_an_older_up_started_with_the_panel():
     """The amp override belonged to the rig being left, so it is said beside
-    the rest. A state file an older `up` wrote with `"mode": "panel"` no
-    longer rules a live switch out: the panel is retired (#139), so nothing
-    of it was started for the rig being left."""
-    assert state_blockers(dict(HEADLESS, mode="panel")) == []
+    the rest. A run an older `up` started with the Open Stage Control panel,
+    before it was retired (#139), still has the panel and its SAVE listener
+    running beside it, started for the rig being left: switched live, SAVE
+    would write the next rig's sound into the previous rig's file. So such a
+    run, known by `"mode": "panel"` or by a panel child its state file
+    records, switches only by restart, which stops them. A run that says
+    headless, or says nothing (as every `up` now writes), switches live."""
+    for legacy in (dict(HEADLESS, mode="panel"),
+                   dict(HEADLESS, children={**HEADLESS["children"], "listen": 4245}),
+                   dict(HEADLESS, children={**HEADLESS["children"], "open-stage-control": 4246})):
+        assert [r.code for r in state_blockers(legacy)] == ["panel"], legacy
+        assert "SAVE would write the next rig's sound" in state_blockers(legacy)[0].detail
+    assert state_blockers(dict(HEADLESS, mode="headless")) == []
+    assert state_blockers(HEADLESS) == []
     assert [r.code for r in state_blockers(dict(HEADLESS, amp_model_requested="X.nam"))] == ["amp_override"]
     assert state_blockers(dict(HEADLESS, amp_model_requested="X.nam", amp_requested=False)) == []
+
+
+def test_a_switch_of_a_run_started_with_the_panel_restarts_it_rather_than_switch_live():
+    """The switch the page and a Program Change make, of a run an older `up`
+    started with the panel: a restart, `panel` said, and nothing applied
+    live to the rig the panel's listener was started for."""
+    state = {**HEADLESS, "mode": "panel", "children": {**HEADLESS["children"], "listen": 4245}}
+    agent, fake, world, runner = switch_agent("electric-delay", state=state)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["how"] == "restart", body
+    assert [r["code"] for r in body["why"]] == ["panel"]
+    assert runner.calls[0] == ["down"] and runner.calls[1][:2] == ["up", "electric-octave-up"]
+    assert fake.writes() == [], "nothing applied live"
 
 
 def test_a_switch_to_a_rig_whose_plugins_are_not_all_in_plugins_is_refused_with_the_rig_left_playing(

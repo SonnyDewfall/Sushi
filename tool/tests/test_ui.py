@@ -68,7 +68,11 @@ def test_only_what_the_browser_reads_is_sent_and_no_range():
     flat, _ = panel_profile(gxts9_profile())
     assert set(flat["parameters"][0]) == {
         "name", "label", "group", "visibility", "scale", "control", "phone", "description",
-        "unit", "integer", "toggled", "scale_points"}
+        "unit", "integer", "toggled", "scale_points", "symbol"}
+    # The port's symbol, a fact, which a card's All reads to leave out the
+    # plugin's own bypass (R.ownSwitch).
+    symbols = {p["name"]: p["symbol"] for p in gxts9_profile()["parameters"]}
+    assert {p["name"]: p["symbol"] for p in flat["parameters"]} == symbols and symbols["BYPASS"] == "BYPASS"
 
 
 def test_ungrouped_parameters_go_last_in_their_own_order():
@@ -518,24 +522,92 @@ def test_a_card_keeps_what_its_profile_hides_for_its_all_drawn_plainly(blank, se
     """#139's first gap: a parameter a profile hides was out of reach from the
     page. `unitPanel` keeps each hidden one the running plugin has and can be
     set, drawn plainly: the plugin's own name, its unit and toggle from the
-    profile's facts, none of the profile's judgements."""
+    profile's facts, none of the profile's judgements. Not the plugin's own
+    bypass, though (review of #139): the GxTS9 profile hides only its BYPASS,
+    which Sushi's bypass stands for, so its card offers no All at all; Level,
+    hidden here for the test, is offered by its own name, with no unit, since
+    the plugin declares none (a unit is a fact, never invented)."""
     profile = rigjs(blank, "return (await (await fetch('/profiles')).json()).profiles[arg];", GXTS9)
     info = copy.deepcopy(served.rig.info["overdrive"])
     out = rigjs(blank, """
       const profile = JSON.parse(JSON.stringify(arg.profile));
-      const p = R.unitPanel(arg.info, profile);
       const shown = (c) => [c.name, c.label, c.scale, c.unit, c.profiled, c.visibility, c.readOnly];
+      const asShipped = R.unitPanel(arg.info, profile);
+      const level = profile.parameters.find((e) => e.name === 'Level');
+      level.visibility = 'hidden';
+      level.label = 'Volume';
+      const p = R.unitPanel(arg.info, profile);
       // A read-only parameter the profile hides is not offered: it cannot be set.
       const info = JSON.parse(JSON.stringify(arg.info));
-      info.BYPASS.automatable = false;
+      info.Level.automatable = false;
       const plain = R.unitPanel(arg.info, null);
-      return {hidden: p.hidden.map(shown), readOnly: R.unitPanel(info, profile).hidden.length,
+      return {shipped: asShipped.hidden.map(shown), hidden: p.hidden.map(shown),
+              readOnly: R.unitPanel(info, profile).hidden.length,
               plain: plain.hidden, shownElsewhere: R.primaryControls(p).concat(p.advanced).map((c) => c.name)};""",
                 {"info": info, "profile": profile})
-    assert out["hidden"] == [["BYPASS", "BYPASS", "toggle", None, False, "primary", False]]
+    assert out["shipped"] == [], "the profile hides only BYPASS, the plugin's own bypass: no All"
+    assert out["hidden"] == [["Level", "Level", "linear", None, False, "primary", False]], \
+        "the plugin's name, not the profile's label 'Volume'; no unit, as the plugin declares none"
     assert out["readOnly"] == 0
     assert out["plain"] == [], "a card with no profile hides nothing"
-    assert "BYPASS" not in out["shownElsewhere"]
+    assert "BYPASS" not in out["shownElsewhere"] and "Level" not in out["shownElsewhere"]
+
+
+def test_a_cards_all_leaves_out_the_plugins_own_bypass_or_on_switch(blank):
+    """The profiles hide GxTS9's BYPASS, calf's Bypass, a-reverb's Enable and
+    string-machine's Enabled (symbol lv2_enabled): Sushi's bypass is what
+    switches a pedal. Matched as whole words, in any case, in the name or
+    the symbol; a word that only contains one is not."""
+    out = rigjs(blank, """
+      const own = (name, symbol) => R.ownSwitch({name, symbol});
+      return [own('BYPASS', 'BYPASS'), own('Bypass', 'bypass'), own('Enable', 'enable'),
+              own('Enabled', 'lv2_enabled'), own('On', 'lv2_enabled'), own('Fx Bypass', null),
+              own('Bypassed', 'byp'), own('Enabler', 'x'), own('Tone', 'fslider1_'), own('Level', null)];""")
+    assert out == [True, True, True, True, True, True, False, False, False, False]
+
+
+def test_a_hidden_parameter_the_plugin_names_the_values_of_is_a_selector_of_them(blank):
+    """A hidden enumerated parameter is drawn as one a profile shows is: a
+    selector of the plugin's own names for its values (review of #139)."""
+    out = rigjs(blank, """
+      const info = {automatable: true, value: 0, min_domain_value: 0, max_domain_value: 2};
+      const points = [{value: 0, label: 'Off'}, {value: 1, label: 'Soft'}, {value: 2, label: 'Hard'}];
+      const entry = R.plainEntry({name: 'Mode', label: 'Clip', unit: null, integer: true, scale_points: points,
+                                  visibility: 'hidden', scale: 'linear', control: 'knob'});
+      const c = R.makeControl('Mode', info, entry);
+      const none = R.makeControl('Mode', info, R.plainEntry({name: 'Mode', integer: true}));
+      return {entry, scale: c.scale, control: c.control, choices: c.choices, label: c.label,
+              noneScale: none.scale, noneControl: none.control};""")
+    assert out["entry"]["scale_points"] == [{"value": 0, "label": "Off"}, {"value": 1, "label": "Soft"},
+                                            {"value": 2, "label": "Hard"}]
+    assert (out["scale"], out["control"], out["label"]) == ("enum", "selector", "Mode")
+    assert [c["label"] for c in out["choices"]] == ["Off", "Soft", "Hard"]
+    assert (out["noneScale"], out["noneControl"]) == ("linear", "knob"), "no named values: a knob"
+
+
+def test_an_integer_on_a_log_scale_steps_by_at_least_one_whole_number(blank):
+    """A hidden 1 to 64 integer is drawn on a log scale (wider than ten), and
+    a wheel notch or an arrow key of a log knob is a hundredth of its travel,
+    which near 1 rounds back to 1: it never moved (review of #139). Each
+    step now moves it one whole number at least, the way it was turned, and
+    holds at its ends."""
+    out = rigjs(blank, """
+      const info = {automatable: true, value: 0, min_domain_value: 1, max_domain_value: 64};
+      const c = R.makeControl('Voices', info, R.plainEntry({name: 'Voices', integer: true}));
+      const at = (real) => R.normalisedOf(c, real);
+      const real = (v) => Math.round(R.realOf(c, v));
+      const up = [], down = [];
+      let v = at(1);
+      for (let i = 0; i < 5; i++) { v = R.stepped(c, v, 1); up.push(real(v)); }
+      v = at(6);
+      for (let i = 0; i < 6; i++) { v = R.stepped(c, v, -1); down.push(real(v)); }
+      return {scale: c.scale, up, down, scroll: real(R.scrolled(c, at(2), 1)), fine: real(R.stepped(c, at(3), 1, true)),
+              top: real(R.stepped(c, at(64), 1)), far: real(R.stepped(c, at(32), 10))};""")
+    assert out["scale"] == "log"
+    assert out["up"] == [2, 3, 4, 5, 6] and out["down"] == [5, 4, 3, 2, 1, 1]
+    assert out["scroll"] == 3 and out["fine"] == 4, "a notch and a fine step move it too"
+    assert out["top"] == 64, "held at the top"
+    assert out["far"] > 33, "ten steps high up the range are a log knob's ten, more than one each"
 
 
 def test_the_rack_keeps_the_send_and_return_apart_by_role_or_by_name(blank, served):
@@ -772,8 +844,9 @@ def test_save_is_offered_whenever_a_rig_saveable_from_here_is_up(blank):
     """Not only while the unsaved list has something: it is what the agent
     saw, and pedals mapped in Sushi, or an agent restarted since, leave the
     rig differing from its file with nothing listed (review, 2026-11-02). A
-    v1 run is not offered, with how. A state that says nothing of a mode, or
-    an older one that says panel, is offered: the panel is retired (#139)."""
+    v1 run is not offered, with how; nor is a run an older `up` started
+    with the retired panel (#139), which /health says (`panel`) because its
+    SAVE listener still runs beside it until a restart."""
     def view(rig, busy=None, items=1, pending=None, log=None, agent_started="2026-11-02T09:00:00+00:00"):
         health = {"ok": True, "body": {"rig": rig, "agent": {"busy": busy, "started_at": agent_started}}}
         return rigjs(blank, "return R.saveView(arg.health, {items: new Array(arg.items).fill({})}, arg.pending, arg.log);",
@@ -807,10 +880,13 @@ def test_save_is_offered_whenever_a_rig_saveable_from_here_is_up(blank):
     assert v["save"]["disabled"] and v["saveAs"]["disabled"]
     assert v["note"] == ("guitar_vocal was started from a v1 config by an older sushi-rig, so it has no rig file to "
                          "save into. Restart it, which runs config/rigs/guitar_vocal.yaml, and save that.")
-    for mode in ("panel", "headless"):
-        v = view({**up, "mode": mode})
-        assert not v["save"]["disabled"] and not v["saveAs"]["disabled"]
-        assert "panel" not in v["note"]
+    v = view({**up, "mode": "panel", "panel": False})
+    assert not v["save"]["disabled"] and not v["saveAs"]["disabled"], "only the agent's word, `panel`, blocks"
+    assert "panel" not in v["note"]
+    v = view({**up, "panel": True})
+    assert v["save"]["disabled"] and v["saveAs"]["disabled"]
+    assert v["note"] == ("electric_board was started with the retired panel by an older sushi-rig, and its panel "
+                         "and SAVE listener still run beside it. Restart it, which stops them, and save from here.")
 
 
 def test_a_saves_answer_says_what_was_written_and_what_git_says_of_the_file(blank):
@@ -1921,6 +1997,9 @@ def test_the_amp_card_has_faders_for_the_panels_parameters_and_quality_shown_bes
 
 
 @pytest.mark.parametrize("over, options, why", [
+    # A run an older sushi-rig started with the retired panel, whose
+    # listener still writes to Carla: nothing is offered until a restart.
+    ({"known": "panel"}, {}, "started with the retired panel, which still writes to the amp: restart the rig"),
     ({"carla": {"pid": 4244, "alive": False}}, {}, "Carla is not running"),
     ({"held": False}, {}, "did not start the running rig"),
     ({}, {"locked": True}, "Locked: changing the amp's model cuts the sound"),

@@ -239,7 +239,7 @@ def panel_profile(profile: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     `{"uri", "name", "file", "groups": [{"id", "label"}], "parameters": [...]}`,
     each parameter `{"name", "label", "group", "visibility", "scale",
     "control", "phone", "description", "unit", "integer", "toggled",
-    "scale_points"}`, sorted as the panel lays them out: by their group's
+    "scale_points", "symbol"}`, sorted as the panel lays them out: by their group's
     place in `groups` (ungrouped last), then `order`, then the file's order.
     A profile's controls (one knob driving several parameters, profile.py)
     are laid out among them by the same rule, after the parameters where the
@@ -295,6 +295,9 @@ def panel_profile(profile: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
             rank[group] = len(groups) - 1
         flat: dict[str, Any] = {"name": entry["name"], **{key: judged[key] for key in _SENT}}
         flat["label"] = flat["label"] or entry["name"]
+        # The port's symbol, a fact: what a card's All reads, with the name, to
+        # leave out the plugin's own bypass or on switch (rig.js `ownSwitch`).
+        flat["symbol"] = entry["symbol"] if isinstance(entry.get("symbol"), str) else None
         flat["visibility"] = flat["visibility"] or "primary"
         for key in _FACTS:
             flat[key] = facts.get(key)

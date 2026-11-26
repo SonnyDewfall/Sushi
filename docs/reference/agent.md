@@ -684,8 +684,12 @@ whether that worked. The state file records the model, so `restart` keeps it.
 It needs a rig this agent started (`409 not_held` otherwise), and is refused
 while a lifecycle command runs, and while the state file does not name the rig
 the agent holds. The agent is the only thing that writes to Carla: the Open
-Stage Control panel's faders, which once did too through its listener (and
-made the agent refuse, `409 panel`), are retired (#139). Run on the rig on 2026-11-02 from the web UI: the
+Stage Control panel's faders, which once did too through its listener, are
+retired (#139). The one exception is a rig an older `up` started with the
+panel, before the pull that retired it: its panel and listener keep running
+the old code beside the rig until it is stopped, so for that run GET /amp
+says `known: "panel"` and every amp write is `409 panel`, until a restart
+stops them ([below](#a-run-started-with-the-retired-panel)). Run on the rig on 2026-11-02 from the web UI: the
 output level followed its fader with no crackle, and a model change was about
 1.2 seconds of silence (`tool/spikes/live_rig/RESULTS-ui-2026-11-02.md`,
 step 6). In the tests Carla is a stand-in (an in-memory one, and a real UDP and
@@ -871,6 +875,31 @@ fifteen lines a first save rewrote there are what #117 fixed), and rigs saved
 from the laptop are committed in `config/rigs/`. **Saving a plugin added or
 removed live has not been run against a live Sushi**: shown against a fake
 capture and real rig files.
+
+### A run started with the retired panel
+
+A pull does not stop a rig that is playing. A run an older `up` started with
+the Open Stage Control panel (its state file says `"mode": "panel"`, or
+records a `listen` or `open-stage-control` child) still has the panel and its
+SAVE listener running the old code in the rig's group: the listener's SAVE
+writes the rig's file, and its faders write to Carla, where the agent cannot
+see. So until it is restarted (`sushi-rig restart`, or the page's Restart),
+which stops them and starts the rig without:
+
+- Save, Save as, recording, an edit of the running rig's file, Add amp,
+  loading or removing a channel, and every amp write are refused, `409
+  panel`, saying to restart. A revert, and an Undo that switches the rig
+  back, are refused too, and answered with `"discard": true`, since they
+  restart it.
+- A switch, from the picker, the stage or a Program Change, is a restart
+  (`why` says `panel`), never live: switched live, the old SAVE would write
+  the next rig's sound into the previous rig's file.
+- /health's rig says `"panel": true`, and the page offers no Save and no amp
+  change, and says why.
+
+Live parameter, bypass and chain changes are not refused, as they were not
+while the panel was current. Shown against stand-ins only: no panel run has
+been upgraded on the rig.
 
 ## New rigs and channel edits
 

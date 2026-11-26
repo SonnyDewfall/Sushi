@@ -197,8 +197,14 @@ def test_what_cannot_be_saved_from_here_is_refused_with_a_code_and_the_way_that_
     world.running = False
     assert save_refusal(world.state, world.described())[1] == "no_rig"
     world = World(root)
-    world.state["mode"] = "panel"
-    assert save_refusal(world.state, world.described()) is None, "the panel is retired: no refusal for it"
+    world.state["mode"] = "headless"
+    assert save_refusal(world.state, world.described()) is None, "an older headless run saves"
+    # A run an older `up` started with the panel, still running its SAVE
+    # listener beside the rig: refused until it is restarted.
+    for legacy in ({"mode": "panel"}, {"children": {**world.state["children"], "listen": 1}},
+                   {"children": {**world.state["children"], "open-stage-control": 2}}):
+        reason, code = save_refusal({**world.state, **legacy}, world.described())
+        assert code == "panel" and "restart it, which stops them, then save" in reason, legacy
     world = World(root, rig=None)
     reason, code = save_refusal(world.state, world.described())
     assert code == "v1" and "was started from a v1 config" in reason

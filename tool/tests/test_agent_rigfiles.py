@@ -651,7 +651,12 @@ def test_an_edit_waits_for_a_save_and_names_the_newest_change():
     assert rigfile_refusal(state, []) is None
     reason, code = rigfile_refusal(state, [logged("add", {"name": "slap", "track": "board"})])
     assert code == "unsaved" and "(the newest: slap added to board" in reason
-    assert rigfile_refusal({**state, "mode": "panel"}, []) is None, "the panel is retired: no refusal for it"
+    # A run an older `up` started with the panel, whose SAVE listener writes
+    # this file behind the agent's back: refused until it is restarted.
+    reason, code = rigfile_refusal({**state, "mode": "panel"}, [])
+    assert code == "panel" and "restart it, which stops them, then edit it" in reason
+    assert rigfile_refusal({**state, "children": {"listen": 1}}, [])[1] == "panel"
+    assert rigfile_refusal({**state, "mode": "headless"}, []) is None
 
 
 def test_a_request_is_checked_for_its_shape_only_and_values_are_the_compilers():
@@ -744,6 +749,14 @@ def test_restart_refusal_is_pure_over_the_state_the_answer_and_the_log():
     assert restart_refusal(state, up, change + [logged("save", {}, at="2026-11-06T10:06:00+00:00")]) is None
     assert restart_refusal(state, {"running": False}, change) is None
     assert restart_refusal(state, {**up, "children": {}}, change)[1] == "unsaved", "unknown is not dead"
+    assert "Save first" in restart_refusal(state, up, change)[0]
+    # A run an older `up` started with the retired panel: the restart is
+    # what stops the panel, and a save is refused for it, so the way through
+    # is discard, not "Save first".
+    panel = restart_refusal({**state, "mode": "panel"}, up, change)
+    assert panel[1] == "unsaved" and "Save first" not in panel[0]
+    assert "not saved from here, so restart with discard" in panel[0]
+    assert restart_refusal({**state, "mode": "panel"}, up, []) is None, "nothing to lose: the restart goes ahead"
 
 
 def test_a_switch_by_restart_carries_the_runs_machine_file(root):

@@ -597,7 +597,7 @@ def record_check(root: Path, rig: dict, state: dict | None, *,
     (`list_ports`, `capture.list_jack_ports` by default, which runs one under
     `pw-jack`): "needs JACK", never green."""
     from .capture import CaptureError, JackUnreachable, list_jack_ports, plan_columns
-    from .transport import PlanError, plan_for_run
+    from .transport import GraphUnreadable, PlanError, plan_for_run
 
     if not rig.get("running") or not state:
         return Check("record-ports", UNCHECKED,
@@ -619,6 +619,13 @@ def record_check(root: Path, rig: dict, state: dict | None, *,
         plan = plan_for_run(absolute(state["rig"]), absolute(state.get("config")),
                             machine_file=absolute(state.get("machine")), root=Path(root))
         columns = plan_columns(plan.stems)
+    except GraphUnreadable as exc:
+        # Cannot look, as for JACK below: the ports are named off the live
+        # graph, and a graph that will not read says nothing of them.
+        return Check("record-ports", UNCHECKED,
+                     "needs PipeWire: the recorder's ports are named off the live graph, and it could not "
+                     f"be read here: {'; '.join(exc.problems)}",
+                     "run doctor on the rig machine with the rig up; `pw-dump` must run there")
     except (PlanError, CaptureError) as exc:
         return Check("record-ports", FAULT,
                      f"no take can be planned for the running rig: {'; '.join(exc.problems)}",

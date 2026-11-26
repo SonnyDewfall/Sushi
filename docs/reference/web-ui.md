@@ -558,8 +558,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   is offered whenever a rig that can be saved from here is up, since the
   count on it is only what the agent saw (its title says since when, and
   that a count of none is not proof the file holds what is playing); for a
-  run an older `up` started from a v1 config (retired, #218) both buttons are
-  off and say to restart it to save. Save as… asks for a name, checks it by
+  run an older `up` started from a v1 config (retired, #218), or with the
+  retired panel, whose SAVE listener still runs beside it (/health's
+  `panel`), both buttons are off and say to restart it to save; the amp card
+  of such a panel run offers no change either ("Started with the panel").
+  Save as… asks for a name, checks it by
   the rule the agent saves by (lowercase letters, digits, `-` and `_`) before
   sending, and writes a new rig that becomes the running one. The answer, in
   the activity zone (#245), says

@@ -213,7 +213,13 @@ def test_a_revert_waits_for_unsaved_work_as_an_edit_does():
     assert code == "unsaved" and "1 change" in reason and '{"discard": true}' in reason
     saved = {"op": "save", "args": {}, "at": "2026-11-06T10:06:00+00:00"}
     assert revert_refusal(state, [change, saved]) is None, "a save since: nothing to lose"
-    assert revert_refusal({**state, "mode": "panel"}, []) is None, "the panel is retired: no refusal for it"
+    # A run an older `up` started with the panel, whose changes the agent
+    # cannot see: refused, and answered with discard, since a revert
+    # restarts it without the panel.
+    reason, code = revert_refusal({**state, "mode": "panel"}, [])
+    assert code == "panel" and "restart it, which stops them" in reason and '{"discard": true}' in reason
+    assert revert_refusal({**state, "children": {"open-stage-control": 1}}, [])[1] == "panel"
+    assert revert_refusal({**state, "mode": "headless"}, []) is None
 
 
 # --------------------------------------------------------------------------- #

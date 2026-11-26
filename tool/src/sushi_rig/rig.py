@@ -1439,6 +1439,27 @@ def _clear_state_of(pgid: Any) -> None:
         clear_state()
 
 
+# The children an older `up` started beside a run with the Open Stage Control
+# panel, before it was retired (#139): the SAVE listener and the panel itself.
+# Nothing starts either now; `started_with_panel` is how a run still holding
+# them is known.
+PANEL_CHILDREN = ("listen", "open-stage-control")
+
+
+def started_with_panel(state: dict[str, Any]) -> bool:
+    """Whether a state file describes a run an older `up` started with the
+    retired Open Stage Control panel (#139): it says `"mode": "panel"`, or
+    records one of `PANEL_CHILDREN`. A pull does not stop such a run, so its
+    listener and panel keep running the old code in the rig's group until
+    the rig is stopped, and the listener's SAVE writes the rig's file and its
+    faders write to Carla where the agent cannot see. So the agent writes
+    nothing for it and switches it only by restart, which stops them and
+    starts the rig without (agent `panel_run_refusal`). A state file this
+    `up` writes says neither. Pure."""
+    children = state.get("children") or {}
+    return state.get("mode") == "panel" or any(name in children for name in PANEL_CHILDREN)
+
+
 def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """What `up` should be called with to bring back the rig `state` describes.
 
@@ -1598,6 +1619,9 @@ def describe_rig(
         "amp_model": state.get("amp_model") or None,
         "rig": state.get("rig") if isinstance(state.get("rig"), str) else None,
         "log_dir": state.get("log_dir"),
+        # A run an older `up` started with the retired panel, which the agent
+        # writes nothing for until it is restarted (`started_with_panel`).
+        "panel": started_with_panel(state),
     })
     if isinstance(state.get("machine"), str):
         # Which machine file a rig run was compiled against; a v1 run has none.

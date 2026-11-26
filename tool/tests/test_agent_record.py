@@ -236,8 +236,13 @@ def test_a_name_the_take_rule_refuses_is_refused_before_anything_is_asked(body, 
 def test_what_cannot_be_recorded_from_here_is_refused_with_a_code_and_why(root):
     world = World(root)
     assert record_refusal(world.state, world.described()) is None
-    assert record_refusal({**world.state, "mode": "panel"}, world.described()) is None, \
-        "the panel is retired: no refusal for it"
+    assert record_refusal({**world.state, "mode": "headless"}, world.described()) is None
+    # A run an older `up` started with the panel: its listener's record bar
+    # would record beside the agent's, so refused until it is restarted.
+    reason, code = record_refusal({**world.state, "mode": "panel"}, world.described())
+    assert code == "panel" and "restart it, which stops them, then record" in reason
+    listening = {**world.state, "children": {**world.state["children"], "listen": 1}}
+    assert record_refusal(listening, world.described())[1] == "panel"
     no_rig = {k: v for k, v in world.state.items() if k != "rig"}
     reason, code = record_refusal(no_rig, world.described())
     assert code == "v1" and reason.startswith("duo was started from a v1 config by a sushi-rig from before")

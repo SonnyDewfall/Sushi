@@ -341,6 +341,7 @@ def test_the_button_holds_a_switch_back_locked_and_says_which_step_and_why(blank
         late: R.undoOutcome({ok: false, status: 504, reason: 'timed out'}),
         gone: R.undoOutcome({ok: false, status: 0, reason: 'the agent did not answer (x)'}),
         held: R.undoOutcome({ok: false, status: 409, code: 'unsaved', reason: 'board is running with 1 change'}),
+        panel: R.undoOutcome({ok: false, status: 409, code: 'panel', reason: 'board was started with the panel'}),
         restarts: R.undoOutcome({ok: false, status: 409, code: 'restarts', reason: 'switching board back restarts'}),
         changed: R.undoOutcome({ok: false, status: 409, code: 'changed', reason: 'the step shown is no longer'}),
         other: R.undoOutcome({ok: false, status: 400, reason: 'the body of an undo is {}'}),
@@ -355,6 +356,8 @@ def test_the_button_holds_a_switch_back_locked_and_says_which_step_and_why(blank
     assert out["sushi"]["text"] == "Sushi not answering" and out["sushi"]["title"] == "Sushi did not answer in 2 s"
     assert out["late"]["text"] == "Timed out" and out["gone"]["text"] == "Agent not answering"
     assert (out["held"]["ask"], out["held"]["text"]) == ("drop", "Drop changes?")
+    assert (out["panel"]["ask"], out["panel"]["text"]) == ("drop", "Drop changes?"), \
+        "a run started with the retired panel is switched back with discard, which restarts it without"
     assert (out["restarts"]["ask"], out["restarts"]["text"]) == ("restart", "Restart?")
     assert out["changed"]["text"] == "Changed: press again" and out["changed"]["ask"] is None
     assert out["other"]["text"] == "Not undone: the body of an undo is {}"

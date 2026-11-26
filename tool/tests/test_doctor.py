@@ -27,6 +27,9 @@ from sushi_rig import doctor
 from sushi_rig.doctor import FAULT, OK, UNCHECKED, Check, Environment
 from sushi_rig.machine import MachineSpec
 from sushi_rig.patchbay import nodes_by_id
+# The real reader of the live graph, bound before conftest stands it in for
+# every test, for the one test of what doctor says when it cannot read.
+from sushi_rig.transport import _live_jack_names as read_live_jack_names
 
 ROOT = Path(__file__).parent.parent.parent
 CAPTURED = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
@@ -799,6 +802,27 @@ def test_where_no_jack_client_can_be_opened_the_record_check_needs_jack_not_gree
     check = doctor.record_check(ROOT, described, state, list_ports=unreachable)
     assert check.state == UNCHECKED
     assert check.message.startswith("needs JACK:") and "pw-jack is not installed" in check.message
+
+
+def test_where_the_live_graph_cannot_be_read_the_record_check_needs_pipewire_not_a_fault(tmp_path, monkeypatch):
+    """The take's ports are named off `pw-dump` (#217), which raises when it
+    cannot run. That is a check doctor could not make here, as for JACK
+    above, not a fault of the rig's: UNCHECKED, saying why, and JACK is not
+    asked, since there is no plan to look for."""
+    from sushi_rig import patchbay, transport
+
+    def no_dump(*a, **k):
+        raise patchbay.PatchbayError(["pw-dump is not installed"])
+
+    def never():
+        raise AssertionError("JACK is not asked when no take could be planned")
+
+    monkeypatch.setattr(transport, "_live_jack_names", read_live_jack_names)
+    monkeypatch.setattr(patchbay, "read_pw_dump", no_dump)
+    state, described = running_rig(tmp_path)
+    check = doctor.record_check(ROOT, described, state, list_ports=never)
+    assert check.state == UNCHECKED, check
+    assert check.message.startswith("needs PipeWire:") and "pw-dump is not installed" in check.message
 
 
 def test_the_jack_listing_runs_under_pw_jack_and_says_why_when_it_cannot(monkeypatch):

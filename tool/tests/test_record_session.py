@@ -268,6 +268,34 @@ def test_an_alias_two_live_nodes_answer_to_is_refused_not_guessed():
     assert "2 nodes at once" in why and "Audient iD14 Multichannel:capture_AUX0" in why
 
 
+def test_two_of_one_interface_are_two_nodes_though_they_share_a_jack_name():
+    """Two of the same interface: two nodes with one alias and one
+    description, so both give one JACK name. Counted by node, not by name,
+    they are two sockets and refused; counted by name they were taken for one
+    (review of #217)."""
+    from sushi_rig.patchbay import jack_port_names
+
+    def node(id_, name):
+        return {"id": id_, "type": "PipeWire:Interface:Node", "info": {"props": {
+            "node.name": name, "node.nick": "Audient iD14", "node.description": "Audient iD14 Multichannel"}}}
+
+    def port(id_, node_id):
+        return {"id": id_, "type": "PipeWire:Interface:Port", "info": {"props": {
+            "node.id": node_id, "port.alias": "Audient iD14:capture_AUX0", "port.name": "capture_AUX0",
+            "port.direction": "out"}}}
+
+    dump = json.dumps([node(1, "alsa_input.usb-Audient_iD14-00.multichannel-input"), port(11, 1),
+                       node(2, "alsa_input.usb-Audient_iD14-01.multichannel-input"), port(21, 2)])
+    names = jack_port_names(dump, "out")
+    assert names["Audient iD14:capture_AUX0"] == ["Audient iD14 Multichannel:capture_AUX0"] * 2
+    port_, why = jack_port("Audient iD14:capture_AUX0", names)
+    assert port_ == "Audient iD14:capture_AUX0"
+    assert why is not None and "2 nodes at once" in why
+    # One of them alone is the one socket.
+    one = jack_port_names(json.dumps([node(1, "alsa_input.a"), port(11, 1)]), "out")
+    assert jack_port("Audient iD14:capture_AUX0", one) == ("Audient iD14 Multichannel:capture_AUX0", None)
+
+
 def test_an_ambiguous_port_refuses_the_whole_plan():
     rig = load_rig(GUITAR_VOCAL)
     machine = MachineSpec.load(THIS_MACHINE)

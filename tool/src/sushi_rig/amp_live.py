@@ -22,7 +22,13 @@ listener, and the agent refused to write while the panel ran (409 `panel`),
 since two writers that cannot see each other would each hold a record the
 other made wrong. The panel and its listener are retired (#139, #218), so the
 agent is the only thing that writes to Carla while a rig runs, and GET /amp's
-values are always what it last sent (`known: "sent"`).
+values are what it last sent (`known: "sent"`).
+
+But for one run: a rig an older `up` started with the panel, before the pull
+that retired it (`rig.started_with_panel`). Its listener and panel run on in
+the rig's group, the old code, until the rig is stopped; so for it GET /amp
+says `known: "panel"`, and every write is refused, 409 `panel`, saying to
+restart the rig, which stops them.
 
 ## How the agent knows Carla answered
 
@@ -53,6 +59,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .rig import started_with_panel
 from .amp import (
     CARLA_OSC_PORT, PANEL_PARAMETERS, PARAMETER_INDEX, PARAMETER_RANGE, PARAMETER_UNIT,
     RIG_SAMPLE_RATE, AmpError, clamp, describe_model, model_library, parameter_message, read_amp,
@@ -61,6 +68,7 @@ from .amp import (
 
 # What GET /amp says of where its values come from.
 KNOWN_SENT = "sent"    # what the agent last sent Carla: not what Carla holds
+KNOWN_PANEL = "panel"  # a run an older `up` started with the retired panel, whose listener writes to Carla
 
 # Where a value came from.
 REPLAYED = "replayed"  # the config's `_amp`, which `up` replays when Carla starts
@@ -68,6 +76,8 @@ SENT = "sent"          # sent by this agent since
 
 KNOWN_NOTE = {
     KNOWN_SENT: "what this agent last sent Carla, not what Carla holds: Carla cannot be asked",
+    KNOWN_PANEL: "the rig was started with the retired Open Stage Control panel, whose listener still writes "
+                 "to Carla, so these are only what the rig started with: restart the rig to set the amp here",
 }
 
 # The ops an amp change is logged as. `amp` is a parameter, `amp_model` the model.
@@ -150,6 +160,8 @@ def amp_problem(state: dict[str, Any] | None, described: dict[str, Any], *, writ
     - no rig up: 409 `no_rig`;
     - no amp child: 409 `no_amp` (started with --no-amp, a config with no
       `_amp`, or a Carla that did not start, which `up` warned of);
+    - writing to a run an older `up` started with the retired panel: 409
+      `panel` (`rig.started_with_panel`; the module docstring says why);
     - writing to an amp child that is dead: 502 `carla_down`, since Carla is
       the one that would have to answer. A read still answers, saying so
       (GET /amp's `carla`).
@@ -167,6 +179,11 @@ def amp_problem(state: dict[str, Any] | None, described: dict[str, Any], *, writ
         else:
             why = "Carla did not start with it (see the warnings of the up that started it, and amp.log)"
         return AmpRefused(f"the running rig has no amp: {why}", 409, "no_amp")
+    if writing and started_with_panel(state):
+        return AmpRefused(
+            "the rig was started with the retired Open Stage Control panel by an older sushi-rig, and its "
+            "listener still writes to the amp, so two writers that cannot see each other would each be "
+            "wrong about what the amp is at: restart the rig, which stops the panel, then set it", 409, "panel")
     if writing and children["amp"].get("alive") is not True:
         return AmpRefused(
             f"Carla (pid {children['amp'].get('pid')}) is not running, so the amp cannot be set: "
@@ -413,7 +430,7 @@ def amp_view(amp: AmpState, state: dict[str, Any], model: dict[str, Any] | None)
     """GET /amp's answer for a rig with an amp; `model` is `model_view`'s,
     which the agent keeps per run and model rather than reading the file's
     status and summary again on every page's poll. Pure."""
-    known = KNOWN_SENT
+    known = KNOWN_PANEL if started_with_panel(state) else KNOWN_SENT
     return {
         "ok": True, "known": known, "known_note": KNOWN_NOTE[known],
         "model": model,

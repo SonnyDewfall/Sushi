@@ -6235,7 +6235,7 @@ class Agent:
                     try:
                         amp, state, _ = await self._amp_now(writing=True)
                     except amp_live.AmpRefused as exc:
-                        if undoing is not None and skip and exc.code == "no_amp":
+                        if undoing is not None and skip and exc.code in ("no_amp", "panel"):
                             return self._amp_skip(*undoing, exc)
                         raise self._amp_http(exc)
                     root = self._amp_root()
@@ -6359,7 +6359,7 @@ class Agent:
                 amp, _, described = await self._amp_now(writing=True)
                 amp_live.undo_check(undone, amp, self._amp_root())
             except amp_live.AmpRefused as exc:
-                if skip and exc.code in ("stale", "no_amp"):
+                if skip and exc.code in ("stale", "no_amp", "panel"):
                     return web.json_response(self._amp_skip(index, undone, exc))
                 hint = '; to give up on this entry and go on to the one before it, send {"skip": true}'
                 raise self._amp_http(exc, hint if exc.code == "stale" else "")
@@ -9306,6 +9306,9 @@ SWITCH_RESTART_REASONS = {
                 "would leave it with none; a restart brings Carla back",
     "amp_unwired": "the next rig has an amp and the running rig's Carla runs with its links not made, so "
                    "the guitar goes in dry; a restart starts the patchbay and Carla again",
+    "panel": "the rig was started with the retired Open Stage Control panel by an older sushi-rig, and its "
+             "panel and SAVE listener still run beside it, started for the running rig: switched live, "
+             "SAVE would write the next rig's sound into the previous rig's file. A restart stops them",
 }
 
 
@@ -9321,7 +9324,11 @@ def switch_request(body: Any) -> str:
 def state_blockers(state: dict[str, Any]) -> list[rigfile.RestartReason]:
     """What, in how the running rig is being run, rules a live switch out
     (`SWITCH_RESTART_REASONS`). Pure."""
+    from .rig import started_with_panel
+
     found = []
+    if started_with_panel(state):
+        found.append(rigfile.RestartReason("panel", SWITCH_RESTART_REASONS["panel"]))
     if state.get("amp_model_requested") and state.get("amp_requested", True):
         found.append(rigfile.RestartReason(
             "amp_override", f"the amp runs {state['amp_model_requested']!r}, given with --amp-model"))
@@ -9800,11 +9807,34 @@ def live_edits(log: list[dict[str, Any]], since: Any = None) -> dict[str, Any]:
     return {"added": added, "removed": removed}
 
 
+def panel_run_refusal(state: dict[str, Any], then: str) -> tuple[str, str] | None:
+    """`(reason, "panel")` for a run an older `up` started with the retired
+    Open Stage Control panel (`rig.started_with_panel`), or None. Its panel
+    and SAVE listener still run the old code beside it: the listener's SAVE
+    writes the rig's file and its faders write to Carla, and neither goes
+    through the agent, so a write of the agent's would race one it cannot
+    see. Every write is refused until the rig is restarted, which stops them;
+    `then` says what to do after. Pure."""
+    from .rig import started_with_panel
+
+    if not started_with_panel(state):
+        return None
+    name = Path(str(state.get("rig") or "")).stem or state.get("config_name") or "the rig"
+    return (f"{name} was started with the Open Stage Control panel by a sushi-rig from before the panel was "
+            "retired, and its panel and SAVE listener still run beside it, writing the rig file and the amp "
+            f"where the agent cannot see: restart it, which stops them, then {then}", "panel")
+
+
 def save_refusal(state: dict[str, Any], described: dict[str, Any]) -> tuple[str, str] | None:
     """`(reason, code)` for a running rig the agent will not save, or None.
-    Pure over the state file and `describe_rig`'s answer."""
+    Pure over the state file and `describe_rig`'s answer: no rig, then a
+    run still holding the retired panel (`panel_run_refusal`), then a run
+    an older `up` started from a v1 config."""
     if not described.get("running"):
         return (f"no rig is running to save ({described.get('message') or 'nothing is up'})", "no_rig")
+    panel = panel_run_refusal(state, "save")
+    if panel is not None:
+        return panel
     rig = state.get("rig")
     if not isinstance(rig, str) or not rig:
         # Only a state file an older `up` wrote, for a v1 config: every run is
@@ -9899,10 +9929,15 @@ def record_request(body: Any) -> str | None:
 def record_refusal(state: dict[str, Any], described: dict[str, Any]) -> tuple[str, str] | None:
     """`(reason, code)` for a run the agent does not record, or None. Pure
     over the state file and `describe_rig`'s answer, in the order a player
-    would fix them: no rig, then a run an older `up` started from a v1
-    config, whose state file names no rig file."""
+    would fix them: no rig, then a run still holding the retired panel
+    (`panel_run_refusal`: its listener's record bar would record beside the
+    agent's), then a run an older `up` started from a v1 config, whose state
+    file names no rig file."""
     if not described.get("running"):
         return (f"no rig is running to record ({described.get('message') or 'nothing is up'})", "no_rig")
+    panel = panel_run_refusal(state, "record")
+    if panel is not None:
+        return panel
     rig = state.get("rig")
     if not isinstance(rig, str) or not rig:
         name = state.get("config_name") or described.get("config_name") or "the running config"
@@ -10045,7 +10080,12 @@ def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[s
     Refused until it is saved, rather than written with a warning: a refusal
     costs one tap on Save, and a warning would be read once and the work
     lost at the restart the same answer offers. `unsaved`, naming
-    the newest change."""
+    the newest change. For a run still holding the retired panel (`panel`),
+    the agent cannot see the panel's changes, nor stop its SAVE writing the
+    file, so it refuses until the rig is restarted."""
+    panel = panel_run_refusal(state, "edit it")
+    if panel is not None:
+        return panel
     name = Path(str(state.get("rig") or "the rig")).stem
     unsaved = unsaved_entries(log, since=state.get("started_at"))
     if unsaved:
@@ -10302,9 +10342,14 @@ def restart_refusal(
     name = state.get("config_name") or described.get("config_name") or "the rig"
     newest = unsaved[-1]
     count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
+    # A run still holding the retired panel is not saved from here
+    # (`panel_run_refusal`), and the restart is what stops the panel, so
+    # "Save first" would send the player to a refusal.
+    first = ("A run started with the retired panel is not saved from here, so restart with discard"
+             if (panel_run_refusal(state, "save") is not None) else "Save first, or restart with discard")
     return (f"{name} has {count} made through the agent and not saved (the newest: "
             f"{describe_change(newest)}, at {newest.get('at')}), and a restart reloads its file without "
-            "them: Save first, or restart with discard (sushi-rig restart --discard, or "
+            f"them: {first} (sushi-rig restart --discard, or "
             '{"discard": true}) to drop them', "unsaved")
 
 
@@ -10337,8 +10382,14 @@ def revert_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[st
     """`(reason, code)` when a revert of the running rig must wait, or None.
     Pure over the state file and the log. The rule an edit of its file has
     (`rigfile_refusal`): a revert replaces what is playing with the file, so
-    unsaved live work would be lost by it (`unsaved`). Worded for a revert,
-    and answered with `{"discard": true}` rather than a restart."""
+    unsaved live work would be lost by it (`unsaved`), and for a run still
+    holding the retired panel the agent cannot see the panel's changes
+    (`panel`). Worded for a revert, and answered with `{"discard": true}`
+    rather than a restart: a revert restarts the rig, which stops the panel."""
+    panel = panel_run_refusal(state, "revert it")
+    if panel is not None:
+        return (panel[0] + ', or revert with discard ({"discard": true}), which restarts it from the file and '
+                "drops whatever the panel changed", "panel")
     name = Path(str(state.get("rig") or "the rig")).stem
     unsaved = unsaved_entries(log, since=state.get("started_at"))
     if not unsaved:

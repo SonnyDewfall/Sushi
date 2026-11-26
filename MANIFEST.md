@@ -7653,6 +7653,39 @@ the rigs. `emit`, `push`, `probes`, `patchbay generate` and `convert` still
 read a rig.yaml of tracks or a v1 config by path. Not run on the rig.
 *(2026-11-26)*
 
+**Retiring the panel, PR #253's review (#139, #218, #217).** Nine findings.
+(1) A rig an older `up` started with the panel is not stopped by a pull: its
+listener and Open Stage Control run on in the rig's group, the old code,
+until the rig is stopped, and with nothing reading `mode` the page switched
+such a run live and the old SAVE would have written the next rig's sound into
+the previous rig's file. `rig.started_with_panel` (a state file saying
+`"mode": "panel"`, or recording a `listen` or `open-stage-control` child) is
+now read again: a switch of such a run is a restart (`panel`), and save,
+record, edits of its file, Add amp, loads, removes and every amp write are
+`409 panel` until it is restarted (a revert or a switch-back Undo is answered
+with discard, since it restarts); GET /amp says `known: "panel"`, /health
+`"panel": true`, and the page offers no Save and no amp change, saying why.
+A run this `up` started says neither. (2) `transport.jack_port` counted the
+names a port is listed under, de-duplicated, so two of one interface (one
+alias, one description, so one JACK name) were taken for one socket; it counts
+nodes now. (3) A graph that cannot be read (`transport.GraphUnreadable`) is
+doctor's UNCHECKED, needing PipeWire, not a FAULT. (4) An integer on a log
+scale (a hidden 1 to 64) never moved by wheel or key, a hundredth of the
+travel rounding back; a step now moves it one whole number at least. (5) A
+hidden parameter's `scale_points` were dropped, so an enumerated one was a
+knob; it is a selector of the plugin's names. (6) The visualiser's on-demand
+spike called the removed `headless` and `generate_panel`; updated, not run.
+(7) A card's All showed the plugin's own bypass or on switch (GxTS9 BYPASS,
+calf Bypass, a-reverb Enable, string-machine Enabled), which the profiles hide
+because Sushi's bypass is the one; no profile fact marks them, so they are
+left out by the word, whole, in the name or symbol (`R.ownSwitch`; the
+profile now carries `symbol`). As shipped, GxTS9's profile hides nothing else,
+so its card has no All; the browser test hides its Level on the way to the
+page. (8) Stale docs. (9) CI's slow job refused a skip: `test_stereo`'s v1
+renders were parametrised over `config/*.json`, empty since #218; they measure
+the frozen v1 configs now, and a fast test fails should those go. None of it
+run on the rig. *(2026-11-26)*
+
 **#245: the top of the page in three zones, and every answer in one bar.**
 The owner, after #209: "a lot of scrolling is required to read and address
 some of the messages", then, of the mock-ups: one activity bar at the top

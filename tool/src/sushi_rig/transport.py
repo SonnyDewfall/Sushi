@@ -432,6 +432,13 @@ class PlanError(Exception):
         super().__init__("; ".join(self.problems))
 
 
+class GraphUnreadable(PlanError):
+    """The live graph could not be read (`pw-dump` missing, hung, failing, or
+    unparseable), so no port could be named as JACK sees it. A plan refused
+    for it says nothing of the rig's ports: doctor reports it as a check it
+    could not make, not a fault (`doctor.record_check`)."""
+
+
 def jack_port(port: str, jack_names: Mapping[str, Sequence[str]] | None) -> tuple[str, str | None]:
     """The name a JACK client connects `port` by, and why that cannot be said.
     A take's one resolver of its ports (#217).
@@ -465,7 +472,10 @@ def jack_port(port: str, jack_names: Mapping[str, Sequence[str]] | None) -> tupl
     """
     if jack_names is None:
         return port, None
-    names = list(dict.fromkeys(jack_names.get(port) or []))
+    # One entry per live node's port, never de-duplicated by name: two of the
+    # same interface share a description, so both give one JACK name, and
+    # counting names would take two sockets for one.
+    names = list(jack_names.get(port) or [])
     if len(names) == 1:
         return names[0], None
     if names:
@@ -634,8 +644,8 @@ def _capture_engine(sample_rate: int, quantum: int) -> Engine:
 
 def _live_jack_names() -> dict[str, list[str]]:
     """Port alias -> the name a JACK client sees it under, for every live
-    capture port, read off `pw-dump`; `PlanError` when the graph cannot be
-    read.
+    capture port, read off `pw-dump`; `GraphUnreadable`, a `PlanError`, when
+    the graph cannot be read.
 
     Refused rather than planned with no map, since #217: with no map the
     ports stayed as the machine file writes them, and only the capture
@@ -653,7 +663,7 @@ def _live_jack_names() -> dict[str, list[str]]:
         return jack_port_names(read_pw_dump(), "out")
     except Exception as exc:  # noqa: BLE001 -- said as the plan's refusal
         kind = "" if isinstance(exc, PatchbayError) else f"{type(exc).__name__}: "
-        raise PlanError([f"the live graph could not be read to name the take's ports as JACK sees them "
+        raise GraphUnreadable([f"the live graph could not be read to name the take's ports as JACK sees them "
                          f"({kind}{exc})"]) from exc
 
 

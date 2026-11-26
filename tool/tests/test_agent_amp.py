@@ -867,12 +867,12 @@ def test_a_parameter_request_is_clamped_and_the_clamp_said(asked, sent, said):
     assert amp_live.clamped_said(name, got_asked, got_sent) == said
 
 
-@pytest.mark.parametrize("mode", [None, "panel", "headless"])
-def test_whatever_mode_a_state_file_says_the_agent_is_the_amps_writer(root, mode):
-    """The panel is retired (#139): nothing else writes to Carla, so the agent
-    sets the amp whatever an older state file says its mode was (`"mode":
-    "panel"` used to refuse it, 409 `panel`), says its values are what it
-    sent, and neither a switch nor a restart reads a mode any more."""
+@pytest.mark.parametrize("mode", [None, "headless"])
+def test_a_run_without_the_panel_has_the_agent_as_the_amps_writer(root, mode):
+    """The panel is retired (#139): nothing else writes to Carla for a run
+    this `up` started (no mode) or an older one started headless, so the
+    agent sets the amp, says its values are what it sent, and a restart
+    asks for no mode."""
     from sushi_rig.agent import state_blockers
     from sushi_rig.rig import restart_arguments
 
@@ -885,6 +885,30 @@ def test_whatever_mode_a_state_file_says_the_agent_is_the_amps_writer(root, mode
     assert world.carla.sent
     assert call(agent, "GET", "/amp")[1]["known"] == "sent"
     assert state_blockers(world.state) == []
+    assert "headless" not in restart_arguments(world.state)[1]
+
+
+@pytest.mark.parametrize("legacy", [{"mode": "panel"}, {"child": "listen"}, {"child": "open-stage-control"}])
+def test_a_run_an_older_up_started_with_the_panel_is_not_written_until_it_is_restarted(root, legacy):
+    """A run an older `up` started with the panel, before the pull that
+    retired it: its listener still writes to Carla, behind the agent's back.
+    So GET /amp says its values are only what the rig started with (`known:
+    "panel"`), every write is refused, 409 `panel`, saying to restart, and
+    nothing reaches Carla. The restart that fixes it asks for no panel."""
+    from sushi_rig.rig import restart_arguments
+
+    world = World(root)
+    if "mode" in legacy:
+        world.state["mode"] = legacy["mode"]
+    else:
+        world.state["children"] = {**world.state["children"], legacy["child"]: 4999}
+    agent, _ = amp_agent(root, world)
+    status, body = call(agent, "POST", "/amp/parameter", json={"name": "Output Lvl", "value": 1.0})
+    assert (status, body["code"]) == (409, "panel"), body
+    assert "restart the rig, which stops the panel" in body["reason"]
+    assert world.carla.sent == []
+    view = call(agent, "GET", "/amp")[1]
+    assert view["known"] == "panel" and "restart the rig" in view["known_note"]
     assert "headless" not in restart_arguments(world.state)[1]
 
 

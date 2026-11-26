@@ -150,10 +150,13 @@ explicit: five seconds on every save would be felt while dialling in a tone.
 
 ## Checking a config loads
 
-No guitar, no audio interface, no extra dependencies needed:
+No guitar, no audio interface, no extra dependencies needed. Sushi loads a
+compiled config, so compile the rig first: `verify` does, and prints the
+compiled file's path.
 
 ```bash
-./sushi --dump-plugins -c config/electric_board.json
+sushi-rig verify config/rigs/electric-chorus-2.yaml   # prints the compiled config's path
+./sushi --dump-plugins -c <that path>
 ```
 
 This starts Sushi with the dummy frontend, prints every hosted plugin's
