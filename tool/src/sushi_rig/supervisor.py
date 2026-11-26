@@ -92,7 +92,9 @@ from typing import Any, Callable, Sequence
 from . import rig as rig_module
 from . import vistap
 from .paths import log_dir
-from .procs import SHUTDOWN_STEPS, pgid_alive, stop_group, stop_recorded, threads_of
+from .procs import (
+    SHUTDOWN_STEPS, group_members, pgid_alive, stop_group, stop_recorded, stop_signals_preexec, threads_of,
+)
 from .qpwgraph import start_qpwgraph
 from .state import read_state, write_state
 
@@ -277,41 +279,21 @@ def _spawn(
     command: Sequence[str], *, cwd: Path, env: dict[str, str], log: Path | None,
     process_group: int,
 ) -> subprocess.Popen:
-    """Start one process into a process group, its output to `log`."""
+    """Start one process into a process group, its output to `log`, with
+    SIGINT and SIGTERM at their defaults whatever the agent was started with
+    (`procs.stop_signals_preexec`, #236: in the running agent, which handles
+    both, that is nothing at all between fork and exec)."""
     if log is None:
         return subprocess.Popen(
             list(command), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            process_group=process_group,
+            process_group=process_group, preexec_fn=stop_signals_preexec(),
         )
     with open(log, "wb") as sink:
         return subprocess.Popen(
             list(command), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-            stdout=sink, stderr=sink, process_group=process_group,
+            stdout=sink, stderr=sink, process_group=process_group, preexec_fn=stop_signals_preexec(),
         )
-
-
-def group_members(pgid: int) -> list[int]:
-    """Every process in group `pgid`, from /proc: what is left when a group
-    would not stop, said by pid. Empty where /proc cannot be read."""
-    members = []
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return []
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/stat") as stat:
-                # "pid (comm) state ppid pgrp ...": comm may hold spaces and
-                # parentheses, so split after the last ')'.
-                fields = stat.read().rsplit(")", 1)[1].split()
-        except (OSError, IndexError):
-            continue
-        if len(fields) > 2 and fields[2] == str(pgid):
-            members.append(int(entry))
-    return sorted(members)
 
 
 def child_pids(pid: int) -> list[int]:

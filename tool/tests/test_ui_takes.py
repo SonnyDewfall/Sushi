@@ -134,7 +134,7 @@ def test_the_rack_names_the_takes_folder_and_lists_no_takes(browser, record_serv
     page = stage_page(browser, record_served)
     page.page.get_by_role("button", name="Record", exact=True).click()
     page.page.get_by_role("button", name="Stop", exact=True).click()
-    expect(page.page.locator(".record-result")).to_contain_text(f"Recorded {FIRST}")
+    expect(page.page.locator(".activity .record-result")).to_contain_text(f"Recorded {FIRST}")
     page.close()
     rack_page = rack(browser, record_served)
     p = rack_page.page
@@ -157,7 +157,7 @@ def test_neither_screen_asks_for_the_takes(browser, record_served):
     stage.page.get_by_role("button", name="Record", exact=True).click()
     expect(stage.page.locator(".record-bar h2")).to_have_text("Recording")
     stage.page.get_by_role("button", name="Stop", exact=True).click()
-    expect(stage.page.locator(".record-result")).to_contain_text(f"Recorded {FIRST}")
+    expect(stage.page.locator(".activity .record-result")).to_contain_text(f"Recorded {FIRST}")
     # The rack has seen the take start and stop (its /record follows /live),
     # then a few more polls.
     polls = rack_page.asked.count("/health")
@@ -175,7 +175,7 @@ def test_open_folder_opens_the_takes_folder_on_this_machine(browser, record_serv
     rack_page = rack(browser, record_served, clock=True)
     p = rack_page.page
     p.get_by_role("button", name="Open folder").click()
-    said = p.locator(".open-result")
+    said = p.locator(".activity .open-result")
     expect(said).to_contain_text("Opened the takes folder")
     expect(said).to_have_attribute("title", re.compile(re.escape(f"opened {takes_dir(record_served)}")))
     assert json.loads(seen.read_text()) == [takes_dir(record_served)]
@@ -192,7 +192,7 @@ def test_open_folder_with_no_opener_installed_says_so_and_stays(browser, record_
     rack_page = rack(browser, record_served, clock=True)
     p = rack_page.page
     p.get_by_role("button", name="Open folder").click()
-    said = p.locator(".open-result")
+    said = p.locator(".activity .open-result")
     expect(said).to_contain_text("Not opened")
     expect(said).to_have_attribute("title", re.compile(re.escape("neither xdg-open nor gio open is installed")))
     expect(said).to_have_attribute("title", re.compile(re.escape(f"The takes are in {takes_dir(record_served)}")))
@@ -232,7 +232,7 @@ def test_a_stop_says_the_take_its_folder_and_its_verdict(browser, record_served)
     p.get_by_label("Take name").fill("riff-idea")
     p.get_by_role("button", name="Record", exact=True).click()
     p.get_by_role("button", name="Stop", exact=True).click()
-    result = p.locator(".record-result")
+    result = p.locator(".activity .record-result")
     expect(result.locator("strong")).to_have_text("Recorded riff-idea")
     expect(result).to_have_attribute("title", re.compile(r"(^|· )Whole · 5 stems · nothing lost "
                                                          + re.escape(str(record_served.recorder.takes.resolve() / "riff-idea"))
@@ -259,7 +259,7 @@ def test_a_broken_take_is_flagged_when_it_stops(browser, record_served):
     p.route("**/record/stop", broken)
     p.get_by_role("button", name="Record", exact=True).click()
     p.get_by_role("button", name="Stop", exact=True).click()
-    result = p.locator(".record-result")
+    result = p.locator(".activity .record-result")
     expect(result.locator("strong")).to_have_text(f"Recorded {FIRST}")
     expect(result).to_have_class(re.compile(r"\brefused\b"))
     expect(result).to_have_attribute("role", "alert")
@@ -278,7 +278,7 @@ def test_a_whole_takes_result_goes_after_15_s_and_a_broken_ones_stays(browser, r
     p.get_by_role("button", name="Record", exact=True).click()
     expect(p.locator(".record-bar h2")).to_have_text("Recording")
     p.get_by_role("button", name="Stop", exact=True).click()
-    result = p.locator(".record-result")
+    result = p.locator(".activity .record-result")
     expect(result).to_have_attribute("title", re.compile("Whole · 5 stems · nothing lost"))
     p.clock.run_for(14_000)
     expect(result).to_be_visible()

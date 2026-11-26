@@ -127,6 +127,15 @@ leader of a new group, and each child straight into that group, with
 the state file's `supervisor_pid`, which is why the file reads as before. The
 children are the agent's own, which is how it reads a crash's exit status.
 
+Each child starts with SIGINT and SIGTERM at their defaults (#236), so `down`'s
+SIGINT is heard however the agent was started. The running agent handles both
+(aiohttp), and exec resets a handled signal, so there nothing runs between fork
+and exec; only a process that *ignores* one (started that way by a script, a
+service wrapper or a non-interactive shell's `&`, and not yet handling it) gives
+its children `procs.stop_signals_preexec`, which resets the two and does
+nothing else. A stop step whose signal every member left in the group ignores
+is not waited out either: the next signal is sent at once.
+
 ## The rig outlives the agent
 
 Stopping or restarting the agent leaves the rig
@@ -1184,6 +1193,12 @@ another page's step, or a change landing since, is **409 `changed`**, with
 `next`, and nothing is undone; the live undo is told which log entry it is
 for, and refuses `changed` too if a newer one landed between its picks),
 `discard` and `restart` (below):
+
+Its answer, as any write's that logged entries it does not carry already
+(inline, as a live change's, or under `entry`), has `logged`: each entry
+the request made, `{op, at, args}` as the log holds it (the middleware
+`_say_logged`). The page knows its own changes by them, and says the rest
+were made elsewhere (#245).
 
 - **`live`**: a change made through `/live`, the amp or a pedal (a
   footswitch's bypass, and a channel's mute, its send bypassed: "mute

@@ -75,6 +75,11 @@ def rig(served):
     return yaml.safe_load((served.save.root / "config" / "rigs" / "electric_board.yaml").read_text())
 
 
+def bar(p):
+    """The activity zone (#245), where a load's question and answer are."""
+    return p.locator(".activity")
+
+
 def panel(p, channel):
     p.get_by_role("button", name=f"Load a channel onto {channel}").click()
     group = p.get_by_role("group", name=f"Load onto {channel}")
@@ -191,7 +196,7 @@ def test_a_channel_of_another_rig_is_loaded_and_the_page_shows_its_plugins(brows
     expect(group.locator(".lock-says")).to_have_count(0)
     expect(group.locator("label.selector .label")).to_have_text("From")
     go.click()
-    result = group.locator(".load-result")
+    result = bar(p).locator(".load-result")
     expect(result).to_contain_text("Loaded spare / lead onto vocal")
     expect(result).to_have_attribute("title", re.compile("^Played live\\. "))
     vocal = rig(files_served)["channels"][1]
@@ -218,11 +223,11 @@ def test_a_load_with_unsaved_work_offers_to_drop_it(browser, files_served):
     group = panel(p, "vocal")
     group.get_by_label("Channel to load onto vocal").select_option(label="spare / lead")
     group.get_by_role("button", name="Load", exact=True).click()
-    result = group.locator(".load-result")
+    result = bar(p).locator(".load-result")
     expect(result).to_contain_text("Not loaded: spare / lead onto vocal")
     expect(result.locator(".said")).to_contain_text("electric_board is running with 1 change")
     expect(result).to_have_attribute("title", re.compile("not saved"))
-    group.get_by_role("button", name="Load anyway").click()
+    bar(p).get_by_role("button", name="Load anyway").click()
     expect(result).to_contain_text("Loaded spare / lead onto vocal")
     page.close()
 
@@ -235,7 +240,7 @@ def test_a_channel_is_added_from_another_rigs_channel(browser, files_served):
     p.get_by_label("New channel input").select_option("keys-in")
     p.get_by_label("New channel starts from").select_option(label="spare / lead")
     p.get_by_role("button", name="Add keys").click()
-    expect(p.locator(".rigfile-result.ok")).to_contain_text("Added keys to electric_board")
+    expect(bar(p).locator(".rigfile-result.ok")).to_contain_text("Added keys to electric_board")
     keys = rig(files_served)["channels"][2]
     assert keys["name"] == "keys" and keys["input"] == "keys-in"
     assert [e["name"] for e in keys["chain"]] == ["keys_drive", "keys_echo"], "named for the channel, as a load names"
@@ -269,12 +274,13 @@ def test_a_loads_answer_stays_with_its_channel_and_its_second_tap_goes_there(bro
     assert sent == [(sent[0][0], {"from": {"rig": "spare", "channel": "lead"}, "rig": "electric_board"})]
     assert sent[0][0].endswith("/rig/channels/vocal/load")
     held.pop().continue_()
-    result = group.locator(".load-result")
+    result = bar(p).locator(".load-result")
     expect(result).to_contain_text("Not loaded: spare / lead onto vocal")
+    expect(result.locator(".act-chan")).to_have_text("vocal")
     expect(board).to_be_enabled()
-    # Another strip's panel shows none of it.
-    other = panel(p, "board")
-    expect(other.locator(".load-result")).to_have_count(0)
+    # Another strip's panel opened: the answer was the vocal's, and goes.
+    panel(p, "board")
+    expect(bar(p).locator(".load-result")).to_have_count(0)
     expect(p.locator(".load-result")).to_have_count(0)
     # Back to the vocal: its answer is gone with the panel it was in, and a
     # load there again is the vocal's, its second tap the vocal's too.
@@ -284,9 +290,9 @@ def test_a_loads_answer_stays_with_its_channel_and_its_second_tap_goes_there(bro
     group = panel(p, "vocal")
     group.get_by_label("Channel to load onto vocal").select_option(label="spare / lead")
     group.get_by_role("button", name="Load", exact=True).click()
-    expect(group.locator(".load-result")).to_contain_text("Not loaded: spare / lead onto vocal")
-    group.get_by_role("button", name="Load anyway").click()
-    expect(group.locator(".load-result")).to_contain_text("Loaded spare / lead onto vocal")
+    expect(bar(p).locator(".load-result")).to_contain_text("Not loaded: spare / lead onto vocal")
+    bar(p).get_by_role("button", name="Load anyway").click()
+    expect(bar(p).locator(".load-result")).to_contain_text("Loaded spare / lead onto vocal")
     assert [url.rsplit("/", 2)[-2] for url, _ in sent] == ["vocal", "vocal", "vocal"]
     assert sent[-1][1] == {"from": {"rig": "spare", "channel": "lead"}, "discard": True, "rig": "electric_board"}
     assert [e["name"] for e in rig(files_served)["channels"][1]["chain"]] == ["vocal_drive", "vocal_echo"]
@@ -317,12 +323,12 @@ def test_a_waiting_loads_panel_stays_open_until_its_answer_is_seen(browser, file
         expect(p.get_by_role("button", name=f"Load a channel onto {channel}")).to_be_disabled()
     held.pop().continue_()
     p.unroute("**/rig/channels/*/load")
-    expect(group.locator(".load-result")).to_contain_text("Not loaded: spare / lead onto vocal")
-    expect(group.get_by_role("button", name="Load anyway")).to_be_enabled()
+    expect(bar(p).locator(".load-result")).to_contain_text("Not loaded: spare / lead onto vocal")
+    expect(bar(p).get_by_role("button", name="Load anyway")).to_be_enabled()
     expect(close).to_be_enabled()
     expect(p.get_by_role("button", name="Load a channel onto board")).to_be_enabled()
-    group.get_by_role("button", name="Load anyway").click()
-    expect(group.locator(".load-result")).to_contain_text("Loaded spare / lead onto vocal")
+    bar(p).get_by_role("button", name="Load anyway").click()
+    expect(bar(p).locator(".load-result")).to_contain_text("Loaded spare / lead onto vocal")
     assert page.errors == []
     page.close()
 
@@ -338,7 +344,7 @@ def test_a_load_is_taken_back_by_the_one_undo_held_while_locked(browser, files_s
     group = panel(p, "vocal")
     group.get_by_label("Channel to load onto vocal").select_option(label="spare / lead")
     group.get_by_role("button", name="Load", exact=True).click()
-    expect(group.locator(".load-result")).to_contain_text("Loaded spare / lead onto vocal")
+    expect(bar(p).locator(".load-result")).to_contain_text("Loaded spare / lead onto vocal")
     assert path.read_bytes() != before
     button = p.locator("button.undo")
     expect(button).to_have_attribute("title", "Undo load spare / lead")
@@ -347,7 +353,7 @@ def test_a_load_is_taken_back_by_the_one_undo_held_while_locked(browser, files_s
     expect(button).to_have_attribute("title", "Locked: load spare / lead")
     unlock(p)
     button.click()
-    expect(p.locator(".undo-said")).to_have_text("Undone: load spare / lead")
+    expect(bar(p).locator(".undo-said strong")).to_have_text("Undone: load spare / lead")
     assert path.read_bytes() == before
     page.close()
 
@@ -407,11 +413,12 @@ def test_a_channel_is_loaded_with_its_rigs_amp_after_restart(browser, files_serv
     expect(button).to_be_enabled()
     expect(button).to_have_attribute("title", re.compile("^Load it with amped's amp"))
     button.click()
-    confirm = group.get_by_role("group", name="Restart?")
+    confirm = bar(p).get_by_role("group", name="Restart?")
+    expect(bar(p).locator(".act-ask .act-chan")).to_have_text("board")
     expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
     assert "amp" not in rig(files_served), "nothing until the confirm"
     confirm.get_by_role("button", name="Yes").click()
-    result = group.locator(".load-result")
+    result = bar(p).locator(".load-result")
     expect(result).to_contain_text("Loaded amped / lead onto board with amp")
     written = rig(files_served)
     assert written["amp"] == yaml.safe_load(AMPED)["amp"]

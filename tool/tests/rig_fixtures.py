@@ -139,7 +139,7 @@ def frozen_files() -> list[Path]:
 def frozen_checkout(folder: Path) -> Path:
     """The frozen set laid out as a checkout at `folder`, for code that is
     given a root and a name (`prepare_rig`, `compile_named_rig`,
-    `resolve_rig_yaml`, the agent): config/rigs/, config/*.json, config/src/,
+    the agent): config/rigs/, the frozen v1 configs as config/*.json and config/src/,
     machines/ and a stand-in plugins/ holding every plugin
     (`stand_in_plugins`). With them the real port table, and an empty stand-in for
     each amp model a frozen rig names, so that a model is found as `up` finds

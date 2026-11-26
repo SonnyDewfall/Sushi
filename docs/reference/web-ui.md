@@ -25,7 +25,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   part, behind a tab per channel and Master (below), and **the files on the
   right**: the rig picker, New rig…, Start, Stop and Switch, Save,
   Save as…, Revert…, and the takes folder. The one **Undo** is in the
-  header, beside the Lock (#209, below). The **master volume is in the header**,
+  activity zone under the header (#209, #245, below). The **master volume is in the header**,
   not in a column. At phone width the columns stack in that order, strips
   first, since volume is what a hand reaches for. A chain is a row of
   plugin cards, each with its knobs: the profile's controls in its groups and
@@ -64,14 +64,100 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   size of their own whatever they hold, and the one sign of unsaved work is a
   count on the Save button, in a box that is always there; the itemised list
   of changes and the per-knob "was" are gone. Undo is an action, not a view
-  of history: one button in the header (#209). A browser test compares every
+  of history: one button, in the activity zone (#209, #245). A browser test compares every
   element's box before and after four changes.
+- **The top of each screen: status, activity, controls (#245, 2026-11-26).**
+  The owner, after #209: "a lot of scrolling is required to read and
+  address some of the messages", and then: "show status information in one
+  area, changes and any action needed in another, and then anything that we
+  can change (eg. volume) in another." So the top is three zones:
+  - **Status**, read only, in the header: the rig's name, up or down and for
+    how long (`R.rigStatus`; its "· sound not measured" is the line's
+    `title` on the rack, as the note always was), the LOAD, XRUNS and AMP
+    tiles, and the rig's problems in a word or two (`R.agentProblems`: "No
+    amp", "Amp not wired", "Links not made" from `agent.warnings` and
+    `amp_wiring`, a child that exited, the last error, a profile that would
+    not load), each a small box whose `title` is the whole of it. They are
+    states of the rig, not answers to a tap, so they stay here. On a phone
+    the status is the rig's name and its dot; the words are the dot's
+    `title`, and a tap on it (a button there only: on a laptop the line is
+    no control, and not in the tab order) shows them and the tiles
+    (`state.statusOpen`). On a laptop the name and the state are never cut:
+    the tiles give way first, their second words ("of 21.3 ms", "since
+    opened") in their titles, the amp's last.
+  - **Controls**, in the header beside the status: the master volume, the
+    Lock (an icon on a phone, its label its `aria-label` and `title`), and
+    the Stage and Help links, which on a phone are a bar at the foot, as on
+    the stage. Nothing else is there: a channel's volume belongs to its
+    strip, and Start, Stop and Switch to the rig picker, beside what they
+    act on.
+  - **Activity**, a bar under the header, `position: sticky`, so once the
+    header has scrolled away it is pinned at the top of the window. It holds
+    the **question** open (Stop?, Restart?, Restart amp?, Drop changes?,
+    Remove?), the newest only, with Yes and No; what is **running**
+    ("Switching to clean…", "Restarting electric_board…", "Saving…",
+    `R.activityBusy`); the **last results**, three on a laptop with their
+    times and one on a phone, newest first, each with its second tap
+    (Restart, Restart anyway, Load anyway, Remove anyway, Add anyway, Save &
+    assign) and ×, a second tap not drawn while its own question is asked
+    (the question is then the one place for it); and **Undo**, at its right end, beside what it would take
+    back. The rest is a **+n** chip that drops a list over the page (Escape
+    closes it; "2 asks" when more than one question waits, so the newest
+    never hides an older one, and every strip with one waiting is marked):
+    the older questions, still answerable there, the results
+    not shown, and **the past**, the last 20 results gone (dismissed,
+    answered, expired or replaced), newest first with their times, their
+    words only (`R.activityRemember`).
+  - **Changes made elsewhere** (#242's pushes). A push still only brings a
+    poll; the log (`GET /live/log`) does not say who made a change, so the
+    page says "elsewhere" of one it did not make. Each of its own writes'
+    answers carries the entries the agent logged for it (inline, under
+    `entry`, or, where neither carries them, as an Undo's did not, under
+    `logged`: [the agent](agent.md#one-undo), `R.answerEntries`), kept by its signature (op, time and
+    arguments, `R.logSignature`); a new entry in the log that changes the
+    rig's shape (a switch, a save, a plugin added, removed or moved, an
+    undo, an amp model) whose signature is not one of those is said in the
+    bar, tagged **elsewhere**, for 15 s, in a word ("Switched", "Moved")
+    with the rest on hover (`R.elsewhereSeen`,
+    `R.elsewhereSaid`). It is judged only while none of the page's own
+    writes is in flight, since its entry is known as the page's only once
+    its answer is in; the first log seen, and that of an agent started
+    again (a known start that differs: a poll that did not say one is no
+    sign), are where the page starts from. A write whose answer never came
+    (the network dropped it) may still have been made: for 10 s after one,
+    nothing new is said as elsewhere, the lesser fault than calling the
+    page's own change another's. Knobs, faders and bypasses are
+    never said: a pedal moves them by the dozen. Not said either: a rig
+    file edit from elsewhere (a channel added, an input changed), which is
+    not in the log.
+    Each result or question about a channel has the channel's **chip**: a
+    tap shows that strip (and opens its tab); the strip a question came from
+    is marked with an edge in the refused colour (`.strip.asking`). Which is
+    shown is `R.activityView`'s: a result keeps the place and the time it
+    was first seen (`R.activitySeen`), so the newest is the one drawn last.
+    Every region still decides what it says and runs what it ran before:
+    it hands its result or its question to the zone as it draws
+    (`actResult`, `actAsk` in `app.js`), with the same buttons calling the
+    same functions, so an answer still goes to the strip and the rig it was
+    asked for, as each action's own code checks. A result that worked and
+    goes by itself still goes after 15 s (Undo's, a take's, Open folder's);
+    the rest stay until dismissed or answered.
+  - **What stays in place**: what belongs to an open editor, which is where
+    the hand is: a picker's own check (Save as's name, a take's name, Add
+    channel's name, the New rig form's checks and its result with Start or
+    Switch, on a screen that is one form), the Library drawer's "why", a
+    knob's or a fader's own "refused:" note, the amp card's state (Carla
+    down, Amp not wired), "Last channel" and what a removal takes in a
+    strip's Remove panel, and an add's "Adding…" on its place.
+  - **The stage** has the same bar under its header, with Undo (no longer
+    in its first row) and Stop?; it is narrow, so it shows a question or
+    the latest result, as a phone does.
 - **One Undo for everything, and few words (#209, 2026-11-23).** The
   owner's words: "too much text explaining various decisions … give me an
   undo button and if there does need to be a message about deleting
   something or overwriting something, make it simple 1-2 words." So:
-  - **One Undo button**, in the header of the rack and of the stage, beside
-    the Lock. It steps back the newest change, whatever it was, and pressed
+  - **One Undo button**, in the activity zone of the rack and of the stage
+    (#245; in the header beside the Lock until then). It steps back the newest change, whatever it was, and pressed
     again goes further back, to 50 steps. It reads `GET /undo` with every
     poll and sends `POST /undo` ([the agent](agent.md#one-undo)). It covers
     a knob, a fader or a bypass (a drag is one step), a move, a plugin added
@@ -88,7 +174,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
     names the step it was shown (`seq`): one another page, or a change since,
     put on top is "Changed: press again", not undone in its place. Sushi or
     the agent not answering is said so ("Sushi not answering", "Timed out",
-    "Agent not answering"). After a press, a few words beside it say what it
+    "Agent not answering"). After a press, a few words in the activity zone say what it
     did ("Undone: delete clean"), for 15 s; where the rig plays the change
     until a restart, "· restart" and a **Restart** button, which asks
     **Restart?** with **Yes** and **No**. The history is the agent's, so a
@@ -206,8 +292,9 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   bypass that hides the control with the focus (a knob, a value not typed
   into) moves the focus to the row's name, which opens it again.
   Tabs and opening a row are **allowed while locked**: they change what is
-  shown, not the rig. **Nothing that matters is behind a closed tab**: the
-  problem boxes (a refusal, a child that exited) are above the tabs; and a
+  shown, not the rig. **Nothing that matters is behind a closed tab**: a
+  refusal is in the activity zone and a child that exited in the status
+  zone, both above the tabs (#245); and a
   tab carries a red dot, with the reason as its title, while a change to one
   of its plugins stands refused or anything the amp's card says is wrong
   (Carla not running, the amp not wired, the amp unreadable, a problem with its model, the
@@ -255,8 +342,9 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   the agent's "give a name", which is for a client that chooses none. The drawer closes, the
   place reads "Adding mda_delay…" (`aria-busy`, and it keeps the focus)
   until the agent has confirmed and the row is drawn in its place, and a
-  refusal comes back to the place, in red, with the agent's reason and a
-  dismiss: a plugin Sushi cannot host is refused from the manifest (400)
+  refusal is said in the activity zone (#245), "board · Add · Not
+  added", the agent's reason on hover and a
+  dismiss that gives the focus back to the place: a plugin Sushi cannot host is refused from the manifest (400)
   before Sushi is asked anything, and an add while the rig's load is over
   80 % of its block (409 `over_budget`, #137) is refused with the load
   measured ("Not added: the rig is using 86% of its 21.333 ms block, over
@@ -278,8 +366,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   Undo (an add's undo takes the copy too; a remove's puts the plugin back with
   its settings and its bypass), written by Save and dropped by Revert or a
   restart with discard. **Locked**, the places still open the drawer to look
-  through, and every entry is off with the lock's reason; Remove says the
-  lock's reason in place. With no rig up, the centre column offers "Browse the
+  through, and every entry is off with the lock's reason; Remove's refusal,
+  "delay · Locked", is in the activity zone, the lock's reason on hover. With no rig up, the centre column offers "Browse the
   library…" and the drawer says why nothing can be added; a drawer open while
   a command runs says that command is running, and comes back on after. **At
   a phone's width** the drawer is a sheet from the bottom of the screen, its
@@ -298,10 +386,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   page comes to show another rig or a restart of this one, it says so ("The
   rig changed since the library was opened…") and adds nothing until it is
   opened again; an add or a remove in flight across that change is said as
-  the rig it was sent to, in the boxes at the top. A `/health` that does not
+  the rig it was sent to, in the activity zone. A `/health` that does not
   answer is not another rig: which rig is shown is then not known, an answer
   arriving meanwhile is held and placed once it answers again (on its row or
-  place, or in the boxes at the top where that is not drawn), and every add
+  place, or as the rig's where that is not drawn), and every add
   or remove in flight ends, so a place never says "Adding…" for good; a
   drawer opened then is for the rig that comes back, and adds nothing until
   then, saying why. Nothing that stops an add from the drawer is silent. A Remove armed, an
@@ -422,9 +510,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   through `lifecycle("switch")`, as the list's Switch to did (live or by
   restart, the same notices, busy and refusals); with none up it chooses
   the rig for Start. Shown but off while locked (no border, no arrow), while
-  a command runs, or with no agent. Start and Stop (with its **Stop?**) and
-  the guide's link are one row under the tiles, only unlocked; the busy line
-  and any problem there too. The locked header is no taller than before
+  a command runs, or with no agent. Start and Stop and the guide's link are
+  one row under the tiles, only unlocked, and the rig's problems in a word
+  or two under the tiles; **Stop?**, the busy line and every result are in
+  the activity zone under the header (#245). The locked header is no taller than before
   #182 (234 px at 320 by 568, against 240), and the same in any font: its
   lines have fixed heights and a tile's lines never wrap, cut short with an
   ellipsis instead (with DejaVu Sans in place of Inter, as in CI, master's
@@ -435,10 +524,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   list (the rack's right column; on the stage screen a dropdown since #182, and
   Start and Stop there only while the lock is
   off): pick one and Start it (a rig of channels), Switch to it, or Stop the one that is up, which takes a
-  second tap because it cuts the sound: **Stop?**, **Yes** or **No**. A switch says whether it was made live
+  second tap because it cuts the sound: **Stop?**, **Yes** or **No**, asked in
+  the activity zone (#245), where Stop is off meanwhile. A switch says whether it was made live
   or by restart, and why. While a command runs, from this page or another,
-  nothing else is offered and what is running is said; a refusal shows the
-  agent's reason.
+  nothing else is offered and what is running is said, in the activity
+  zone; a refusal shows the agent's reason there.
 - **The amp.** A card at the top of its channel's tab (above), since the amp
   is in front of the board: the model's name and what it declares, faders for Input and Output in
   dB, Quality shown but not on a fader (it trades CPU for accuracy, not tone),
@@ -471,7 +561,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   run an older `up` started from a v1 config (retired, #218) both buttons are
   off and say to restart it to save. Save as… asks for a name, checks it by
   the rule the agent saves by (lowercase letters, digits, `-` and `_`) before
-  sending, and writes a new rig that becomes the running one. The answer says
+  sending, and writes a new rig that becomes the running one. The answer, in
+  the activity zone (#245), says
   what was written, that it is **not committed** (the agent never commits) and
   the commit it sits on, or the agent's reason for refusing (another rig's
   name, a plugin on the rig the agent did not add, or one gone that it did
@@ -593,8 +684,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   into the file with the channel; its title ends "with amp", and a second
   tap keeps the amp. **Load** is as it was. The call names the rig the
   page drew (`rig`), which the agent refuses as `changed` if another is
-  running by then. An answer is its channel's: it is shown in that strip's
-  panel only and its second tap loads onto that channel, and while a load
+  running by then. An answer is its channel's: it is said in the activity
+  zone with that channel's chip (#245), for the rig it was asked on only, its second tap loads onto that
+  channel, and it goes when another strip's Load… is opened; Load with amp's
+  **Restart?** is asked there too. While a load
   waits its panel stays open: **Close** and every strip's **Load…** are
   off until the answer is in, so it is seen. After a load the page reads the
   rig's file again; the chain itself follows `/live` as it always does.
@@ -604,8 +697,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   `sourceValue`, `sourceFrom`, `channelLoadCall`, `loadOutcome`), tested on
   their own and through the page in `tool/tests/test_ui_channel_load.py`.
 - **Removing a channel (#190).** Each strip's input line has **Remove**
-  beside Load…, which opens a panel in the strip (a group, "Remove vocal?")
-  that asks **Remove?** with **Yes** and **No**, over one line of what goes:
+  beside Load…, which opens a panel in the strip (a group, "Remove vocal?",
+  with Close) and asks **Remove?** with **Yes** and **No** in the activity
+  zone, the channel's chip beside it and the strip marked (#245); the panel
+  says what goes, in one line:
   "vocal · 1 plugin · 2 MIDI", its title the whole of it (the chain's
   plugins, the send, and each control of the rig's MIDI map that names the
   channel, read from `GET /midi`: a parameter or bypass of its plugins, its
@@ -616,13 +711,13 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   drew; a removal of a channel that plays is a restart, so it comes back
   asking **Restart?**, and Yes sends it again with `restart: true` (one
   added to the file and not yet playing is taken out of the file with no
-  restart, said "Removed from file"). A refusal is shown in the panel in a few words with the second tap
+  restart, said "Removed from file"). A refusal is said in the activity zone in a few words with the second tap
   it offers, keeping any yes already given: **Remove anyway** (`discard`),
   **Drop N and remove** (`drop_midi`), the controls named on the page ("MIDI:
   d, knob1") and each with why in the title. Once removed the strip goes,
-  and "Removed vocal" is said under the strips (the restart and why, and
-  that Revert… goes back, on hover) until its × is pressed, under that
-  rig's strips only. A removal written and not played (`not_switched`, or
+  and "Removed vocal" is said in the activity zone (the restart and why, and
+  that Revert… goes back, on hover) until its × is pressed, while that
+  rig is drawn only. A removal written and not played (`not_switched`, or
   a timeout, `written: true`) is said there too, **Not switched**, the
   reason and the pedals' note on hover, since the strip has nothing of the
   channel left to show it in. A load and a removal wait for each other: while
@@ -656,8 +751,9 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   lock (`lockRefusal(…, "pedal")`): locked, the badge opens to show what is
   assigned and every select is disabled, with "Locked" under it (the reason
   on hover). A refusal is said in the panel in a few words (the compiler's
-  on hover); what worked is said under **PEDALS** by its title, with
-  **Restart** and its **Restart?** when the answer is `restart`. After an answer the page reads `GET /midi` again
+  on hover) and **Save & assign** for unsaved work, and what worked is said by its title, with
+  **Restart** and its **Restart?** when the answer is `restart`: all three in the activity zone (#245),
+  where the focus goes to that Restart. After an answer the page reads `GET /midi` again
   (it is otherwise read once a run, kept by `runKey`) and the running rig's
   channels, whose `blended` gives a pedalled volume its "driven by". **PEDALS**,
   under the strips: the device, its state from `/health`'s
@@ -725,13 +821,15 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   emulate one (`text-size-adjust` under phone emulation). A name
   already taken says the earlier take moves to `_archive/`. Why recording is
   off is said on the bar (no rig, a v1 run, no recorder, or the
-  recorder's own reason). A stop's box names the take, its folder and `take
+  recorder's own reason). A stop's result, in the activity zone (#245; it
+  was a box in the record bar), names the take, its folder and `take
   check`'s verdict: whole, or the number of problems and the first, a take
   with problems in the refusal colour and as an alert (until #189 a take
   with problems lost its verdict there: the box showed only a refusal's
   reason). A stop that failed (502, the take stopped) is never called whole:
   it shows `take check`'s problems if there are any, and its reason unless
-  that is the read-back failure a problem already says. A whole take's box,
+  that is the read-back failure a problem already says. The take's name is
+  said whole there, wrapping on a phone, never cut. A whole take's result,
   like a start's note that an earlier take moved to the archive, goes after
   15 s; a take with problems, a failed stop and a refusal stay until
   dismissed. **The rack lists no takes, and nothing asks for `GET /takes`
@@ -743,12 +841,12 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   route serves. So it is offered on the laptop at `localhost` or
   `127.0.0.1`, not on a phone, which sees the path and no button, nor on the
   laptop by its LAN address, whose requests do not come from loopback. What
-  an open said goes after 15 s if it worked and stays until dismissed if not:
+  an open said, in the activity zone, goes after 15 s if it worked and stays until dismissed if not:
   "nothing here opens a folder" when neither `xdg-open` nor `gio` is
   installed. **Not run on a desktop**: only a stand-in opener is in the
   tests.
 - **A child of the rig that exits** (the tuner, the amp, Sushi, qpwgraph, the
-  recorder) is on both screens, in the same box and colour as the agent's last
+  recorder) is on both screens, in the status zone (#245), in the same box and colour as the agent's last
   error, from `agent.supervisor.crashed`: which process, how it ended, what it
   means for the sound ("the tuner (fmit) ... sound is unaffected; there is no
   tuner"), and that restarting the rig brings it back, since nothing restarts it

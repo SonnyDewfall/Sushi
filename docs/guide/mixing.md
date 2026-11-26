@@ -102,5 +102,5 @@ when you save: see [Saving and going back](saving.md).
   that none of its plugins is doing the silencing: bypass them one at a time.
 - **You hear nothing at all.** Check **MASTER**, then see
   [When something's wrong](troubleshooting.md).
-- **A box appears starting "Not changed:".** The agent refused the change; the
-  box says why.
+- **"Not changed:" appears in the bar at the top.** The agent refused the change;
+  it says why, and hover over it for all of it.

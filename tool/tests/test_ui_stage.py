@@ -491,8 +491,8 @@ def test_the_dropdown_is_off_while_locked_and_switches_rigs_once_unlocked(browse
     expect(p.get_by_role("button", name="Stop electric_board")).to_be_visible()
     expect(p.get_by_role("button", name=re.compile("^Switch to "))).to_have_count(0)
     rig.select_option("electric-delay")
-    expect(p.locator(".notice")).to_have_text(re.compile(r"^Switched to electric-delay"))
-    expect(p.locator(".notice")).to_have_attribute("title", re.compile(
+    expect(p.locator(".activity .notice strong")).to_have_text(re.compile(r"^Switched to electric-delay"))
+    expect(p.locator(".activity .notice")).to_have_attribute("title", re.compile(
         r"^Switched to electric-delay live in 0\.4 s: Sushi was not restarted\."))
     expect(p.locator(".stage-head .rig-name")).to_have_text("electric-delay")
     expect(rig).to_have_value("electric-delay")
@@ -500,8 +500,8 @@ def test_the_dropdown_is_off_while_locked_and_switches_rigs_once_unlocked(browse
     # A restart where it must, said as the list said it.
     served.lifecycle.how["accustomed"] = ("restart", [{"code": "amp", "detail": "the amp's settings differ (test)"}])
     rig.select_option("accustomed")
-    expect(p.locator(".notice")).to_have_text(re.compile(r"^Switched to accustomed"))
-    expect(p.locator(".notice")).to_have_attribute("title", re.compile(
+    expect(p.locator(".activity .notice strong")).to_have_text(re.compile(r"^Switched to accustomed"))
+    expect(p.locator(".activity .notice")).to_have_attribute("title", re.compile(
         r"^Switched to accustomed by restart in 6\.2 s, because amp: the amp's settings differ \(test\)\."))
     expect(rig).to_have_value("accustomed")
     # Locked again, it is off again.
@@ -530,11 +530,12 @@ def test_a_switch_from_the_dropdown_refused_for_plugins_missing_says_which_and_t
     unlock(p)
     rig = p.get_by_role("combobox", name="Rig")
     rig.select_option("electric-delay")
-    alert = p.locator(".problem.refused")
+    alert = p.locator(".activity .problem.refused")
     expect(alert).to_contain_text("Not switched to electric-delay", timeout=8000)
     expect(alert).to_be_visible()
     # The few words say what is wrong; the whole refusal is the title (#209).
-    expect(alert.locator("span").first).not_to_have_text("Not switched to electric-delay")
+    expect(alert.locator(".said")).to_have_count(1)
+    expect(alert.locator(".said")).not_to_have_text("Not switched to electric-delay")
     expect(alert).to_have_attribute("title", re.compile(re.escape(f"{detune}: installed in ")))
     expect(alert).to_have_attribute("title", re.compile(re.escape("Nothing was changed: electric_board plays on.")))
     expect(alert).to_have_attribute("title", re.compile(re.escape("then switch to it again: sushi-rig plugins add")))
@@ -551,13 +552,13 @@ def test_while_a_switch_runs_the_dropdown_is_off_and_says_what_is_running(browse
     unlock(p)
     rig = p.get_by_role("combobox", name="Rig")
     rig.select_option("electric-delay")
-    expect(p.locator(".stage-rigs .rig-busy")).to_have_text("Switching to electric-delay…")
+    expect(p.locator(".activity .rig-busy")).to_have_text("Switching to electric-delay…")
     expect(rig).to_be_disabled()
     expect(p.get_by_role("button", name="Stop electric_board")).to_be_disabled()
-    expect(p.locator(".notice")).to_contain_text("Switched to electric-delay", timeout=8000)
-    expect(p.locator(".notice")).to_have_attribute("title", re.compile("^Switched to electric-delay live"))
+    expect(p.locator(".activity .notice")).to_contain_text("Switched to electric-delay", timeout=8000)
+    expect(p.locator(".activity .notice")).to_have_attribute("title", re.compile("^Switched to electric-delay live"))
     expect(rig).to_be_enabled()
-    expect(p.locator(".stage-rigs .rig-busy")).to_have_count(0)
+    expect(p.locator(".activity .rig-busy")).to_have_count(0)
     page.close()
 
 
@@ -573,14 +574,14 @@ def test_from_the_stage_a_down_rig_is_chosen_and_started_and_stop_still_asks(bro
         rig.select_option("electric_board")
         assert served.lifecycle.calls == [], "choosing a rig with none up starts nothing"
         p.get_by_role("button", name="Start electric_board").click()
-        expect(p.locator(".notice")).to_contain_text("Started electric_board", timeout=8000)
-        expect(p.locator(".notice")).to_have_attribute("title", "Started electric_board.")
+        expect(p.locator(".activity .notice")).to_contain_text("Started electric_board", timeout=8000)
+        expect(p.locator(".activity .notice")).to_have_attribute("title", "Started electric_board.")
         assert served.lifecycle.calls == [["up", "electric_board"]]
         expect(rig).to_have_value("electric_board")
         p.get_by_role("button", name="Stop electric_board").click()
-        expect(p.locator(".stage-rigs .confirm")).to_have_text("Stop?YesNo")
+        expect(p.locator(".activity .confirm")).to_have_text("Stop?YesNo")
         assert served.lifecycle.calls == [["up", "electric_board"]], "one tap stops nothing"
-        p.locator(".stage-rigs .confirm").get_by_role("button", name="Yes").click()
+        p.locator(".activity .confirm").get_by_role("button", name="Yes").click()
         expect(p.locator(".stage-head .rig-name")).to_have_text("Rig down")
         assert served.lifecycle.calls[-1] == ["down"]
         page.close()
@@ -595,7 +596,7 @@ def test_the_stage_does_not_scroll_sideways_and_every_target_takes_a_thumb(brows
         unlock(p)
         p.locator('.card[data-unit="overdrive"] button.open-card').click()
         p.get_by_role("button", name="Stop electric_board").click()  # the confirm, the widest the region gets
-        expect(p.locator(".stage-rigs .confirm")).to_be_visible()
+        expect(p.locator(".activity .confirm")).to_be_visible()
     width_now = p.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
     assert width_now[0] <= width_now[1], f"sideways scroll at {width}: {width_now}"
     sizes = p.evaluate("""() => [...document.querySelectorAll(
@@ -649,14 +650,17 @@ def test_on_a_small_phone_the_header_is_no_taller_and_the_channels_are_on_the_fi
         # (292 to 346 px here), which the locked header never does.
         assert all(h == head for _, h in fonts), (head, fonts)
         assert head <= 240, head
-    # Nothing new between the header and the channels: the problems (none
-    # here), the record bar, then CHANNELS and the first channel's volume.
+    # Nothing new between the header and the channels but the activity zone
+    # (#245, the rig's problems now in the header): the record bar, then
+    # CHANNELS and the first channel's volume.
     order = p.evaluate("""() => [...document.querySelector('.stage-screen').children].map((e) => e.className.split(' ')[0])""")
-    assert order[:4] == ["stage-head", "problems", "record-bar", "levels"], order
+    assert order[:4] == ["stage-head", "activity", "record-bar", "levels"], order
+    activity = p.locator(".activity").bounding_box()
     record = p.locator("section.record-bar").bounding_box()
     levels = p.locator(".levels").bounding_box()
     first = p.locator(".levels .volume").first.bounding_box()
-    assert record["y"] - head <= 16 and levels["y"] - (record["y"] + record["height"]) <= 16, (head, record, levels)
+    assert activity["y"] - head <= 1 and record["y"] - (activity["y"] + activity["height"]) <= 16, (head, activity, record)
+    assert levels["y"] - (record["y"] + record["height"]) <= 16, (head, record, levels)
     assert first["y"] - levels["y"] <= 48, "the first channel straight under CHANNELS"
     # The master is one row, the height of its buttons.
     master = volume(p, "Master volume").bounding_box()["height"]

@@ -60,10 +60,17 @@ def channels(served):
 
 
 def ask(p, channel):
+    """The strip's Remove pressed: its panel, which says what goes. The
+    question and what the removal said are the activity zone's (`bar`)."""
     p.get_by_role("button", name=f"Remove {channel}", exact=True).click()
     group = p.get_by_role("group", name=f"Remove {channel}?")
     expect(group).to_be_visible()
     return group
+
+
+def bar(p):
+    """The activity zone (#245), where the question is asked and the answer said."""
+    return p.locator(".activity")
 
 
 # --------------------------------------------------------------------------- #
@@ -150,18 +157,22 @@ def test_a_channel_is_removed_after_remove_and_its_strip_goes(browser, files_ser
     sent = []
     p.route("**/rig/channels/*/remove", lambda route: sent.append(route.request.post_data_json) or route.continue_())
     group = ask(p, "vocal")
-    expect(group.locator(".confirm .q")).to_have_text("Remove?")
+    expect(bar(p).locator(".confirm .q")).to_have_text("Remove?")
+    expect(bar(p).locator(".act-chan")).to_have_text("vocal")
+    # The strip it was asked for is marked, and only that one (#245).
+    expect(p.locator(".strip.asking")).to_have_count(1)
+    expect(p.locator(".strip[data-channel='vocal']")).to_have_class(re.compile(r"\basking\b"))
     expect(group.locator(".remove-goes")).to_have_text("vocal · 1 plugin")
     expect(group.locator(".remove-goes")).to_have_attribute(
         "title", "vocal, its chain (vocal_delay) and its send (vocal_send) go.")
-    yes = group.get_by_role("button", name="Yes")
+    yes = bar(p).get_by_role("button", name="Yes")
     expect(yes).to_be_disabled()  # the page starts locked: a removal changes the rig's structure
     expect(group.locator(".lock-says")).to_have_text("Locked")
     expect(group.locator(".lock-says")).to_have_attribute("title", re.compile("^Locked: removing a channel"))
     unlock(p)
     expect(yes).to_be_enabled()
     yes.click()
-    done = p.locator(".remove-done")
+    done = bar(p).locator(".remove-done")
     expect(done).to_contain_text("Removed vocal")
     expect(done).to_have_attribute("title", re.compile("^Live\\. Wrote config/rigs/electric_board\\.yaml"))
     assert sent == [{"restart": False, "rig": "electric_board"}]
@@ -180,7 +191,7 @@ def test_no_lets_the_channel_be(browser, files_served):
     p = page.page
     unlock(p)
     group = ask(p, "vocal")
-    group.get_by_role("button", name="No").click()
+    bar(p).get_by_role("button", name="No", exact=True).click()
     expect(p.locator(".remove-panel")).to_have_count(0)
     assert channels(files_served) == ["board", "vocal"]
     page.close()
@@ -198,13 +209,13 @@ def test_a_removal_that_restarts_asks_restart_first(browser, files_served):
     sent = []
     p.route("**/rig/channels/*/remove", lambda route: sent.append(route.request.post_data_json) or route.continue_())
     group = ask(p, "board")
-    group.get_by_role("button", name="Yes").click()
-    expect(group.locator(".confirm .q")).to_have_text("Restart?")
+    bar(p).get_by_role("button", name="Yes").click()
+    expect(bar(p).locator(".confirm .q")).to_have_text("Restart?")
     expect(group.locator(".said")).to_have_text("removing board restarts Sushi")
     assert path_of(files_served).read_bytes() == before, "nothing written before the yes"
-    group.get_by_role("button", name="Yes").click()
-    expect(p.locator(".remove-done")).to_contain_text("Removed board")
-    expect(p.locator(".remove-done")).to_have_attribute("title", re.compile("^Restarted \\(track 'vocal': inputs differ\\)"))
+    bar(p).get_by_role("button", name="Yes").click()
+    expect(bar(p).locator(".remove-done")).to_contain_text("Removed board")
+    expect(bar(p).locator(".remove-done")).to_have_attribute("title", re.compile("^Restarted \\(track 'vocal': inputs differ\\)"))
     assert sent == [{"restart": False, "rig": "electric_board"}, {"restart": True, "rig": "electric_board"}]
     assert channels(files_served) == ["vocal"]
     assert page.errors == []
@@ -219,7 +230,7 @@ def test_the_last_channel_is_not_offered(browser, files_served):
     unlock(p)
     group = ask(p, "board")
     expect(group.locator(".said")).to_have_text("Last channel")
-    expect(group.get_by_role("button", name="Yes")).to_have_count(0)
+    expect(bar(p).get_by_role("button", name="Yes")).to_have_count(0)
     page.close()
 
 
@@ -230,13 +241,13 @@ def test_a_removal_with_unsaved_work_offers_to_drop_it(browser, files_served):
     status = p.evaluate("""async () => (await fetch('/live/parameter', {method: 'POST', headers: {'content-type':
       'application/json'}, body: JSON.stringify({processor: 'board_send', parameter: 'gain', value: 0.7})})).status""")
     assert status == 200
-    group = ask(p, "vocal")
-    group.get_by_role("button", name="Yes").click()
-    result = group.locator(".remove-result")
+    ask(p, "vocal")
+    bar(p).get_by_role("button", name="Yes").click()
+    result = bar(p).locator(".remove-result")
     expect(result.locator("strong")).to_have_text("Not removed")
     expect(result.locator(".said")).to_contain_text("electric_board is running with 1 change")
-    group.get_by_role("button", name="Remove anyway").click()
-    expect(p.locator(".remove-done")).to_contain_text("Removed vocal")
+    result.get_by_role("button", name="Remove anyway").click()
+    expect(bar(p).locator(".remove-done")).to_contain_text("Removed vocal")
     assert channels(files_served) == ["board"]
     page.close()
 
@@ -251,13 +262,13 @@ def test_midi_controls_on_the_channel_are_named_and_dropped_on_the_second_tap(br
         group = ask(p, "vocal")
         expect(group.locator(".remove-goes")).to_have_text("vocal · 1 plugin · 1 MIDI")
         expect(group.locator(".remove-goes")).to_have_attribute("title", re.compile(", and MIDI d \\(mute vocal\\) go\\.$"))
-        group.get_by_role("button", name="Yes").click()
-        result = group.locator(".remove-result")
+        bar(p).get_by_role("button", name="Yes").click()
+        result = bar(p).locator(".remove-result")
         expect(result.locator(".said")).to_have_text("MIDI: d")
         expect(result).to_have_attribute("title", re.compile("d: mute vocal\\. it is the channel's mute\\."))
         assert channels(served) == ["board", "vocal"]
-        group.get_by_role("button", name="Drop 1 and remove").click()
-        expect(p.locator(".remove-done")).to_contain_text("Removed vocal")
+        result.get_by_role("button", name="Drop 1 and remove").click()
+        expect(bar(p).locator(".remove-done")).to_contain_text("Removed vocal")
         written = yaml.safe_load(path_of(served).read_text())
         assert [c["name"] for c in written["channels"]] == ["board"]
         assert written["midi"]["controls"] == [{"control": "c", "bypass": "board/delay"}]
@@ -272,8 +283,9 @@ def test_a_removal_is_taken_back_by_the_one_undo_held_while_locked(browser, file
     page = rack(browser, files_served)
     p = page.page
     unlock(p)
-    ask(p, "vocal").get_by_role("button", name="Yes").click()
-    expect(p.locator(".remove-done")).to_contain_text("Removed vocal")
+    ask(p, "vocal")
+    bar(p).get_by_role("button", name="Yes").click()
+    expect(bar(p).locator(".remove-done")).to_contain_text("Removed vocal")
     button = p.locator("button.undo")
     expect(button).to_have_attribute("title", "Undo remove channel vocal")
     p.locator("button.lock").click()  # locked again
@@ -281,9 +293,9 @@ def test_a_removal_is_taken_back_by_the_one_undo_held_while_locked(browser, file
     expect(button).to_have_attribute("title", "Locked: remove channel vocal")
     unlock(p)
     button.click()
-    expect(p.locator(".undo-ask .q")).to_have_text("Restart?")
-    p.locator(".undo-ask").get_by_role("button", name="Yes").click()
-    expect(p.locator(".undo-said")).to_have_text("Undone: remove channel vocal")
+    expect(bar(p).locator(".undo-ask .q")).to_have_text("Restart?")
+    bar(p).locator(".undo-ask").get_by_role("button", name="Yes").click()
+    expect(bar(p).locator(".undo-said strong")).to_have_text("Undone: remove channel vocal")
     assert path_of(files_served).read_bytes() == before
     page.close()
 
@@ -298,8 +310,9 @@ def test_a_removal_written_and_not_switched_is_said_under_the_strips(browser, fi
     page = rack(browser, files_served)
     p = page.page
     unlock(p)
-    ask(p, "vocal").get_by_role("button", name="Yes").click()
-    done = p.locator(".remove-done")
+    ask(p, "vocal")
+    bar(p).get_by_role("button", name="Yes").click()
+    done = bar(p).locator(".remove-done")
     expect(done.locator("strong")).to_have_text("Not switched")
     expect(done.locator(".said")).to_be_visible()
     expect(done).to_have_attribute("title", re.compile("Sushi went away mid-switch.*pedals' bindings follow the rig"))
@@ -314,20 +327,21 @@ def test_what_a_removal_said_is_shown_under_its_own_rig_only(browser, files_serv
     page = rack(browser, files_served)
     p = page.page
     unlock(p)
-    ask(p, "vocal").get_by_role("button", name="Yes").click()
-    expect(p.locator(".remove-done")).to_contain_text("Removed vocal")
+    ask(p, "vocal")
+    bar(p).get_by_role("button", name="Yes").click()
+    expect(bar(p).locator(".remove-done")).to_contain_text("Removed vocal")
     status = p.evaluate("""async () => (await fetch('/rig/switch', {method: 'POST', headers: {'content-type':
       'application/json'}, body: JSON.stringify({config_name: 'clean'})})).status""")
     assert status == 200
     expect(p.locator(".strip[data-channel='vocal']")).to_have_count(1)  # clean's own vocal
-    expect(p.locator(".remove-done")).to_have_count(0)
+    expect(bar(p).locator(".remove-done")).to_have_count(0)
     # Back to electric_board: the notice was for the run before, and stays gone.
     status = p.evaluate("""async () => (await fetch('/rig/switch', {method: 'POST', headers: {'content-type':
       'application/json'}, body: JSON.stringify({config_name: 'electric_board'})})).status""")
     assert status == 200
     expect(p.locator(".strip[data-channel='vocal']")).to_have_count(0)
     expect(p.locator(".strip[data-channel='board']")).to_have_count(1)
-    expect(p.locator(".remove-done")).to_have_count(0)
+    expect(bar(p).locator(".remove-done")).to_have_count(0)
     page.close()
 
 
@@ -340,13 +354,14 @@ def test_a_load_and_a_removal_wait_for_each_other(browser, files_served):
     unlock(p)
     held = []
     p.route("**/rig/channels/*/remove", lambda route: held.append(route))
-    ask(p, "vocal").get_by_role("button", name="Yes").click()
+    ask(p, "vocal")
+    bar(p).get_by_role("button", name="Yes").click()
     expect(p.get_by_text("Removing…")).to_be_visible()
     expect(p.get_by_role("button", name="Load a channel onto board")).to_be_disabled()
     expect(p.get_by_role("button", name="Remove board", exact=True)).to_be_disabled()
     held.pop().continue_()
     p.unroute("**/rig/channels/*/remove")
-    expect(p.locator(".remove-done")).to_contain_text("Removed vocal")
+    expect(bar(p).locator(".remove-done")).to_contain_text("Removed vocal")
     p.route("**/rig/channels/*/load", lambda route: held.append(route))
     p.get_by_role("button", name="Load a channel onto board").click()
     group = p.get_by_role("group", name="Load onto board")
@@ -356,7 +371,7 @@ def test_a_load_and_a_removal_wait_for_each_other(browser, files_served):
     expect(p.get_by_role("button", name="Remove board", exact=True)).to_be_disabled()
     held.pop().continue_()
     p.unroute("**/rig/channels/*/load")
-    expect(group.locator(".load-result")).to_be_visible()
+    expect(bar(p).locator(".load-result")).to_be_visible()
     expect(p.get_by_role("button", name="Remove board", exact=True)).to_be_enabled()
     page.close()
 
@@ -375,9 +390,9 @@ def test_a_channel_not_yet_playing_is_said_as_removed_from_the_file(browser, fil
     p.reload()  # the rig's file read again, as after the page's own Add channel
     p.wait_for_selector(".unit")
     unlock(p)
-    group = ask(p, "keys")
-    group.get_by_role("button", name="Yes").click()
-    done = p.locator(".remove-done")
+    ask(p, "keys")
+    bar(p).get_by_role("button", name="Yes").click()
+    done = bar(p).locator(".remove-done")
     expect(done).to_contain_text("Removed keys")
     expect(done).to_have_attribute("title", re.compile("^Removed from file\\. Wrote config/rigs/electric_board\\.yaml"))
     assert channels(files_served) == ["board", "vocal"]

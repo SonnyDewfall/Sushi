@@ -839,15 +839,15 @@ def test_a_refusal_and_a_crash_are_seen_whatever_tab_is_open(rack, served):
     served.rig.refuse[("delay", "Feedback")] = "Sushi would not set Feedback (test)"
     slider(rack, "delay Feedback").focus()
     rack.keyboard.press("ArrowUp")
-    alert = rack.locator(".problem.refused")
+    alert = rack.locator(".activity .problem.refused")
     expect(alert).to_contain_text("Not changed: delay · Feedback")
     tab(rack, "vocal").click()
     expect(shown(rack)).to_have_text(["vocal_delay"])
-    # The box is above the tabs, not in one; and the tab it is about says so.
+    # It is in the activity zone, above the tabs, not in one; and the tab it is about says so.
     expect(alert).to_be_visible()
     expect(alert).to_have_attribute("title", re.compile(r"Sushi would not set Feedback \(test\)"))
     assert rack.locator(".tab-panel .problem, .tabs .problem").count() == 0
-    assert rack.locator(".problems").bounding_box()["y"] < rack.get_by_role("tablist").bounding_box()["y"]
+    assert rack.locator(".activity").bounding_box()["y"] < rack.get_by_role("tablist").bounding_box()["y"]
     expect(tab(rack, "board")).to_have_class(MARKED)
     expect(tab(rack, "board")).to_have_attribute("title", "A change to delay was refused.")
     expect(tab(rack, "board").locator(".tab-mark")).to_be_visible()
@@ -855,7 +855,7 @@ def test_a_refusal_and_a_crash_are_seen_whatever_tab_is_open(rack, served):
     # A child of the rig that exits, with the board's tab closed.
     up = served.state["describe"]()
     served.agent.supervisor.crashed.append(fmit_crash(pgid=up["pgid"], started_at=up["started_at"]))
-    expect(rack.locator(".problem.agent", has_text="The tuner (fmit) exited")).to_be_visible()
+    expect(rack.locator("header .problem.agent", has_text="The tuner (fmit) exited")).to_be_visible()
     # A change that goes through takes the mark off.
     del served.rig.refuse[("delay", "Feedback")]
     tab(rack, "board").click()
@@ -949,7 +949,7 @@ def test_undo_save_and_the_unsaved_count_are_as_they_were_whatever_tab_is_open(b
         expect(p.get_by_role("button", name="Undo overdrive Drive")).to_be_visible()
         # Save writes the board's change from the Master tab.
         p.get_by_role("button", name="Save to electric_board").click()
-        expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
+        expect(p.locator(".activity .save-result.ok")).to_contain_text("Saved electric_board")
         unsaved_count(p, 0)
         assert drive_of(rig_file(served)) == pytest.approx(0.52)
         is_selected(p, "Master")

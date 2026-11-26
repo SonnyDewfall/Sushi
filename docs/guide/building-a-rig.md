@@ -50,8 +50,8 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
 3. Fill in **New channel name**, **Input**, **Width** and **Start from**, as
    above.
 4. Click **Add** and the channel's name.
-5. A box headed **Added** confirms it. The channel is now in the rig's file but
-   not yet in the sound. Click **Restart**; the page asks **Restart?**: click
+5. **Added**, in the bar at the top, confirms it. The channel is now in the rig's file but
+   not yet in the sound. Click **Restart** beside it; the bar asks **Restart?**: click
    **Yes**. The sound stops for a few seconds while the rig comes back. **No**
    puts it off; the channel then plays the next time the rig starts.
 6. Changed your mind? **Undo**, at the top of the page, takes the channel out
@@ -70,27 +70,28 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
 1. Unlock the page (the **Lock** button at the top): taking a channel out
    changes the rig, so the lock holds it, as it holds **Load…**.
 2. On the rack, in the channel's strip on the left, click **Remove**.
-3. The strip asks **Remove?**. The line above says what goes: the channel,
+3. The bar at the top asks **Remove?**, and the strip gets a red edge. A line
+   in the strip says what goes: the channel,
    how many plugins its chain has and, if any, how many pedal assignments
    name it (**MIDI**). Hover over the line for each one by name.
 4. Click **Yes**, or **No** to keep it.
-5. The rig has to restart to lose the channel, so the strip asks
+5. The rig has to restart to lose the channel, so the bar asks
    **Restart?** first, and nothing has changed yet. **Yes** removes it; the
    sound stops for a few seconds while the rig comes back. A channel you
    added and have not yet restarted to play is simply taken out of the file,
    with no restart.
-6. The strip goes, and **Removed** and the channel's name are shown under the
-   strips. **Undo**, at the top of the page, puts the channel back, with its
+6. The strip goes, and **Removed** and the channel's name are shown in the bar
+   at the top. **Undo**, at its right end, puts the channel back, with its
    chain and its pedals; that needs a restart, which it asks about.
 
 If a pedal is assigned to the channel (an effect's on/off or a knob on it, its
-on/off, its volume, or a blend of it and another channel), the strip says
+on/off, its volume, or a blend of it and another channel), the bar says
 **Not removed** and names the pedal controls: click **Drop** and the number
 **and remove** to take them out of the rig with the channel. With unsaved
 changes it offers **Remove anyway**, which drops them. A rig's only channel
 cannot be removed: the strip says **Last channel**. If the channel has gone
-from the file but the rig could not be made to play it, the box under the
-strips says **Not switched**: hover over it for why, then restart the rig.
+from the file but the rig could not be made to play it, the bar says
+**Not switched**: hover over it for why, then restart the rig.
 
 ## Delete a rig
 
@@ -99,7 +100,7 @@ strips says **Not switched**: hover over it for why, then restart the rig.
    why: switch to another rig, or stop it, first.
 
 The rig goes at once, with no question: **Undo**, at the top of the page,
-puts it back. Beside it the page says **Undone: delete** and the rig's name.
+puts it back. Beside it the bar says **Undone: delete** and the rig's name.
 Undo is there after a reload too, and on any other page of the same agent,
 until the agent restarts.
 
@@ -171,19 +172,20 @@ folder's `.gitignore` where it is.
 
 ## If something goes wrong
 
-- **A box headed "Not deleted"** under the rigs. Hover over it for the reason:
+- **"Not deleted"** in the bar at the top. Hover over it for the reason:
   usually it is the rig that is playing, switched to from another page or a
   pedal meanwhile (switch away, then try again), or the agent was busy with
   another command, such as a rig starting (try again in a moment).
-- **"Can't undo"** beside **Undo**. Hover over **Undo** before pressing it to
+- **"Can't undo"** in the bar, beside **Undo**. Hover over **Undo** before pressing it to
   see why: a rig of that name is there again (the deleted one is still in
   `config/rigs/.deleted/`), or the deleted file is no longer there. The next
   press goes on to the change before.
-- **A box headed "Not made", "Not added" or "Not changed".** The agent checks
-  that the rig would really run before it writes anything, and refused. The box
-  gives the reason, and nothing was written.
-- **The box mentions unsaved changes.** Save, then try again.
-- **The restart is refused because of changes since.** The box offers
+- **"Not made" (on the New rig screen), or "Not added" or "Not changed" (in
+  the bar at the top).** The agent checks
+  that the rig would really run before it writes anything, and refused. Hover
+  over it for the reason; nothing was written.
+- **It mentions unsaved changes.** Save, then try again.
+- **The restart is refused because of changes since.** The bar offers
   **Restart anyway**, which drops them. Save instead if you want to keep them.
 - **The left column says no rig is running**, or that the rig was started from a "v1 config" (before an update).
   Start a rig from the list under **RIGS** first.

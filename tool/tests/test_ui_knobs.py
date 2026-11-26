@@ -484,7 +484,7 @@ def test_the_master_volume_is_on_the_racks_header_and_saved_as_the_masters_level
         p.mouse.wheel(0, -100)
         expect(field).to_have_value("−8.5 dB")
         p.get_by_role("button", name="Save to electric_board").click()
-        expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
+        expect(p.locator(".activity .save-result.ok")).to_contain_text("Saved electric_board")
         saved = yaml.safe_load((served.save.root / "config" / "rigs" / "electric_board.yaml").read_text())
         assert saved["master"]["level"] == -8.5
         field.fill("mute")
@@ -606,6 +606,9 @@ def test_at_phone_width_the_header_is_as_tall_whatever_its_tiles_read(browser, s
     p.wait_for_selector(".strip .volume")
     if font:
         p.add_style_tag(content=font)
+    # At phone width the tiles are the status's detail, a tap on its dot away (#245).
+    p.locator("header.bar .status-slot").click()
+    expect(p.locator("header.bar .tile").first).to_be_visible()
     readings = [["—", "reading", "—", "reading", "none"], ["100%", "of 21.3 ms", "12345", "since opened",
                                                          "a much longer amp model name than any"]]
     heights = p.evaluate("""(readings) => readings.map((r) => {
@@ -684,7 +687,7 @@ def test_revert_is_refused_with_unsaved_work_and_allowed_dropping_it(browser):
         p = page.page
         save = p.get_by_role("button", name="Save to electric_board")
         save.click()
-        expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
+        expect(p.locator(".activity .save-result.ok")).to_contain_text("Saved electric_board")
         rig_path = served.save.root / "config" / "rigs" / "electric_board.yaml"
         first = rig_path.read_bytes()
         p.get_by_role("textbox", name="Master volume value").fill("-6")
@@ -703,11 +706,11 @@ def test_revert_is_refused_with_unsaved_work_and_allowed_dropping_it(browser):
         expect(rows.nth(2)).to_contain_text("Commit")
         rows.nth(1).click()
         # The agent refuses without discard, and nothing is written.
-        confirm = p.get_by_role("group", name="Drop changes?")
+        confirm = p.locator(".activity").get_by_role("group", name="Drop changes?")
         expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
         assert rig_path.read_bytes() != first, "refused: nothing written"
         confirm.get_by_role("button", name="Yes").click()
-        result = p.locator(".save-result.ok")
+        result = p.locator(".activity .save-result.ok")
         expect(result).to_contain_text("Reverted electric_board")
         expect(result).to_have_attribute("title", re.compile("byte for byte"))
         expect(result).to_have_attribute("title", re.compile("switched to it live"))
@@ -949,7 +952,7 @@ def test_a_strips_fader_keeps_its_focus_and_element_through_a_busy_agent(browser
 
         thread = threading.Thread(target=busy)
         thread.start()
-        expect(p.locator(".rig-busy")).to_contain_text("up is running", timeout=4000)
+        expect(p.locator(".activity .rig-busy")).to_contain_text("up is running", timeout=4000)
         p.locator("nav.channels").get_by_role("button", name="Add channel").click()  # the foot changes too
         assert handle.evaluate("(e) => e.isConnected"), "the same fader element"
         handle.focus()

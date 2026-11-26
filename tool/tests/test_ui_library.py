@@ -435,8 +435,9 @@ def test_locked_the_drawer_opens_to_browse_and_adding_and_removing_are_refused_i
     unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
     expect(unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)).to_have_text("Remove (locked)")
     unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
-    said = unit(p, "delay").locator(".row-said")
-    expect(said).to_have_text("Locked")
+    said = p.locator(".activity .row-said")
+    expect(said.locator("strong")).to_have_text("Locked")
+    expect(said.locator(".what")).to_have_text("delay")
     expect(said).to_have_attribute("title", re.compile("^Locked: removing a plugin changes the rig's structure"))
     assert lib.rig.writes() == []
     page.close()
@@ -509,15 +510,17 @@ def test_a_plugin_the_agent_refuses_says_its_reason_in_place_and_sushi_is_not_to
         expect(entry(p, NAM)).to_be_disabled()
         expect(entry(p, NAM).locator(".lib-note")).to_have_attribute("title", re.compile("^Cannot be added: the amp runs in Carla"))
         entry(p, MVERB).click()
-        said = p.locator('.add-slot[data-slot="delay"] .add-said')
-        expect(said).to_have_text("Not added")
+        said = p.locator(".activity .add-said")
+        expect(said.locator("strong")).to_have_text("Not added")
+        expect(said.locator(".what")).to_have_text("Add")
+        expect(said.locator(".act-chan")).to_have_text("board")
         expect(said).to_have_attribute("title", re.compile("^" + re.escape("Not added: MVerb")))
         expect(said).to_have_attribute("title", re.compile(re.escape("is not in plugin-ports.txt")))
         expect(said).to_have_attribute("role", "alert")
         assert served.rig.writes() == [] and not any(c[0] == "walk" for c in served.rig.calls), \
             "refused from the manifest, before Sushi is asked anything"
         expect(shown(p)).to_have_text(["overdrive", "octave", "delay"])
-        p.locator('.add-slot[data-slot="delay"]').get_by_role("button", name="Dismiss").click()
+        said.get_by_role("button", name="Dismiss").click()
         expect(said).to_be_hidden()
         page.close()
 
@@ -532,8 +535,10 @@ def test_an_add_over_the_cpu_budget_is_refused_in_place_with_the_load_measured(b
     unlock(p)
     slot(p, "Add after overdrive…").click()
     entry(p, MDA_DELAY).click()
-    said = p.locator('.add-slot[data-slot="overdrive"] .add-said')
-    expect(said).to_have_text("Not added")
+    said = p.locator(".activity .add-said")
+    expect(said.locator("strong")).to_have_text("Not added")
+    expect(said.locator(".what")).to_have_text("Add")
+    expect(said.locator(".act-chan")).to_have_text("board")
     expect(said).to_have_attribute("title", re.compile(re.escape(
         "Not added: the rig is using 86% of its 21.333 ms block, over the 80% a live add may start from")))
     expect(said).to_have_attribute("title", re.compile(re.escape("bypass or remove a plugin to make room")))
@@ -726,7 +731,7 @@ def test_an_add_a_move_and_a_remove_from_the_page_are_saved_with_the_files_comme
         until(lambda: served.rig.chains["board"] == ["overdrive", "mda_delay", "delay", "board_send"])
         expect(shown(p)).to_have_text(["overdrive", "mda_delay", "delay"])
         p.get_by_role("button", name="Save to electric_board").click()
-        expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
+        expect(p.locator(".activity .save-result.ok")).to_contain_text("Saved electric_board")
         unsaved_count(p, 0)
         import yaml
 
@@ -773,7 +778,7 @@ def test_the_same_plugin_added_twice_at_once_from_one_page_is_named_twice(browse
     assert sent == [{"track": "board", "uri": MDA_DELAY, "after": "overdrive"},
                     {"track": "board", "uri": MDA_DELAY, "name": "mda_delay_2", "after": "octave"}]
     expect(shown(p)).to_have_text(["overdrive", "mda_delay", "octave", "mda_delay_2", "delay"])
-    expect(p.locator(".add-said:visible")).to_have_count(0)
+    expect(p.locator(".activity .add-said:visible")).to_have_count(0)
     page.close()
 
 
@@ -794,7 +799,7 @@ def test_the_same_plugin_added_at_once_from_two_pages_is_named_again_not_refused
     until(lambda: {"mda_delay", "mda_delay_2"} <= set(lib.rig.chains["board"]))
     for p in ps:
         expect(p.locator("#t-board .unit button.name")).to_have_count(5)
-        expect(p.locator(".add-said:visible")).to_have_count(0)
+        expect(p.locator(".activity .add-said:visible")).to_have_count(0)
     # Neither knew of the other: both sent no name, and the one refused
     # chose again from /live read again, once.
     bodies = sent[0] + sent[1]
@@ -899,8 +904,8 @@ def test_an_add_in_flight_across_a_switch_is_said_as_the_rig_it_was_sent_to(brow
     expect(p.locator(".rig-name")).to_have_text("accustomed")
     expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-busy", "false", timeout=6000)
     held.set()
-    expect(p.locator(".notice")).to_have_text(re.compile(r"^Added mda_delay to electric_board"))
-    expect(p.locator(".add-said:visible")).to_have_count(0)
+    expect(p.locator(".activity .notice strong")).to_have_text(re.compile(r"^Added mda_delay to electric_board"))
+    expect(p.locator(".activity .add-said:visible")).to_have_count(0)
     page.close()
 
 
@@ -909,12 +914,12 @@ def test_a_locked_line_goes_when_the_page_is_unlocked(browser, lib):
     p = page.page
     unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
     unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
-    expect(unit(p, "delay").locator(".row-said")).to_have_attribute("title", re.compile("^Locked: removing a plugin"))
+    expect(p.locator(".activity .row-said")).to_have_attribute("title", re.compile("^Locked: removing a plugin"))
     p.get_by_role("button", name="Move delay up (locked)").click()
-    expect(p.locator(".problem.refused")).to_have_attribute("title", re.compile("^Locked: reordering"))
+    expect(p.locator(".activity .problem.refused")).to_have_attribute("title", re.compile("^Locked: reordering"))
     unlock(p)
-    expect(unit(p, "delay").locator(".row-said")).to_be_hidden()
-    expect(p.locator(".problem.refused")).to_have_count(0)
+    expect(p.locator(".activity .row-said")).to_be_hidden()
+    expect(p.locator(".activity .problem.refused")).to_have_count(0)
     expect(unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)).to_have_text("Remove")
     page.close()
 
@@ -968,8 +973,8 @@ def test_an_add_answered_while_health_does_not_answer_ends_on_its_own_rig(browse
     expect(shown(p)).to_have_text(["overdrive", "mda_delay", "octave", "delay"])
     expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-busy", "false")
     expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-disabled", "false")
-    expect(p.locator(".notice")).to_have_count(0)
-    expect(p.locator(".problem.refused")).to_have_count(0)
+    expect(p.locator(".activity .notice")).to_have_count(0)
+    expect(p.locator(".activity .problem.refused")).to_have_count(0)
     page.close()
 
 
@@ -987,12 +992,12 @@ def test_an_add_refused_while_health_does_not_answer_says_so_and_frees_its_name(
     p.wait_for_timeout(800)
     p.unroute(HEALTH)
     # Its place was not on the page when the answer was placed (the chain is
-    # not drawn while /health does not answer): said in the boxes at the top.
-    refused = p.locator(".problem.refused")
+    # not drawn while /health does not answer): said in the activity zone.
+    refused = p.locator(".activity .problem.refused")
     expect(refused).to_contain_text("Not added: mda_delay")
     expect(refused).to_have_attribute("title", re.compile(re.escape("Sushi would not create it (test)")))
     expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-busy", "false")
-    expect(p.locator(".notice")).to_have_count(0)
+    expect(p.locator(".activity .notice")).to_have_count(0)
     # Its name is free again: the next add of it sends none, and is mda_delay.
     del lib.rig.refuse["mda_delay"]
     slot(p, "Add after overdrive…").click()
@@ -1018,10 +1023,10 @@ def test_a_remove_refused_while_health_does_not_answer_ends_and_can_be_tried_aga
     p.wait_for_timeout(800)
     p.unroute(HEALTH)
     # Its row was not on the page when the answer was placed (the chain is
-    # not drawn while /health does not answer): said in the boxes at the top.
-    expect(p.locator(".problem.refused")).to_contain_text("Not removed: delay")
-    expect(p.locator(".problem.refused")).to_have_attribute("title", re.compile(re.escape("Sushi would not delete it (test)")))
-    expect(p.locator(".notice")).to_have_count(0)
+    # not drawn while /health does not answer): said in the activity zone.
+    expect(p.locator(".activity .problem.refused")).to_contain_text("Not removed: delay")
+    expect(p.locator(".activity .problem.refused")).to_have_attribute("title", re.compile(re.escape("Sushi would not delete it (test)")))
+    expect(p.locator(".activity .notice")).to_have_count(0)
     ask = unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)
     expect(ask).to_have_attribute("aria-disabled", "false")
     del lib.rig.refuse["delay"]

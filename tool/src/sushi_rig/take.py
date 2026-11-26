@@ -1071,7 +1071,7 @@ def start_take(
     `config` is the config **as it was live**, amp included. The caller builds
     it, because only the caller knows: `up --amp-model` runs an amp the file on
     disk does not name, and `--no-amp` runs none where the file names one. See
-    `save.save_config` for how the amp is written into a config.
+    `amp.write_amp` for how the amp is written into a config.
 
     `rig_text` is the v2 rig file the config was compiled from, copied in as
     rig.yaml beside config.json for the same reason the config is: the file in

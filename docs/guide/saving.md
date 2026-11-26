@@ -19,7 +19,7 @@ A **rig** is one saved setup, and each rig is one file on the laptop, in the
    how many changes you have made since the last save.
 2. Click it.
 
-A box headed **Saved** and the rig's name tells you it worked; hover over it for
+**Saved** and the rig's name, in the bar at the top, tells you it worked; hover over it for
 the file and what git thinks of it. The number on the button goes away.
 **Undo**, at the top of the page, puts the file back as it was before the save.
 
@@ -53,12 +53,12 @@ newest 50 for each rig are kept.
 3. If you have unsaved changes, the page asks **Drop changes?** instead:
    **Yes** reverts and throws those changes away (Undo cannot bring them
    back); **No** leaves everything as it was.
-4. If going back means restarting the rig, the page asks **Restart?** first,
+4. If going back means restarting the rig, the bar at the top asks **Restart?** first,
    since the sound stops for a few seconds: **Yes** reverts, **No** leaves
    everything as it was.
 
-The rig then changes to that save, without stopping where it can. A box
-headed **Reverted** says how. **Undo** asks the same two questions when
+The rig then changes to that save, without stopping where it can.
+**Reverted**, in the bar, says how. **Undo** asks the same two questions when
 taking a revert back needs them.
 
 Usually you can come back the same way, because the save you left is still in

@@ -29,7 +29,7 @@ plugin any rig uses, so if it stops saying the neural amp
 (`http://github.com/mikeoliphant/neural-amp-modeler-lv2`) has no provider,
 because the amp is carried into the folder by hand and is not there yet, run
 it as `sushi-rig plugins add --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2`. Until then, starting
-or switching to a rig with a pedal in it is refused: the box says which
+or switching to a rig with a pedal in it is refused: the message at the top says which
 plugin is missing and what to run, and whatever was playing keeps playing. (The
 detail is in [Plugins and portability](../reference/plugins.md).)
 

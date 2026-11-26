@@ -31,13 +31,13 @@ Recording is on the **stage** screen, and works while the page is **Locked**.
 6. Play.
 7. Tap **Stop**. There is no second question, because stopping loses nothing.
 
-A box headed **Recorded** and the take's name gives the verdict, and under it
-the take's folder. If all is well it reads like
+**Recorded** and the take's name, in the bar under the header, gives the
+verdict; hover over it for the take's folder and the rest. If all is well that reads like
 `0:47 · Whole · 5 stems · nothing lost`: the length, that the take is whole,
-how many stems, and that no sound was dropped. A box like that goes by itself
-after about 15 seconds. If not, the box is red, and it gives the number of
-problems and the first of them; a red box stays until you close it with **×**,
-so a take with problems is never missed. Any box closes with **×**.
+how many stems, and that no sound was dropped. A message like that goes by itself
+after about 15 seconds. If not, it is red, and it gives the number of
+problems; a red one stays until you close it with **×**,
+so a take with problems is never missed. Any of them closes with **×**.
 
 ## Find your takes
 

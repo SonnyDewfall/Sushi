@@ -184,7 +184,7 @@ def test_delete_moves_the_file_out_at_once_and_undo_moves_it_back(browser, bin_s
     expect(p.locator(".bin-offers, .undo-delete, .rig-deleted")).to_have_count(0)
     expect(undo_button(p)).to_have_attribute("title", "Undo delete clean")
     undo_button(p).click()
-    expect(p.locator(".undo-said")).to_have_text("Undone: delete clean")
+    expect(p.locator(".activity .undo-said strong")).to_have_text("Undone: delete clean")
     expect(row(p, "clean")).to_have_count(1)
     assert (rigs_dir(bin_served) / "clean.yaml").read_bytes() == before
     assert binned(bin_served) == []
@@ -227,8 +227,8 @@ def test_a_refused_delete_is_said_in_a_few_words_and_stays_until_dismissed(brows
         status=409, content_type="application/json",
         body='{"ok": false, "status": 409, "reason": "busy: \'up\' is still running", "code": "busy"}'))
     delete(p, "clean")
-    said = p.locator(".rig-deleted")
-    expect(said).to_have_text(re.compile("^Not deleted: clean"))
+    said = p.locator(".activity .rig-deleted")
+    expect(said.locator("strong")).to_have_text(re.compile("^Not deleted: clean"))
     expect(said).to_have_attribute("title", "busy: 'up' is still running")
     assert (rigs_dir(bin_served) / "clean.yaml").exists()
     said.get_by_role("button", name="Dismiss").click()
