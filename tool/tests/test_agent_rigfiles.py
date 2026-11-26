@@ -568,14 +568,17 @@ def test_an_edit_is_refused_while_a_lifecycle_command_runs(root):
 # The running rig's own file
 # --------------------------------------------------------------------------- #
 
-def test_an_edit_of_the_running_rig_takes_effect_at_a_restart_and_says_why(root):
+def test_an_edit_of_the_running_rig_offers_a_reload_and_says_why_it_restarts(root):
+    """#142: the edit waits for a reload, which the answer offers, saying
+    whether it is live or, as a channel added is, a restart and why."""
     agent, _ = rig_agent(root)
     status, answer = call(agent, "POST", "/rigs/guitar_vocal/channels/add", json=stereo("keys", "vocal-in"))
     assert status == 200, answer
-    assert (answer["running"], answer["takes_effect"], answer["offer"]) == (True, "restart", "restart")
+    assert (answer["running"], answer["takes_effect"], answer["offer"]) == (True, "reload", "reload")
+    assert answer["how_reload"] == "restart"
     assert [r["code"] for r in answer["why"]] == ["track_added"]
-    assert "keeps playing as it was: the change takes effect when it restarts" in answer["note"]
-    assert "track_added: track 'keys'" in answer["note"]
+    assert "keeps playing as it was until it is reloaded" in answer["note"]
+    assert "the reload restarts it (track_added: track 'keys')" in answer["note"]
     status, answer = call(agent, "POST", "/rigs/guitar_vocal/channels/vocal/input", json={"input": "solo-in"})
     assert status == 200, answer
     assert {r["code"] for r in answer["why"]} >= {"wiring"}, answer["why"]

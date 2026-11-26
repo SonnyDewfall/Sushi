@@ -58,6 +58,10 @@ its listener are retired (#139, #218); the page is the control surface.
     POST /rigs/new      {"name", "channels": [{"name", "input", "width", "from"?}]} -- a new rig file
     POST /rigs/{name}/channels/add              {"name", "input", "width", "from"?}
     POST /rigs/{name}/channels/{channel}/input  {"input"?, "width"?} -- each written, never committed
+    POST /rigs/{name}/channels/{channel}/move   {"direction": "up"|"down"} -- the channel one place up or down
+    GET  /rig/reload    whether the running rig's file differs from what plays, and what a reload would do (#142)
+    POST /rig/reload    {"rig"?, "discard"?, "restart"?} -- play the running rig's file as it is now: live where
+                        the switch can, by restart (asked first with `"restart": false`) where it cannot
     POST /rigs/{name}/delete    {"dry_run"?} -- into config/rigs/.deleted/ (#129); refused (409) for the running rig
     POST /rigs/{name}/restore   {"entry"?} -- Undo: back from the bin; refused if a file of that name is there
     GET  /rigs/bin      the bin, newest first, and which agent's it is (the page checks a kept Undo against it)
@@ -2100,6 +2104,11 @@ class Agent:
         # newest last; see history.py and the "One Undo" block.
         self.history = history_module.History(clock=clock)
         self._undo_lock = asyncio.Lock()  # one Undo at a time
+        # The running rig's file as it plays (#142): the bytes last known to
+        # be what the rig runs, for a reload's Undo and for "File changed"
+        # after a save; and the last look at the file (`_file_state`).
+        self._played: dict[str, Any] | None = None
+        self._looked: tuple[Any, dict[str, Any]] | None = None
         # Sushi calls run here (see LIVE_WORKERS), not in the loop's executor.
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=LIVE_WORKERS, thread_name_prefix="sushi-live")
@@ -2203,6 +2212,7 @@ class Agent:
         self._undo_routes(app)  # One Undo for everything (#209): see its block
         self._channel_load_routes(app)  # a channel from another rig (#208): see its block
         self._channel_remove_routes(app)  # a channel removed from the running rig (#190): see its block
+        self._reload_routes(app)  # the running rig's file reloaded, and a channel moved (#142): see its block
         self._help_routes(app)  # the user guide at /help/ (#167): see its block
         return app
 
@@ -5677,6 +5687,8 @@ class Agent:
         them where this agent's Sushi link can remove a track
         (`Live.remove_track`), none where it cannot, so the plan restarts
         rather than fail at the step."""
+        if not tracks:
+            return ()  # nothing to take out: the link is not asked
         return tuple(tracks) if getattr(self.live, "remove_track", None) is not None else ()
 
     async def _switch_step(self, origin, controller, step: rigfile.SwitchStep) -> None:
@@ -6584,6 +6596,12 @@ class Agent:
                         self._history_file(out, kept.get("before"), written, f"save {out.stem}", act="save",
                                            run={"state": state}, save_entry=answer["entry"],
                                            chain_before=chain_before)
+                        # A save over the file as it played is still what
+                        # plays, though the running config says otherwise
+                        # (#142): what was written is, not "File changed".
+                        played = self._played_bytes(out, state)
+                        if played is not None and played == kept.get("before"):
+                            self._note_played(out, written, state)
                     # Kept only now that the save has wholly happened, so a
                     # revert point is always a save that was logged.
                     answer["snapshot"] = await self._keep_snapshot(
@@ -6784,6 +6802,7 @@ class Agent:
         app.router.add_get("/rigs/{name}/channels", self.rig_channels_route)
         app.router.add_post("/rigs/{name}/channels/add", self.add_channel_route)
         app.router.add_post("/rigs/{name}/channels/{channel}/input", self.channel_input_route)
+        app.router.add_post("/rigs/{name}/channels/{channel}/move", self.channel_move_route)
 
     async def _rigfile_run(self) -> dict[str, Any]:
         """What the rig files routes need of the run, read now: `described`,
@@ -6989,6 +7008,39 @@ class Agent:
             before = next(e for e in raw["channels"] if isinstance(e, dict) and e.get("name") == channel)
             return edited, {"op": "input", "channel": channel,
                             "was": {"input": before.get("input"), "width": before.get("width")}, **change}
+
+        answer = await self._rigfile_locked(request, lambda run: self._write_edit(request, run, path, edit))
+        return web.json_response(await self._rigfile_answer(answer))
+
+    async def channel_move_route(self, request):
+        """`POST /rigs/{name}/channels/{channel}/move {"direction": "up" |
+        "down"}` (#142): swap channel `channel` with the one above or below
+        it in the file, in place, with its comments (`rigfile.write_rig`
+        moves a name-matched entry with the comment lines above it).
+        Refused and answered as `add_channel_route` is; and `no_channel`,
+        or `edge` for a channel already first (up) or last (down), nothing
+        written. A channel's place is its track's place in Sushi, and its
+        engine inputs and bus (`rigedit`'s note on moves), so for the
+        running rig the reload it offers is a restart, said first."""
+        from . import rigedit
+
+        try:
+            direction = rigedit.move_request(await self._json_body(request))
+        except rigedit.EditRequestError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        path = self._rigfile_path(request.match_info["name"])
+        channel = request.match_info["channel"]
+
+        def edit(raw: dict[str, Any], run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+            try:
+                edited, to = rigedit.with_channel_moved(raw, channel, direction)
+            except IndexError as exc:  # a LookupError too: first
+                raise RigFileRefused(f"nothing was written: {exc}", "edge") from exc
+            except LookupError as exc:
+                raise RigFileRefused(str(exc), "no_channel") from exc
+            order = [e.get("name") for e in edited.get("channels") or [] if isinstance(e, dict)]
+            return edited, {"op": "move_channel", "channel": channel, "direction": direction, "to": to,
+                            "order": order}
 
         answer = await self._rigfile_locked(request, lambda run: self._write_edit(request, run, path, edit))
         return web.json_response(await self._rigfile_answer(answer))
@@ -7235,15 +7287,20 @@ class Agent:
                 refusal = rigfile_refusal(run["state"], self.log)
                 if refusal is not None:
                     raise RigFileRefused(*refusal)
+                # The file as it plays, looked at before it is written: what
+                # a reload's Undo puts back (`_file_state` keeps it, #142).
+                await asyncio.to_thread(self._file_state, run, path)
                 done = await self._rigfile_thread(request, path, work)
         else:
             done = await self._rigfile_thread(request, path, work)
         change = done["change"]
-        label = (f"add channel {change.get('channel')}" if change.get("op") == "add_channel"
-                 else f"input {change.get('channel')}" if change.get("op") == "input" else f"edit {path.stem}")
+        op = change.get("op")
+        label = (f"add channel {change.get('channel')}" if op == "add_channel"
+                 else f"input {change.get('channel')}" if op == "input"
+                 else f"move channel {change.get('channel')}" if op == "move_channel" else f"edit {path.stem}")
         self._history_file(path, done["before"], done["after"], label, run=run,
                            apply="restart" if running else "none",
-                           act="channel" if change.get("op") == "add_channel" else "input")
+                           act={"add_channel": "channel", "move_channel": "move_channel"}.get(op, "input"))
         answer = {"ok": True, "rig": path.stem, "file": self._save_shown(path), "how": "updated",
                   "committed": False, "change": done["change"], "running": running, "path": path}
         shown = answer["file"]
@@ -7253,17 +7310,22 @@ class Agent:
                                 "not the running rig: it plays as edited the next time it is started or "
                                 "switched to"))
             return answer
-        why = await self._rigfile_restart_why(run, done["compiled"])
+        # What a reload would do now (#142): live, or a restart and why, as
+        # the switch decides it (`_would_restart`), so the page says "Live"
+        # or "Restart?" before it is pressed.
+        why = await asyncio.to_thread(self._would_restart, done["compiled"], run)
         since = run["state"].get("started_at")
+        how = "restart" if why else "live"
         answer.update(
-            takes_effect="restart", offer="restart", why=why,
+            takes_effect="reload", offer="reload", how_reload=how, why=why,
             note=" ".join((
                 f"{shown} was updated in place, with its comments; it is not committed. {path.stem} is the "
-                "running rig, and it keeps playing as it was: the change takes effect when it restarts "
-                f"({'; '.join(r['code'] + ': ' + r['detail'] for r in why) or 'a restart reloads the file'}). "
-                "A restart stops the sound for a few seconds and brings the rig back from its file. The "
-                f"agent saw no unsaved change since {since or 'it started'}; a change it cannot see (Sushi's "
-                "own MIDI mappings, or before the agent started) is not in the file").split()))
+                "running rig, and it keeps playing as it was until it is reloaded (POST /rig/reload): "
+                + ("the reload plays it live, without a gap" if how == "live" else
+                   "the reload restarts it (" + "; ".join(r['code'] + ': ' + r['detail'] for r in why)
+                   + "), which stops the sound for a few seconds and brings the rig back from its file")
+                + f". The agent saw no unsaved change since {since or 'it started'}; a change it cannot see "
+                "(Sushi's own MIDI mappings, or before the agent started) is not in the file").split()))
         return answer
 
     async def _restart_guard(self) -> tuple[str, str] | None:
@@ -7776,6 +7838,7 @@ class Agent:
             # restart's own failure, which is said within it.
             self._remember(command or ["revert", name], reason, kind="lifecycle")
             return {**out, "ok": False, "code": "not_switched", "reason": reason}
+        await self._note_switched(name)  # the file is what plays now (#142)
         return out
 
     # ======================================================================= #
@@ -8746,6 +8809,331 @@ class Agent:
     # ======================================================================= #
     # (end of a channel removed from the running rig)
     # ======================================================================= #
+
+    # ======================================================================= #
+    # The running rig's file reloaded (#142): GET /rig/reload, POST /rig/reload
+    # ======================================================================= #
+    #
+    # Kept in one block, as a removal's is, and made as a revert is made but
+    # with nothing written: the running rig switched into its own file as it
+    # is now (`_revert_switch`, the live switch, #112), live where
+    # `rigfile.diff` can take it there, by restart where it cannot. Outside
+    # it the agent calls in at `app` (`_reload_routes`), `_write_edit` (the
+    # file looked at before a rack edit writes it), `_save_held` (a save
+    # over the file as it played is still what plays) and `_revert_switch`
+    # (a switch into the file makes it what plays: `_note_switched`).
+    #
+    # What plays is known two ways. The file compiles to the config the rig
+    # runs (`rigfile.diff` of the two plans nothing, and the agent's own
+    # bindings agree): it is what plays, and its bytes are kept
+    # (`_note_played`) for the next reload's Undo. Or its bytes are the ones
+    # kept for this run: a save writes live values into the file and leaves
+    # the running config as the rig loaded it, so the file is what plays
+    # though the config disagrees. Anything else is "File changed".
+    #
+    # Locks as a revert's: lifecycle (`busy: "reload"`), then live, held
+    # while unsaved work is checked and the restart is asked about.
+
+    def _reload_routes(self, app) -> None:
+        app.router.add_get("/rig/reload", self.reload_state_route)
+        app.router.add_post("/rig/reload", self.reload_route)
+
+    @staticmethod
+    def _run_of(state: dict[str, Any]) -> tuple:
+        """Which run a state file is of, as `run_changed` tells two apart."""
+        return tuple(state.get(key) for key in ("started_at", "config", "rig"))
+
+    def _note_played(self, path: Path, data: bytes, state: dict[str, Any]) -> None:
+        """`data` is rig file `path` as the run `state` is of plays it."""
+        self._played = {"path": str(Path(path).resolve()), "run": self._run_of(state), "bytes": data}
+
+    def _played_bytes(self, path: Path, state: dict[str, Any]) -> bytes | None:
+        """The bytes of `path` known to be what the run `state` is of plays,
+        or None when not known."""
+        played = self._played
+        if played and played["path"] == str(Path(path).resolve()) and played["run"] == self._run_of(state):
+            return played["bytes"]
+        return None
+
+    async def _note_switched(self, name: str) -> None:
+        """A switch into rig `name` has wholly happened: its file is what
+        plays now, in the run the state file is of now (a restart is
+        another). Off the loop for the reads."""
+        def look() -> None:
+            state = self.switching.read_state() or {}
+            if not isinstance(state.get("rig"), str) or Path(state["rig"]).stem != name:
+                return
+            path = rig_file_of(state, self._midi_root())
+            try:
+                self._note_played(path, path.read_bytes(), state)
+            except OSError:
+                pass
+
+        await asyncio.to_thread(look)
+
+    def _plays_as(self, running: dict[str, Any], compiled: dict[str, Any], state: dict[str, Any]) -> bool:
+        """Whether `compiled` is what the running config `running` plays: the
+        switch would plan nothing, and the agent's own pedal bindings, which
+        the switch does not compare, are the same. Pure but for the amp's
+        models folder."""
+        decided = rigfile.diff(running, compiled, root=self._amp_root(), amp_off=state.get("amp_requested") is False)
+        if not isinstance(decided, rigfile.SwitchPlan) or decided.steps:
+            return False
+        controller = rigfile.MIDI_CONTROLLER
+        return (running.get(rigfile.AGENT_BINDINGS) == compiled.get(rigfile.AGENT_BINDINGS)
+                and (running.get("_meta") or {}).get(controller) == (compiled.get("_meta") or {}).get(controller))
+
+    def _reload_compile(self, data: bytes, run: dict[str, Any], name: str) -> dict[str, Any]:
+        """The file's bytes compiled as `up --rig` would, its plugins checked
+        as a switch checks them, or `RigFileRefused` in a reload's words."""
+        import yaml
+
+        try:
+            raw = yaml.safe_load(data.decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError) as exc:
+            raise RigFileRefused(" ".join(f"not reloaded: {name}'s file is not YAML: {exc}".split()),
+                                 "rig_problem") from exc
+        if not isinstance(raw, dict):
+            raise RigFileRefused(f"not reloaded: {name}'s file is not a rig file", "rig_problem")
+        try:
+            compiled = self._rigfile_compile(raw, run)
+            self._rigfile_plugins(compiled, name, run, "reloaded", "reload it again")
+        except RigFileRefused as exc:
+            said = str(exc)
+            for prefix in ("nothing was written: ",):
+                if said.startswith(prefix):
+                    said = said[len(prefix):]
+            raise RigFileRefused(f"not reloaded: {said}", exc.code, exc.extra) from exc
+        return compiled
+
+    def _file_state(self, run: dict[str, Any], path: Path) -> dict[str, Any]:
+        """The running rig's file `path` against what plays, as `GET
+        /rig/reload` says it: `changed` (True, False, or None when the
+        running config cannot be read), and for a change `how` a reload
+        would play it (`live`, `restart` with `why`, as `_would_restart`
+        decides) or, for a file that will not compile, `problem` and its
+        `code`. Also `data` (the bytes looked at) and `compiled`. Kept for
+        as long as the file, the running config, the state file and the
+        amp's wiring are what they were (`_looked`), so a page asking every
+        few seconds compiles once per change. Off the loop."""
+        import hashlib
+
+        state = run["state"]
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            return {"changed": None, "data": None, "how": None, "why": [], "code": "unreadable",
+                    "problem": f"{path.name} could not be read: {type(exc).__name__}: {exc}"}
+        running: dict[str, Any] | None
+        try:
+            running = self.switching.read_config(run["described"].get("config"))
+        except Exception:  # noqa: BLE001 -- not known: said as that
+            running = None
+
+        def seal(value: Any) -> str:
+            return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
+
+        key = (str(path.resolve()), history_module.digest(data), seal(running), seal(state), seal(run.get("wiring")),
+               str(run.get("machine")))
+        looked = self._looked
+        if looked is not None and looked[0] == key:
+            return looked[1]
+        out: dict[str, Any] = {"data": data, "compiled": None, "how": None, "why": [], "problem": None, "code": None}
+        played = self._played_bytes(path, state)
+        if played is not None and played == data:
+            out["changed"] = False  # what plays, kept: a save wrote it, or a switch played it
+        elif running is None:
+            out.update(changed=None, problem="the running rig's compiled config could not be read", code="unreadable")
+        else:
+            try:
+                compiled = self._reload_compile(data, run, path.stem)
+            except RigFileRefused as exc:
+                out.update(changed=True, problem=" ".join(str(exc).split()), code=exc.code)
+            else:
+                out["compiled"] = compiled
+                if self._plays_as(running, compiled, state):
+                    out["changed"] = False
+                    self._note_played(path, data, state)
+                else:
+                    why = self._would_restart(compiled, run)
+                    out.update(changed=True, how="restart" if why else "live", why=why)
+        self._looked = (key, out)
+        return out
+
+    async def reload_state_route(self, request):
+        """`GET /rig/reload` (#142): whether the running rig's file differs
+        from what plays (`changed`), and what a reload would do: `how`,
+        `live` or `restart` with `why` (unsaved work aside: a reload that
+        drops it may restart where this says live, and says so when it is
+        asked with `"restart": false`), or `problem` for a file that will
+        not compile; `unsaved`, the live changes no save holds, which a
+        reload is refused over (`discard`). Read only. `changed` is null
+        with no rig of channels up, or a running config that cannot be
+        read."""
+        run = await self._rigfile_run()
+        path = run["running"]
+        if path is None:
+            return web.json_response({"ok": True, "rig": None, "changed": None, "how": None, "why": [],
+                                      "note": "no rig of channels is running"})
+        look = await asyncio.to_thread(self._file_state, run, path)
+        unsaved = unsaved_entries(self.log, since=run["state"].get("started_at"))
+        return web.json_response({
+            "ok": True, "rig": path.stem, "file": self._save_shown(path), "changed": look["changed"],
+            "how": look["how"], "why": look["why"], "problem": look["problem"], "code": look["code"],
+            "unsaved": len(unsaved),
+        })
+
+    async def reload_route(self, request):
+        """`POST /rig/reload {"rig"?, "discard"?, "restart"?}`
+        (`rigedit.reload_request`): play the running rig's file as it is
+        now, through the live switch into it (`_revert_switch`), as a revert
+        and a channel load do: live where `rigfile.diff` can take the
+        running rig there (values, bypasses, a plugin added, removed or
+        moved), by restart where it cannot (a channel added, removed or
+        moved, an input on another role, the MIDI map Sushi loads, the
+        amp's model), with the reasons said. Nothing is written.
+
+        A file that is what plays already (`_file_state`) is a no-op, said
+        (`how: "unchanged"`), unless there is unsaved live work and
+        `"discard": true`, which plays the file again over it.
+
+        Refused, each a 409 with its reason, before anything changes:
+        `no_rig`, `v1`, `panel` (as a save); `changed`, when `rig` is
+        given and is not the running rig; `rig_problem` and
+        `plugins_missing`, the compiler's and the switch's own words for a
+        file that will not come up; `unsaved` while the rig holds live work
+        no save has written, unless `"discard": true`; and `restarts`, with
+        `why`, when `"restart": false` was sent and the switch would restart
+        Sushi (the page's "Restart?").
+
+        200 with `file`, `changed`, `how` (`live`, `restart`, `unchanged`),
+        `why`, `seconds`. 409 `not_switched` (or 504) when the rig could
+        not be made to play the file. One Undo (#209) step, `act:
+        "reload"`: the file put back as it played before, and the rig
+        switched into it; and the rack's edits that waited for this reload
+        are in it, not steps of their own. Where the file as it played is
+        not known to this agent (started after a hand edit), the step says
+        so and cannot be undone.
+
+        Not run against a live Sushi: shown against the fakes of the tests."""
+        from . import rigedit
+
+        try:
+            asked = rigedit.reload_request(await self._json_body(request))
+        except rigedit.EditRequestError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        self._refuse_while_busy()
+        answer: dict[str, Any] | None = None
+        switched = False
+        async with self._lock:
+            self.busy = "reload"
+            try:
+                run = await self._rigfile_run()
+                refusal = save_refusal(run["state"], run["described"])
+                if refusal is not None and refusal[1] != "panel":
+                    raise _conflict(" ".join(refusal[0].replace("to save", "to reload").split()), refusal[1])
+                path = run["running"]
+                name = path.stem
+                shown = self._save_shown(path)
+                if asked["rig"] is not None and name != asked["rig"]:
+                    raise _conflict(f"the running rig is {name}, not {asked['rig']}, so nothing was reloaded: "
+                                    "look at the rig and reload it again", "changed")
+                look = await asyncio.to_thread(self._file_state, run, path)
+                if look["problem"] is not None and look["code"] != "unreadable":
+                    raise _conflict(look["problem"], look["code"])
+                if look["data"] is None:
+                    raise _conflict(f"not reloaded: {look['problem']}", "rig_problem")
+                discarded: list[dict[str, Any]] = []
+                try:
+                    async with self._live_lock:
+                        refusal = reload_refusal(run["state"], self.log, changed=look["changed"] is not False)
+                        if refusal is not None and (refusal[1] == "panel" or not asked["discard"]):
+                            raise RigFileRefused(*refusal)
+                        discarded = (unsaved_entries(self.log, since=run["state"].get("started_at"))
+                                     if refusal is not None else [])
+                        if look["changed"] is False and not discarded:
+                            answer = {"ok": True, "rig": name, "file": shown, "changed": False, "how": "unchanged",
+                                      "why": [], "note": f"{shown} is what {name} plays: nothing to reload"}
+                        else:
+                            compiled = look["compiled"]
+                            if compiled is None:
+                                compiled = await asyncio.to_thread(self._reload_compile, look["data"], run, name)
+                            if asked["restart"] is False:
+                                restarts = await asyncio.to_thread(self._would_restart, compiled, run, discarded)
+                                if restarts:
+                                    raise RigFileRefused(
+                                        f"nothing was changed: reloading {name} restarts Sushi: "
+                                        + "; ".join(f"{r['code']}: {r['detail']}" for r in restarts)
+                                        + '; reload with "restart": true to go ahead', "restarts",
+                                        {"why": restarts})
+                except RigFileRefused as exc:
+                    error = _conflict(" ".join(str(exc).split()), exc.code)
+                    if exc.extra:
+                        error.agent_extra = exc.extra
+                    raise error
+                if answer is None:
+                    # One Undo (#209): the file as it played put back, and the
+                    # rig switched into it, whatever the switch below does.
+                    self._reload_history(path, look["data"], run)
+
+                    def mark(entry: dict[str, Any]) -> None:
+                        entry["args"]["reload"] = True
+
+                    switched = True
+                    answer = {"ok": True, "rig": name, "file": shown, "changed": look["changed"] is not False,
+                              "discarded": bool(discarded)}
+                    answer.update(await self._revert_switch(
+                        request, name, {"id": "reload", "what": "as it is now"}, mark=mark, done="read again",
+                        discarded=discarded, command=["reload", name]))
+                    if discarded:
+                        answer["discard"] = discard_said(discarded, answer)
+                    if not answer.get("ok"):
+                        answer["midi_note"] = (
+                            "the pedals' bindings follow the rig as it runs (its compiled config, "
+                            f"{run['described'].get('config')}), not the file: restart the rig to play the "
+                            "file, and its pedals with it")
+            finally:
+                self.busy = None
+                if switched:
+                    await self._midi_sync()  # the switch stopped the listener; it follows the rig now
+        if answer["ok"]:
+            return web.json_response(answer)
+        return web.json_response(answer, status=504 if answer.get("abandoned") else 409)
+
+    def _reload_history(self, path: Path, after: bytes, run: dict[str, Any]) -> None:
+        """A reload's one Undo step: the file put back as it played, `apply:
+        "switch"`. The rack's edits of this file this run that waited for a
+        restart (`apply: "restart"`) are in it, so they go: undoing the
+        reload undoes them. Where what played is not known (the agent has
+        not seen the file and the running config agree this run), the bytes
+        before the oldest waiting edit are, when those edits lead to the
+        file as it is; failing that, the waiting edits are undone by a
+        switch of their own, and a reload with none is a step that says it
+        cannot be undone."""
+        state = run["state"]
+        here = str(Path(path).resolve())
+
+        def waiting(entry: dict[str, Any]) -> bool:
+            return (entry.get("kind") == "file" and entry.get("apply") == "restart"
+                    and str(Path(entry.get("path") or "").resolve()) == here
+                    and not run_changed(entry.get("run") or {}, state))
+
+        edits = [e for e in self.history.entries if waiting(e)]
+        before = self._played_bytes(path, state)
+        if before is None and edits and edits[-1].get("after") == history_module.digest(after):
+            before = edits[0].get("before")
+        if before is not None:
+            for entry in edits:
+                self.history.drop(entry)
+            self._history_file(path, before, after, f"reload {path.stem}", run=run, apply="switch", act="reload")
+            return
+        for entry in edits:
+            entry["apply"] = "switch"  # the rig plays them now: putting one back plays that
+        if not edits:
+            self.history.push("none", f"reload {path.stem}", rig=path.stem, act="reload",
+                              why=(f"{path.name} as {path.stem} played it before the reload is not known to "
+                                   "this agent: Revert… goes back to a save"))
+
 
     # ======================================================================= #
     # Recording from the web UI (S7): GET /record, POST /record/start|stop,
@@ -10214,8 +10602,8 @@ def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[s
         what = describe_change(newest)
         count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
         return (f"{name} is running with {count} made through the agent and not saved (the newest: {what}, "
-                f"at {newest.get('at')}). The edit takes effect only when the rig restarts from its file, "
-                "and that restart would drop them: Save first (it writes what is playing into the file), "
+                f"at {newest.get('at')}). The edit plays only once the rig reloads or restarts from its file, "
+                "which would drop them: Save first (it writes what is playing into the file), "
                 "then make the edit", "unsaved")
     return None
 
@@ -10520,6 +10908,32 @@ def revert_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[st
     return (f"{name} is running with {count} made through the agent and not saved (the newest: "
             f"{describe_change(newest)}, at {newest.get('at')}), and a revert replaces what is playing with "
             'the file: Save first, or revert with discard ({"discard": true}) to drop them', "unsaved")
+
+
+def reload_refusal(state: dict[str, Any], log: list[dict[str, Any]], *, changed: bool = True
+                   ) -> tuple[str, str] | None:
+    """`(reason, code)` when a reload of the running rig must wait, or None
+    (#142). Pure over the state file and the log. A revert's rule
+    (`revert_refusal`): a reload plays the file, so live work no save has
+    written would be lost by it (`unsaved`, answered with `{"discard":
+    true}`); for a run still holding the retired panel (`panel`), whose
+    changes the agent cannot see, a restart is the answer, which reloads
+    the file too. `changed`: whether the file differs from what plays,
+    which only changes the words."""
+    panel = panel_run_refusal(state, "reload it if it still differs")
+    if panel is not None:
+        return panel
+    name = Path(str(state.get("rig") or "the rig")).stem
+    unsaved = unsaved_entries(log, since=state.get("started_at"))
+    if not unsaved:
+        return None
+    newest = unsaved[-1]
+    count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
+    what = ("a reload plays the file as it is now, which drops them" if changed
+            else "its file is what it plays, so a reload would only drop them")
+    return (f"{name} is running with {count} made through the agent and not saved (the newest: "
+            f"{describe_change(newest)}, at {newest.get('at')}), and {what}: Save first, or reload with "
+            'discard ({"discard": true}) to drop them', "unsaved")
 
 
 def programs_moved(before: list[str], after: list[str], made: str) -> dict[str, Any] | None:

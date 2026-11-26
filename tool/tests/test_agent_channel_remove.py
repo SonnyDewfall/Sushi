@@ -187,7 +187,7 @@ def test_a_channel_added_to_the_file_and_not_yet_playing_is_removed_from_the_fil
     path = rig_file(root, "guitar_vocal")
     status, body = call(agent, "POST", "/rigs/guitar_vocal/channels/add",
                         json={"name": "keys", "input": "vocal-in", "width": "mono"})
-    assert status == 200 and body["takes_effect"] == "restart", body
+    assert status == 200 and body["takes_effect"] == "reload", body
     added = path.read_bytes()
     turned = next(iter(fake.values["guitar_overdrive"]))
     status, said = call(agent, "POST", "/live/parameter",
