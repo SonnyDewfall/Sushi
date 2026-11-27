@@ -201,8 +201,14 @@ def stereo(name, role="guitar-in", **extra):
 def test_a_draft_compiles_to_exactly_what_up_rig_compiles_its_file_to(root, name):
     """One path: a rig not yet written is compiled as `up --rig` compiles it
     once it is, so what the routes accept is what starts."""
+    from sushi_rig.rig import playing_source, stamp_source
+
     raw = rig_doc(root, name)
-    assert compile_rig_draft(raw, root, machine_file(root)) == compile_named_rig(name, root, machine_file(root))
+    named = compile_named_rig(name, root, machine_file(root))
+    # The one difference: `up --rig` records the bytes it compiled (#142),
+    # and a draft is no file's bytes yet.
+    assert playing_source(named)[1] == (root / "config" / "rigs" / f"{name}.yaml").read_bytes()
+    assert compile_rig_draft(raw, root, machine_file(root)) == stamp_source(named, None)
 
 
 def test_a_draft_is_wired_too_so_a_role_the_machine_lacks_is_refused_before_up_would():
@@ -568,14 +574,17 @@ def test_an_edit_is_refused_while_a_lifecycle_command_runs(root):
 # The running rig's own file
 # --------------------------------------------------------------------------- #
 
-def test_an_edit_of_the_running_rig_takes_effect_at_a_restart_and_says_why(root):
+def test_an_edit_of_the_running_rig_offers_a_reload_and_says_why_it_restarts(root):
+    """#142: the edit waits for a reload, which the answer offers, saying
+    whether it is live or, as a channel added is, a restart and why."""
     agent, _ = rig_agent(root)
     status, answer = call(agent, "POST", "/rigs/guitar_vocal/channels/add", json=stereo("keys", "vocal-in"))
     assert status == 200, answer
-    assert (answer["running"], answer["takes_effect"], answer["offer"]) == (True, "restart", "restart")
+    assert (answer["running"], answer["takes_effect"], answer["offer"]) == (True, "reload", "reload")
+    assert answer["how_reload"] == "restart"
     assert [r["code"] for r in answer["why"]] == ["track_added"]
-    assert "keeps playing as it was: the change takes effect when it restarts" in answer["note"]
-    assert "track_added: track 'keys'" in answer["note"]
+    assert "keeps playing as it was until it is reloaded" in answer["note"]
+    assert "the reload restarts it (track_added: track 'keys')" in answer["note"]
     status, answer = call(agent, "POST", "/rigs/guitar_vocal/channels/vocal/input", json={"input": "solo-in"})
     assert status == 200, answer
     assert {r["code"] for r in answer["why"]} >= {"wiring"}, answer["why"]

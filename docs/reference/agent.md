@@ -61,6 +61,9 @@ curl localhost:8029/rigs/guitar_vocal/channels                      # a rig file
 curl -X POST localhost:8029/rigs/new -d '{"name": "two-guitars", "channels": [{"name": "clean", "input": "guitar-in", "width": "mono"}, {"name": "dirty", "input": "guitar-in", "width": "stereo", "from": {"rig": "electric_board", "channel": "board"}}]}'
 curl -X POST localhost:8029/rigs/guitar_vocal/channels/add -d '{"name": "keys", "input": "vocal-in", "width": "stereo"}'
 curl -X POST localhost:8029/rigs/guitar_vocal/channels/vocal/input -d '{"input": "guitar-in"}'   # or "width", or both
+curl -X POST localhost:8029/rigs/guitar_vocal/channels/vocal/move -d '{"direction": "up"}'   # one place up (or "down") in the file (#142)
+curl localhost:8029/rig/reload       # whether the running rig's file differs from what plays, and what a reload would do (#142)
+curl -X POST localhost:8029/rig/reload -d '{"restart": false}'   # play the file as it is now: live where it can be, else 409 restarts with why
 curl -X POST localhost:8029/rigs/electric-delay/delete -d '{"dry_run": true}'   # what deleting it would do, moving nothing
 curl -X POST localhost:8029/rigs/electric-delay/delete                           # into config/rigs/.deleted/ (#129); never the running rig
 curl -X POST localhost:8029/rigs/electric-delay/restore -d '{"entry": "electric-delay-20261116T101502Z.yaml"}'   # back from the bin; no entry: the newest
@@ -943,15 +946,22 @@ of the running rig's tracks use it, and the ceiling as the compiler refuses
 a fourth channel. Which roles are inputs and which outputs is read from
 their names (`-in`, `-out`), since the machine file does not say.
 
-**An edit of the running rig's own file** takes effect when the rig
-restarts from it: the answer says so, with `rigfile.diff`'s reasons as a
-switch gives them (`track_added`, `wiring`, `track`), and the page offers the
-restart. It is **refused while the rig holds changes the agent saw and no
-save has written** (`409 unsaved`, naming the newest): the restart that plays
-the edit reloads the file and would drop them. Save, then edit. (Save
+**An edit of the running rig's own file** plays once the rig is reloaded
+from it (`POST /rig/reload`, below, #142): the answer has `takes_effect:
+"reload"`, `offer: "reload"`, and `how_reload`, what the reload would do now,
+`live` or `restart` with `why` (`rigfile.diff`'s reasons and the state's
+blockers, as `_would_restart` decides them for a revert: `track_added`,
+`wiring`, `track`, `track_order`), and the page offers Reload saying "Live"
+or "Restart?". It is **refused while the rig holds changes the agent saw and
+no save has written** (`409 unsaved`, naming the newest): the reload that
+plays the edit would drop them. Save, then edit. (Save
 itself would still work after an edit: a capture says nothing of a track the
-rig does not have yet, so the file keeps the new channel. It is the restart
-that would lose the work.) Counted, not netted out, so a knob turned and turned back still asks
+rig does not have yet, so the file keeps the new channel. It is the reload
+or restart that would lose the work.) `POST
+/rigs/<rig>/channels/<channel>/move {"direction": "up" | "down"}` swaps a
+channel with its neighbour in the file by the same rules, the channel's
+comments moving with it (`yamlmerge` matches entries by name); `edge` for a
+channel already first or last, `no_channel` for one the file lacks. Counted, not netted out, so a knob turned and turned back still asks
 for a Save, which loses nothing. Another rig's file can
 be edited whatever is playing. A write is refused while a lifecycle command
 runs (`409 busy`, as every route is), and holds the lifecycle lock itself
@@ -1239,8 +1249,10 @@ were made elsewhere (#245).
   A switch (`op: "rig"`) drops the live steps, which were another rig's;
   `POST /live/undo` itself still works, and what it undoes leaves the history.
 - **`file`**: a write of a rig file: a channel added, an input changed, a
-  pedal assigned, a Save over the running rig's own file, a revert, a
-  channel loaded from another rig, a channel removed, a new rig. The bytes before the write are kept, and a digest of what it wrote;
+  channel moved, a pedal assigned, a Save over the running rig's own file, a revert, a
+  channel loaded from another rig, a channel removed, a new rig; and a
+  reload (#142), which writes nothing but is undone as a load is: the file
+  as it played put back, and the rig switched into it. The bytes before the write are kept, and a digest of what it wrote;
   the undo puts the bytes back whole (`saves.restore`) only while the file is
   still as the write left it, and a new rig goes into the bin. Then it does
   again what the write did to the running rig: a revert's (and a channel
@@ -1445,6 +1457,90 @@ emptied track, neither applying nor confirming it, and then ignored SIGTERM.
 `delete_track` sent alone, which takes the processors off inside Sushi, was
 clean 300 times in 300: the lead for making it live. The tests drive the live path against a stand-in (`test_agent.RigLive`,
 `tests/test_agent_channel_remove.py`).
+
+## Reloading the running rig's file
+
+The running rig's own file played as it is now (#142), after an edit on the
+rack or by hand. Made as a revert is made, with nothing written: the running
+rig switched into its own file (`_revert_switch`, the live switch, #112).
+
+- **`GET /rig/reload`**: whether the file differs from what plays
+  (`changed`: `true`, `false`, or `null` with no rig of channels up or a
+  running config that cannot be read), and what a reload would do: `how`,
+  `live` or `restart` with `why`; or `problem` and `code` for a file that
+  will not compile or whose plugins are not all there. Also `unsaved`, the
+  count of live changes no save holds. Read only; the page asks every three
+  seconds. **What plays is recorded, never guessed**: every config compiled
+  from a rig file carries, in `_meta`, the SHA-256 of the exact bytes
+  compiled and the bytes (`rig.stamp_source`: `source_sha256`,
+  `source_text`), written with the config by whatever made the rig play it
+  (`up`, a restart, every live switch: a revert, a load, a removal, Add amp,
+  a reload, Undo's switches, a pedal's Program Change). The state file names
+  that config, so an agent started later, the CLI and the pedals read the
+  same record. A save over the file while it was what plays, and a pedal
+  assigned live, record the bytes they wrote, in the same held section as
+  the write and before git is asked anything; their Undo puts the record
+  back with the file. A save over a file with an edit the rig does not play
+  (a channel added, not yet reloaded) records nothing, since the edit is
+  still not played. The GET compares the file's hash with the record and
+  compiles only when they differ, to say what a reload would do, keeping
+  that by what the compile and the decision read (the file, the running
+  config, the state file, the amp's last wiring look, the machine file's
+  contents, the plugins and amp models there are, the port table). It
+  records nothing, and takes the amp's last wiring look, as `/health` does.
+  Bytes that differ and compile to what plays (a comment changed by hand)
+  are not a change. A config from before #142 records nothing: then the
+  file is compared by what it compiles to.
+- **`POST /rig/reload {"rig"?, "discard"?, "restart"?}`**: **live** where
+  `rigfile.diff` can take the running rig there (a plugin's parameters, its
+  bypass, a plugin added, removed or moved), **by restart** where it cannot
+  (a channel added, removed or moved, an input on another role, the MIDI map
+  Sushi loads, the amp's model). With `"restart": false` one that would
+  restart is **409 `restarts`** with `why`, nothing changed, until
+  `"restart": true`. A file that is what plays is a no-op that says so
+  (`how: "unchanged"`, `note`), unless there is unsaved work and `"discard":
+  true`, which plays the file over it. 200 with `file`, `changed`, `how`
+  (`live`, `restart`, `unchanged`), `why`, `seconds`, `plan`, and `entry`
+  (`op: "rig"`, `args.reload`), the new baseline. The listener follows the
+  rig after (`_midi_sync`). 409 `not_switched` (or 504) when the rig could
+  not be made to play it, with `midi_note`.
+- **Refused**, each before anything changes: `no_rig`, `v1`, `panel`
+  (restart it instead, which stops the retired panel and reloads the file),
+  `changed` (`rig` given and another running), `rig_problem` and
+  `plugins_missing` (the compiler's and the switch's words, after "not
+  reloaded:"), `unsaved` (unless `"discard": true`), `restarts`; `busy`
+  while a lifecycle command runs; `403 cross_site` from another site's page.
+- **One Undo** (#209): one step, label "reload guitar_vocal", `act:
+  "reload"`, `apply: "switch"`: the file put back as it played before the
+  reload, and the rig switched into it (a restart, asked, where the reload
+  was one). The rack's edits of the file this run that waited for the
+  reload are inside it, not steps of their own, so one press takes back an
+  Add channel and the reload that played it. The bytes put back are the
+  ones the running config records, so an agent started after a hand edit
+  undoes it all the same. Folded are only the rack edits made since the file
+  was last what plays: the walk back stops at the edit made over the
+  recorded bytes, or at a step that left the file what plays. A save or a
+  pedal assignment over an edit the rig did not play, met on the way, means
+  putting back what played would lose what it wrote: then (and for a run
+  that records nothing) the step is `none`, says why, and Revert… goes back
+  to a save.
+
+**Channel order is played by Sushi**, so a move is never live. The compiler
+gives each channel its track in the file's order, its engine inputs from the
+first free one on, and its own output bus by its place (`compile_rig`:
+`next_input`, `engine_bus: 1 + index`), the patchbay wires each role to the
+engine inputs that gives, and the recorder takes each channel's stem from its
+bus. Moving a channel changes the track order (`track_order`, "which Sushi
+takes only at load") and the inputs and outputs of every channel between the
+two places (`track`), and `rigfile.diff` restarts for both; the sends and the
+master are the same whatever the order (each send names `master_return`, and
+the master is always the last track). Shown in
+`tests/test_agent_reload.py` on a copy of `guitar_vocal`.
+
+Not run against a live Sushi or on the rig: shown against the fakes of the
+tests (`test_agent.RigLive`, the agent's real switch). That a reload said
+live is heard with no gap is the live switch's claim (#112), not measured
+here.
 
 ## Recording from the web UI
 

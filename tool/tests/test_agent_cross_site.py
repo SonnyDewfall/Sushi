@@ -462,6 +462,8 @@ GET_ROUTES = {
     "/events",  # the pushed changes (#139): a stream that says what changed; changes nothing, and is cross-site checked
     "/record/levels",  # the meters (#139): the recorder's peaks since the last read; arms its meter, changes no take
     "/takes/x/x",  # one file of a take (#139): read-only from the takes folder, and cross-site checked
+    "/rig/reload",  # whether the running rig's file differs from what plays (#142): reads and compiles the file,
+                    # keeping only what it found (the agent's own note of what plays); plays and writes nothing
 }
 
 

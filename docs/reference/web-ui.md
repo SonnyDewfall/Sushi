@@ -77,7 +77,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
     tiles, and the rig's problems in a word or two (`R.agentProblems`: "No
     amp", "Amp not wired", "Links not made" from `agent.warnings` and
     `amp_wiring`, a child that exited, the last error, a profile that would
-    not load), each a small box whose `title` is the whole of it. They are
+    not load), each a small box whose `title` is the whole of it; and **File
+    changed** (#142) while the running rig's file differs from what plays
+    (`GET /rig/reload`, read every three seconds and at once after an edit,
+    `R.fileChanged`), its title saying what a reload would do. They are
     states of the rig, not answers to a tap, so they stay here. On a phone
     the status is the rig's name and its dot; the words are the dot's
     `title`, and a tap on it (a button there only: on a laptop the line is
@@ -230,7 +233,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   the channel it is in front of: the first channel **the running rig** plays
   from `guitar-in` (`patchbay.GUITAR_ROLE`), as `GET /machine/roles`'s
   `used_by` says from the running config's own wiring, so Change input, which
-  writes the file, does not move it before the restart that plays the edit.
+  writes the file, does not move it before the reload that plays the edit.
   Only when the running rig cannot say (the answer failed, or its config was
   not read) is the rig's file asked (`GET /rigs/<rig>/channels`); the first
   channel where neither says, or the run has nothing on that role, or there
@@ -640,12 +643,42 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   on the rig, a v1 run drew nothing at all, and nothing said why a vocal
   channel could not be added. Each edit writes the file, says what it did in
   a title (the file and what git says of it on hover), and offers
-  **Restart**, which asks **Restart?** since the sound stops for a few
-  seconds. Each is a step of the one Undo, which puts the file back (#209).
-  The edits are not behind the page's lock (they write a file, and the
-  restart is a separate tap); with unsaved changes the agent refuses until a
-  Save. A change made after the edit makes the offered restart refuse too,
-  with **Restart anyway** as a second tap. A new rig that moves other rigs' Program
+  **Reload** (#142), beside a word from the agent's diff: **Live**, or
+  **Restart?** (a channel added or moved, an input changed), for which Reload
+  asks **Restart?** first since the sound stops for a few seconds. Each edit
+  is a step of the one Undo, which puts the file back (#209), until the
+  reload, whose one step then holds them. Add channel and Change input are
+  not behind the page's lock (they write a file); **the reload is**
+  (`lockRefusal(…, "reload")`: locked, Reload says "Not reloaded" and
+  "Locked"), and so is a channel's move. With unsaved changes the agent
+  refuses an edit until a Save. A change made after the edit makes the
+  reload refuse too, with **Reload anyway** as a second tap.
+- **Moving a channel (#142).** Each strip's input line has **↑** and **↓**
+  (`Move vocal up`, `Move vocal down`), off for the file's first channel up
+  and its last down (`R.canMoveChannel`, by the file's order). A move swaps
+  the channel with its neighbour in the file, comments kept, and is said and
+  offered a reload as the other edits are; the strips stay in the order the
+  rig plays until then. A channel's place is its track's in Sushi and the
+  engine inputs and bus it is given, so the reload is always **Restart?**.
+  Behind the lock (`lockRefusal(…, "move_channel")`), its Undo too.
+- **Reload and File changed (#142).** While the running rig's file differs
+  from what plays (after an edit, or a hand edit in a text editor), the
+  status zone says **File changed** and the activity zone offers **Reload**
+  beside **Live** or **Restart?**, unless an edit's own answer offers it
+  already; a file that will not compile says **Won't load** and offers
+  nothing, its reason on hover. Reload sends `POST /rig/reload` with
+  `restart: false` and the rig drawn; one the diff says restarts asks
+  **Restart?** first and then sends `restart: true`. **Reloaded** with
+  **Live** or **Restarted**, the plan's file and reasons on hover; **Not
+  reloaded** with **Reload anyway** for unsaved work. A Yes or Reload anyway
+  given after the lock came on is said **Not reloaded**, "Locked". An edit's
+  Reload goes once the file is what plays again (`GET /rig/reload` says
+  `changed: false`: another page reloaded it, an Undo put it back) and on
+  any Undo, the edit's words staying, so it never hides File changed. Its Undo, behind the
+  lock (`UNDO_LOCKED_ACTS`), puts the file back as it played and switches
+  the rig into it. The decisions are rig.js's (`reloadCall`, `reloadWord`,
+  `fileChanged`, `reloadOutcome`, `moveChannelCall`, `canMoveChannel`),
+  tested on their own and through the page in `tool/tests/test_ui_reload.py`. A new rig that moves other rigs' Program
   Change numbers says so under Create, with a table of before and after.
   Nothing of this is on the stage screen.
 - **Delete (#129, #209).** Each row of the rack's rig picker has a

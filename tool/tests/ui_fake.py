@@ -688,10 +688,13 @@ class UiSave:
         """The running rig's config, as `up --rig` compiles its file now."""
         import yaml
 
-        from sushi_rig.rig import compile_rig_draft
+        from sushi_rig.rig import compile_rig_draft, stamp_source
 
         path = self.root / self.state["rig"]
-        config = compile_rig_draft(yaml.safe_load(path.read_text()), self.root, Path(self.state["machine"]))
+        data = path.read_bytes()
+        config = compile_rig_draft(yaml.safe_load(data.decode("utf-8")), self.root, Path(self.state["machine"]))
+        # The bytes compiled, recorded as `up --rig` records them (#142).
+        stamp_source(config, data)
         if self.pedals:
             self.write_config(self.state["config_name"], config)
         return config
@@ -1154,9 +1157,15 @@ class UiLifecycle:
             self.started = datetime.now(timezone.utc).replace(microsecond=0)
             answer.update(how="restart", why=why, command=["up", name], output="")
             entry = self.agent._record("rig", {"rig": name, "how": "restart", "why": [w["code"] for w in why]}, previous)
+        same = self.rig == name
         self.rig = name
         if self.on_switch:
             self.on_switch(name)
+        if how != "live" and same and self.on_restart:
+            # A switch by restart into the rig that runs (a reload, #142)
+            # starts it again from its file, as `restart` does: a channel
+            # the file gained since is a track now.
+            self.on_restart()
         return {**answer, "entry": entry, "state": self.describe()}
 
 

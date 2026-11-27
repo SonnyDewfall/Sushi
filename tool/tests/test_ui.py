@@ -3686,7 +3686,11 @@ def inputs_region(p):
     return p.locator("section.wiring")
 
 
-def test_a_channel_is_added_to_the_running_rig_and_a_restart_is_offered(browser, files_served):
+def test_a_channel_is_added_to_the_running_rig_and_a_reload_is_offered(browser, files_served):
+    """#142: the edit waits for a reload, offered in the bar with what the
+    agent's diff says of it: a channel added is a restart, asked first, and
+    the reload is behind the lock."""
+    files_served.lifecycle.how["electric_board"] = ("restart", [{"code": "track_added", "detail": "track 'keys'"}])
     page = Watched(browser, files_served, "/#rack")
     p = page.page
     wiring = inputs_region(p)
@@ -3700,7 +3704,8 @@ def test_a_channel_is_added_to_the_running_rig_and_a_restart_is_offered(browser,
     result = p.locator(".activity .rigfile-result.ok")
     expect(result).to_contain_text("Added keys to electric_board")
     expect(result).to_have_attribute("title", re.compile(re.escape(
-        "electric_board keeps playing as it was until it restarts (track 'keys').")))
+        "electric_board keeps playing as it was until it is reloaded: Reload restarts it (track 'keys').")))
+    expect(result.locator(".said")).to_have_text("Restart?")
     expect(result).to_have_attribute("title", re.compile("Not committed: changed on top of commit"))
     after = (files_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
     import difflib
@@ -3710,13 +3715,25 @@ def test_a_channel_is_added_to_the_running_rig_and_a_restart_is_offered(browser,
         "+- name: keys", "+  input: keys-in", "+  width: stereo", "+  chain: []"], "only the channel's own lines"
     expect(wiring.locator(".wiring-row")).to_have_count(3)
     expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"]), "still playing as it was"
-    result.get_by_role("button", name="Restart").click()
+    expect(p.locator(".zone-status .problem.file")).to_have_text("File changed")
+    # Locked (the page starts so): a reload adds the channel, which the lock refuses.
+    result.get_by_role("button", name="Reload").click()
+    refused = p.locator(".activity .act-item.refused")
+    expect(refused.locator("strong")).to_have_text("Not reloaded")
+    expect(refused).to_have_attribute("title", re.compile("^Locked: a reload plays the rig's file"))
+    assert not [c for c in files_served.lifecycle.calls if c[0] == "switch"], "nothing was sent"
+    unlock(p)
+    result.get_by_role("button", name="Reload").click()
     confirm = p.locator(".activity").get_by_role("group", name="Restart?")
     expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
+    assert not [c for c in files_served.lifecycle.calls if c[0] == "switch"], "asked before anything restarts"
     confirm.get_by_role("button", name="Yes").click()
-    expect(p.locator(".activity .notice")).to_have_attribute("title", re.compile(re.escape("Restarted electric_board from its file.")))
-    assert ["restart"] in files_served.lifecycle.calls
+    done = p.locator(".activity .reload-result")
+    expect(done.locator("strong")).to_have_text("Reloaded")
+    expect(done.locator(".said")).to_have_text("Restarted")
+    assert ["switch", "electric_board"] in files_served.lifecycle.calls
     expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "keys", "Master"])
+    expect(p.locator(".zone-status .problem.file")).to_have_count(0)
     page.close()
 
 
@@ -3732,8 +3749,9 @@ def test_a_channels_input_is_changed_from_the_rack(browser, files_served):
     p.get_by_role("button", name="Apply").click()
     result = p.locator(".activity .rigfile-result.ok")
     expect(result).to_contain_text("Changed vocal's input")
-    expect(result).to_have_attribute("title", re.compile("keeps playing as it was until it restarts"))
-    expect(result.get_by_role("button", name="Restart")).to_be_visible()
+    expect(result).to_have_attribute("title", re.compile("keeps playing as it was until it is reloaded: Reload restarts it"))
+    expect(result.locator(".said")).to_have_text("Restart?")
+    expect(result.get_by_role("button", name="Reload")).to_be_visible()
     expect(wiring.locator('.wiring-row[data-channel="vocal"]')).to_contain_text("keys-in · stereo")
     assert rig_file(files_served)["channels"][1] == {
         "name": "vocal", "input": "keys-in", "width": "stereo", "level": -6.0,
@@ -3782,10 +3800,12 @@ def test_the_stage_has_no_new_rig_and_no_channel_edits(browser, files_served):
 
 # -- review, 2026-11-06 -------------------------------------------------------
 
-def test_after_an_edit_a_knob_turned_makes_the_offered_restart_refuse_until_told(browser, files_served):
-    """(1) The restart an edit offers reloads the file, so a knob turned after
-    the edit would be lost by it: the agent refuses, the page says why in
-    place, and dropping the change is a second, explicit tap."""
+def test_after_an_edit_a_knob_turned_makes_the_offered_reload_refuse_until_told(browser, files_served):
+    """(1) The reload an edit offers (#142, the restart it offered before)
+    plays the file, so a knob turned after the edit would be lost by it: the
+    agent refuses, the page says why in the bar, and dropping the change is
+    a second, explicit tap."""
+    files_served.lifecycle.how["electric_board"] = ("restart", [{"code": "track_added", "detail": "track 'keys'"}])
     page = Watched(browser, files_served, "/#rack")
     p = page.page
     wiring = inputs_region(p)
@@ -3795,16 +3815,17 @@ def test_after_an_edit_a_knob_turned_makes_the_offered_restart_refuse_until_told
     expect(result).to_contain_text("Added keys to electric_board")
     turn_drive_down(p, 1)
     until(lambda: abs(files_served.rig.info["overdrive"]["Drive"]["value"] - 0.61) < 1e-9)
-    result.get_by_role("button", name="Restart").click()
+    unlock(p)
+    result.get_by_role("button", name="Reload").click()
     p.locator(".activity").get_by_role("group", name="Restart?").get_by_role("button", name="Yes").click()
-    refused = p.locator(".activity .problem.refused")
-    expect(refused).to_contain_text("Not restarted: electric_board")
-    expect(refused).to_have_attribute("title", re.compile("electric_board has 1 change made through the agent and not saved"))
+    refused = p.locator(".activity .reload-result.refused")
+    expect(refused.locator("strong")).to_have_text("Not reloaded")
+    expect(refused).to_have_attribute("title", re.compile("electric_board is running with 1 change made through the agent and not saved"))
     expect(refused).to_have_attribute("title", re.compile("Save first"))
-    assert ["restart"] not in files_served.lifecycle.calls
-    refused.get_by_role("button", name="Restart anyway").click()
-    expect(p.locator(".activity .notice")).to_have_attribute("title", re.compile(re.escape("Restarted electric_board from its file.")))
-    assert files_served.lifecycle.calls[-1] == ["restart"]
+    assert ["switch", "electric_board"] not in files_served.lifecycle.calls
+    refused.get_by_role("button", name="Reload anyway").click()
+    expect(p.locator(".activity .reload-result strong")).to_have_text("Reloaded")
+    assert files_served.lifecycle.calls[-1] == ["switch", "electric_board"]
     page.close()
 
 

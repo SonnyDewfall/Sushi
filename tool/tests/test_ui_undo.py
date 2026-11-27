@@ -295,12 +295,12 @@ def test_a_restart_asks_one_word_with_yes_and_no(browser, served):
     p.get_by_role("button", name="Change vocal's input").click()
     p.get_by_label("vocal input").select_option("keys-in")
     p.get_by_role("button", name="Apply").click()
-    bar(p).locator(".rigfile-result").get_by_role("button", name="Restart").click()
+    bar(p).locator(".rigfile-result").get_by_role("button", name="Reload").click()
     confirm = bar(p).get_by_role("group", name="Restart?")
     expect(confirm.get_by_role("button")).to_have_text(["Yes", "No"])
     calls = len(served.lifecycle.calls)
     confirm.get_by_role("button", name="Yes").click()
-    until(lambda: any(c[0] == "restart" for c in served.lifecycle.calls[calls:]))
+    until(lambda: any(c[0] == "switch" for c in served.lifecycle.calls[calls:]))
     page.close()
 
 

@@ -1,6 +1,7 @@
-"""A new rig, and a channel added or re-wired, as rig files: the decisions
-behind the web UI's New rig screen and the rack's channel edits (agent.py's
-rig files block, which does the reading, the compiling and the writing).
+"""A new rig, and a channel added, re-wired, moved or removed, as rig files:
+the decisions behind the web UI's New rig screen and the rack's channel edits
+(agent.py's rig files block, which does the reading, the compiling and the
+writing).
 
 Phase 2's words for the screen: "a 'new rig' flow that asks how many channels,
 mono or stereo for each, and which input each listens on, and refuses past the
@@ -314,6 +315,75 @@ def named_said(named: dict[str, Any]) -> str:
     """One control `midi_naming` found, in words: "pad1 (bypass vocal/eq):
     its plugin goes with the channel"."""
     return f"{named['control']} ({said_assignment(named['binding'], named['target'])}): {named['why']}"
+
+
+# --------------------------------------------------------------------------- #
+# A channel moved up or down (#142), and the running rig's file reloaded
+# --------------------------------------------------------------------------- #
+#
+# A channel's place in the file is its place in Sushi: the compiler gives
+# each channel its track in the file's order, its engine inputs from the
+# first free one on and its engine bus by that order (`rigfile.compile_rig`),
+# so a move changes the track order and every engine input and bus between
+# the two channels. `rigfile.diff` restarts for each (`track_order`,
+# `track`): a move is never played live, which the reload it offers says
+# first ("Restart?").
+
+_MOVE_KEYS = ("direction",)
+DIRECTIONS = ("up", "down")
+_RELOAD_KEYS = ("rig", "discard", "restart")
+
+
+def move_request(body: Any) -> str:
+    """The direction of `POST /rigs/{name}/channels/{channel}/move`'s body,
+    `{"direction": "up" | "down"}`: up is toward the top of the file."""
+    body = _only(body, _MOVE_KEYS, "the body of a channel's move")
+    direction = body.get("direction")
+    if direction not in DIRECTIONS:
+        raise EditRequestError(f"a channel's move: 'direction' must be 'up' or 'down', not {direction!r}")
+    return direction
+
+
+def with_channel_moved(raw: dict[str, Any], channel: str, direction: str) -> tuple[dict[str, Any], int]:
+    """`(raw with channel `channel` swapped with its neighbour above
+    (`up`) or below (`down`), the place it lands at, from 0)`; `raw` is left
+    as it is. `LookupError` for a channel it does not have, `IndexError`
+    for one already first (up) or last (down)."""
+    if direction not in DIRECTIONS:
+        raise ValueError(f"direction is 'up' or 'down', not {direction!r}")
+    out = copy.deepcopy(raw)
+    channels = out.get("channels") if isinstance(out.get("channels"), list) else []
+    places = [i for i, e in enumerate(channels) if isinstance(e, dict)]
+    at = next((n for n, i in enumerate(places) if channels[i].get("name") == channel), None)
+    if at is None:
+        names = [channels[i].get("name") for i in places]
+        raise LookupError(f"{out.get('name')} has no channel called {channel} (it has: "
+                          f"{', '.join(map(str, names)) or 'none'})")
+    to = at - 1 if direction == "up" else at + 1
+    if to < 0 or to >= len(places):
+        raise IndexError(f"{channel} is already {out.get('name')}'s {'first' if direction == 'up' else 'last'} channel")
+    a, b = places[at], places[to]
+    channels[a], channels[b] = channels[b], channels[a]
+    return out, to
+
+
+def reload_request(body: Any) -> dict[str, Any]:
+    """`{"rig", "discard", "restart"}` from `POST /rig/reload`'s body, every
+    key optional, as a removal's are (`remove_request`): `rig`, the rig the
+    page drew, refused as `changed` when another is running; `discard`, true
+    to drop unsaved live work; `restart`, false to be asked before a reload
+    that restarts Sushi, true once asked (None restarts where it must)."""
+    body = _only({} if body is None else body, _RELOAD_KEYS, "the body of a reload")
+    rig = body.get("rig")
+    if rig is not None and (not isinstance(rig, str) or not rig.strip()):
+        raise EditRequestError(f"the reload: 'rig' must name the rig it is meant for, not {rig!r}")
+    out: dict[str, Any] = {"rig": rig}
+    for key in ("discard", "restart"):
+        value = body.get(key)
+        if value is not None and not isinstance(value, bool):
+            raise EditRequestError(f"the reload: {key!r} must be true or false, not {value!r}")
+        out[key] = bool(value) if key == "discard" else value
+    return out
 
 
 def channels_of(raw: Any) -> list[dict[str, Any]]:

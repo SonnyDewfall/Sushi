@@ -36,6 +36,10 @@ const LOAD_MS = 2000;
 // A failed read of which plugin each processor is, or of the profiles, is
 // asked again this often, not on every poll: a session read is heavy.
 const RETRY_MS = 10000;
+// How often GET /rig/reload is read (#142): the running rig's file against
+// what plays, for "File changed". The agent compiles only when the file or
+// the run has changed since it last looked.
+const RELOAD_MS = 3000;
 // How long "Stop now" stays offered after Stop: stopping cuts the sound, so
 // it takes two taps, and a first tap left alone is forgotten.
 const CONFIRM_MS = 8000;
@@ -164,6 +168,11 @@ const state = {
   // in flight, what it said there (a refusal, its offer), and `done`, said
   // at the strips' foot once the channel has gone.
   removeUi: { channel: null, rig: null, pending: null, result: null, done: null },
+  // A reload (#142): GET /rig/reload's answer (`look`, read every RELOAD_MS
+  // on the rack and the stage, at once after an edit), the reload in flight,
+  // what it said (`result`) and its "Restart?" (`ask`: what it will send),
+  // each for the rig it was asked for.
+  reloadUi: { look: null, lookAt: 0, pending: null, result: null, ask: null },
   open: new Set(),           // units opened, by name
   all: new Set(),            // units whose All is on, showing what their profile hides (R.unitPanel's `hidden`), by name
   // The rack's tabs and rows (#135):
@@ -468,6 +477,39 @@ async function refreshMidi(force = false) {
   return true;
 }
 
+// GET /rig/reload (#142): whether the running rig's file differs from what
+// plays, and what a reload would do. Every RELOAD_MS, at once (`force`)
+// after a write; with no rig of channels up there is nothing to ask.
+async function refreshReload(force = false) {
+  const ru = state.reloadUi;
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  if (!rig.running || !rig.rig) {
+    if (!ru.look) return false;
+    ru.look = null;
+    return true;
+  }
+  if (!force && Date.now() - ru.lookAt < RELOAD_MS) return false;
+  ru.lookAt = Date.now();
+  const answer = await request("GET", "/rig/reload");
+  const was = JSON.stringify(ru.look && ru.look.ok ? ru.look.body : null);
+  ru.look = answer;
+  // The file is what plays (another page reloaded, an Undo put it back): an
+  // edit's Reload is answered, and goes, so it hides nothing (#256's review).
+  if (answer.ok && answer.body.changed === false && answer.body.rig === rig.config_name) dropReloadOffer();
+  return JSON.stringify(answer.ok ? answer.body : null) !== was;
+}
+
+// An edit's answer without its Reload, which is answered or no longer
+// stands; its words stay.
+function dropReloadOffer() {
+  const w = state.wiring;
+  if (w.result && w.result.offer && w.result.offer.op === "reload") {
+    w.result = keepActId(w.result, { ...w.result, offer: null });
+    return true;
+  }
+  return false;
+}
+
 // Every rig's channels, for "start from" and a strip's Load….
 async function refreshAllRigChannels(force = false) {
   const rigs = state.rigs && state.rigs.ok ? state.rigs.body.rigs : [];
@@ -584,6 +626,8 @@ async function poll() {
     if (state.screen === "stage" && health.ok && (health.body.rig || {}).running && (health.body.rig || {}).rig) {
       inBackground("running channels", refreshRunningChannels);
     }
+    // Whether the running rig's file differs from what plays (#142).
+    if (state.screen !== "newrig") inBackground("reload", refreshReload);
     if (state.screen === "rack" && health.ok && (health.body.rig || {}).running && (health.body.rig || {}).rig) {
       inBackground("roles", refreshRoles);
       inBackground("running channels", refreshRunningChannels);
@@ -1214,9 +1258,24 @@ function tilesRegion(el) {
     h("span", { class: "k" }, t.k), h("span", { class: "v" }, t.v), t.s ? h("span", { class: "s" }, t.s) : null)));
 }
 
+// "File changed" (#142), from GET /rig/reload, for the rig drawn now only,
+// and not while the agent is busy (a switch or an edit under way changes
+// the file and the run one after the other).
+function fileChangedNow() {
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  const agent = state.health && state.health.ok ? state.health.body.agent || {} : {};
+  const look = state.reloadUi.look;
+  if (!rig.running || agent.busy || state.reloadUi.pending || !look || !look.ok || look.body.rig !== rig.config_name) return null;
+  return R.fileChanged(look);
+}
+
 function problems() {
   const out = [];
   for (const p of R.agentProblems(state.health)) out.push({ kind: "agent", ...p });
+  // The running rig's file differs from what plays (#142): a state of the
+  // rig, said in a word; Reload is offered in the activity zone.
+  const changed = fileChangedNow();
+  if (changed) out.push({ kind: "file file-changed", title: changed.title, reason: changed.detail });
   if (state.pluginsError) out.push({ kind: "page", title: "Which plugin each processor is", reason: `${state.pluginsError}: every card shows its parameters in a plain list, without profiles` });
   if (state.profilesError) out.push({ kind: "page", title: "Profiles could not be read", reason: `${state.profilesError}; asking again every ${RETRY_MS / 1000} s, and every card shows its parameters in a plain list meanwhile` });
   for (const problem of state.profileProblems) out.push({ kind: "page", title: "Profile", reason: problem });
@@ -1302,6 +1361,9 @@ async function undo(opts = {}) {
     const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
     if (rig.config_name) refreshRigChannels(rig.config_name, true).then(render);
     refreshMidi(true).then(render);
+    // What the edit offered to reload may have been put back: asked again.
+    dropReloadOffer();
+    refreshReload(true).then(render);
     if (state.revert.open) refreshSaves();
   }
 }
@@ -1412,7 +1474,7 @@ function currentBusy() {
   return R.activityBusy({ pending: state.pending, agentBusy: agent.busy || null, saving: !!state.saving,
     undoing: state.undo.pending, amp: state.ampPending, ampAdd: state.ampAdd.pending, loading: state.loadUi.pending ? state.loadUi.pending.channel : false,
     removing: state.removeUi.pending ? state.removeUi.pending.channel : false, writing: !!state.wiring.pending, assigning: !!state.pedalUi.pending,
-    deleting: state.bin.pending });
+    deleting: state.bin.pending, reloading: !!state.reloadUi.pending });
 }
 
 // A chip's tap: that channel's strip (and its tab) on the rack, its level and
@@ -4912,7 +4974,7 @@ function stripsRegion(el, model, unsaved) {
     };
     return [
       live.map((t) => strip(t.name, channelVolume(t, "strip", state.stripUpdaters))),
-      extra.map((c) => strip(c.name, h("p", { class: "sub", title: "Added to the file: restart the rig to play it, and its volume comes with it." }, "Needs restart"), false)),
+      extra.map((c) => strip(c.name, h("p", { class: "sub", title: "Added to the file: Reload plays it (a restart), and its volume comes with it." }, "Needs reload"), false)),
       master ? opens(h("section", { class: "strip strip-master", "data-channel": R.MASTER, "aria-label": "master" },
         opener(R.MASTER),
         h("p", { class: "sub master-says" })), R.MASTER) : null,
@@ -4944,7 +5006,8 @@ function stripsRegion(el, model, unsaved) {
     const loadOpen = lu.channel === name && lu.rig === view.rig;
     const ru = state.removeUi;
     const removeOpen = ru.channel === name && ru.rig === view.rig;
-    const rebuilt = patch(slot, JSON.stringify([view.blocked ? "blocked" : c === undefined ? "reading" : c, editing,
+    // The file's order too: a strip's move up and down (#142) are by it.
+    const rebuilt = patch(slot, JSON.stringify([view.blocked ? "blocked" : c === undefined ? "reading" : c, editing, filed.map((x) => x.name),
       editing ? [w.change, choices] : null, !!w.pending, view.rig || null, !!lu.pending, !!ru.pending,
       loadOpen ? [lu.choice, lu.pending, lu.result, R.sourceChoices(state.rigs, state.rigChannels, { rig: view.rig, channel: name }),
         state.locked, !!state.pending, lu.ampAsk, R.loadWithAmp(state.rigChannels, lu.choice, view.rig)] : null,
@@ -4965,15 +5028,22 @@ function stripsRegion(el, model, unsaved) {
     loadActivity(view);
     removeActivity(view, filed);
   }
-  // What an edit of the file said and the restart that plays it, in the
-  // activity zone (#245), with the chip of the channel it was about.
+  reloadActivity(view);
+  // What an edit of the file said and the reload that plays it (#142), in
+  // the activity zone (#245), with the chip of the channel it was about:
+  // "Live" or "Restart?", as the agent's diff says, and Reload.
   if (w.result) {
     const result = w.result;
+    const reloads = result.ok && result.offer && result.offer.op === "reload";
+    const words = rigFileWords(result);
     actResult({ id: actId(result, "w"), cls: "rigfile-result wiring-result", channel: result.channel || null,
-      ...rigFileWords(result), extra: rigFileHint(result), dismiss: () => { w.result = null; render(); },
+      ...words, said: reloads ? R.reloadWord(result.offer.how) : words.said,
+      extra: rigFileHint(result), dismiss: () => { w.result = null; render(); },
       // While its "Restart?" is asked, the question is the one place for it.
-      offer: result.ok && result.offer && !w.restartConfirm ? { label: result.offer.op === "restart" ? "Restart" : result.offer.label,
-        cls: "rig-act primary offer", disabled: !!state.pending, run: () => { w.restartConfirm = true; render(); } } : null });
+      offer: reloads ? (state.reloadUi.ask || state.reloadUi.pending ? null : { label: "Reload", cls: "rig-act primary offer reload-offer",
+        disabled: !!state.pending, run: () => startReload(view.rig, result.offer.how, result.offer.why, result.channel || null) })
+        : result.ok && result.offer && !w.restartConfirm ? { label: result.offer.op === "restart" ? "Restart" : result.offer.label,
+          cls: "rig-act primary offer", disabled: !!state.pending, run: () => { w.restartConfirm = true; render(); } } : null });
   }
   if (w.restartConfirm) {
     actAsk({ key: "wiring-restart", label: "Channels", q: "Restart?", channel: w.result ? w.result.channel || null : null,
@@ -5004,6 +5074,14 @@ function wiringRow(view, c, choices) {
   if (!editing) {
     row.append(h("button", { class: "rig-act small", disabled: !!w.pending, "aria-label": `Change ${c.name}'s input`,
       onclick: () => { w.editing = c.name; w.change = { input: c.input, width: c.width }; w.result = null; render(); } }, "Change input"));
+    // Up and down in the file (#142): behind the lock, as a plugin's move
+    // is; a channel's place is its track's in Sushi, so its reload restarts.
+    for (const [direction, mark] of [["up", "↑"], ["down", "↓"]]) {
+      row.append(h("button", { class: `rig-act small channel-move move-${direction}`, "aria-label": `Move ${c.name} ${direction}`,
+        title: `Move ${c.name} ${direction} in ${view.rig}'s file`,
+        disabled: !!w.pending || !R.canMoveChannel(view.channels, c.name, direction),
+        onclick: () => moveChannel(view.rig, c.name, direction) }, mark));
+    }
     const lu = state.loadUi;
     const open = lu.channel === c.name && lu.rig === view.rig;
     // While a load waits, its panel stays open and every other stays shut, so
@@ -5282,7 +5360,10 @@ async function rigFileWrite(call, op, what, rig, channel = null) {
   }
   state.wiring.result = { ...R.rigFileOutcome(op, what, answer), channel };
   render();
-  if (answer.ok) refreshRigChannels(rig, true).then(render);
+  if (answer.ok) {
+    refreshRigChannels(rig, true).then(render);
+    refreshReload(true).then(render);  // "File changed" (#142), now rather than at the next look
+  }
   return answer;
 }
 
@@ -5296,6 +5377,100 @@ async function addChannel(rig, el, view) {
 async function changeInput(rig, channel, change) {
   const answer = await rigFileWrite(R.inputCall(rig, channel, change), "input", `${channel}'s input`, rig, channel);
   if (answer && answer.ok) { state.wiring.editing = null; render(); }
+}
+
+async function moveChannel(rig, channel, direction) {
+  const refusal = R.lockRefusal(state.locked, "move_channel");
+  if (refusal) { fail(`Not moved: ${channel}`, { reason: refusal, lock: true }); render(); return; }
+  await rigFileWrite(R.moveChannelCall(rig, channel, direction), "move", `${channel} ${direction}`, rig, channel);
+}
+
+// A reload (#142): Reload pressed, from an edit's answer or "File changed".
+// One the agent's diff says restarts asks "Restart?" first; one it says is
+// live is sent at once, still asked to say first if it would restart
+// (`restart: false`), as a removal is.
+// `channel`: the strip whose edit offered it, whose chip the question and
+// the answer carry.
+function startReload(rig, how, why, channel = null) {
+  const refusal = R.lockRefusal(state.locked, "reload");
+  if (refusal) { fail("Not reloaded", { reason: refusal, lock: true }); render(); return; }
+  const ru = state.reloadUi;
+  ru.result = null;
+  if (how === "restart") {
+    ru.ask = { rig, offer: {}, why: why || [], reason: null, channel };
+    render();
+    return;
+  }
+  reload(rig, {}, channel);
+}
+
+async function reload(rig, asked, channel = null) {
+  const ru = state.reloadUi;
+  if (ru.pending) return;
+  // Locked since it was asked (a Yes, Reload anyway): said, never a tap
+  // that does nothing (#256's review).
+  const refusal = R.lockRefusal(state.locked, "reload");
+  if (refusal) { ru.ask = null; fail("Not reloaded", { reason: refusal, lock: true }); render(); return; }
+  ru.ask = null;
+  ru.pending = { rig };
+  render();
+  const call = R.reloadCall(asked, rig);
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    ru.pending = null;
+  }
+  const said = { ...R.reloadOutcome(answer, asked), rig, channel };
+  if (said.ask === "restart") {
+    ru.ask = { rig, offer: said.offer, why: said.why || [], reason: said.reason, channel };
+    ru.result = null;
+  } else {
+    ru.result = said;
+  }
+  // An edit's Reload is answered: its result stays, without the offer.
+  if (answer.ok) dropReloadOffer();
+  render();
+  if (answer.ok) {
+    refreshRigChannels(rig, true).then(render);
+    refreshMidi(true).then(render);
+  }
+  refreshReload(true).then(render);
+  kick();
+}
+
+// A reload's question, what it said, and "File changed" with its Reload, in
+// the activity zone, for the rig drawn now. "File changed" offers Reload
+// only where no edit's answer offers it already, and not while one is
+// asked or under way.
+function reloadActivity(view) {
+  const ru = state.reloadUi;
+  const rig = view.rig;
+  if (!rig) return;
+  const busy = !!ru.pending || !!state.pending || !!state.wiring.pending;
+  if (ru.ask && ru.ask.rig === rig) {
+    const why = (ru.ask.why || []).map((r) => r.detail).join("; ");
+    const { offer, channel } = ru.ask;
+    actAsk({ key: `reload-restart ${rig}`, label: "Reload", q: "Restart?", channel, pending: busy, cls: "reload-ask", sig: [rig, offer],
+      detail: ru.ask.reason || `Reload ${rig}: it restarts${why ? ` (${why})` : ""}, and the sound cuts out while it does.`,
+      yes: () => reload(rig, { ...offer, restart: true }, channel), no: () => { ru.ask = null; render(); } });
+  }
+  const result = ru.result && ru.result.rig === rig ? ru.result : null;
+  if (result) {
+    actResult({ id: actId(result, "z"), cls: "save-result reload-result", ok: !!result.ok, title: result.title, said: result.said,
+      channel: result.channel || null,
+      detail: [result.ok ? result.text : result.reason, ...result.notes].filter(Boolean).join(" ") || null,
+      offer: result.offer ? { label: result.offer.label, cls: "rig-act offer", disabled: busy, run: () => reload(rig, result.offer, result.channel) } : null,
+      dismiss: () => { if (ru.result === result) ru.result = null; render(); } });
+  }
+  const changed = fileChangedNow();
+  const w = state.wiring;
+  const offered = w.result && w.result.ok && w.result.offer && w.result.offer.op === "reload";
+  if (changed && !offered && !(ru.ask && ru.ask.rig === rig)) {
+    actResult({ id: `file-changed ${rig}`, cls: "file-changed-act", ok: true, title: changed.title, said: changed.word,
+      detail: changed.detail, offer: changed.problem ? null : { label: "Reload", cls: "rig-act primary offer reload-offer",
+        disabled: busy, run: () => startReload(rig, changed.how, changed.why) } });
+  }
 }
 
 async function restartForEdit() {

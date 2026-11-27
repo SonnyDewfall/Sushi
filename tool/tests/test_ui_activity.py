@@ -174,7 +174,7 @@ def test_a_question_is_answered_from_the_bar_for_the_strip_it_was_asked_for(brow
         result = bar.locator(".rigfile-result")
         expect(result.locator("strong")).to_have_text("Changed vocal's input")
         expect(result.locator(".act-chan")).to_have_text("vocal")
-        result.get_by_role("button", name="Restart").click()
+        result.get_by_role("button", name="Reload").click()
         ask = bar.locator(".act-ask")
         expect(ask.locator(".act-chan")).to_have_text("vocal")
         expect(ask.locator(".confirm .q")).to_have_text("Restart?")
@@ -191,8 +191,9 @@ def test_a_question_is_answered_from_the_bar_for_the_strip_it_was_asked_for(brow
         p.evaluate("() => scrollTo(0, document.documentElement.scrollHeight)")
         calls = len(served.lifecycle.calls)
         ask.get_by_role("button", name="Yes").click()
-        until(lambda: ["restart"] in served.lifecycle.calls[calls:])
-        expect(bar.locator(".notice strong")).to_have_text("Restarted electric_board")
+        until(lambda: ["switch", "electric_board"] in served.lifecycle.calls[calls:])
+        expect(bar.locator(".reload-result strong")).to_have_text("Reloaded")
+        expect(bar.locator(".reload-result .act-chan")).to_have_text("vocal")
         expect(p.locator(".strip.asking")).to_have_count(0)
         page.close()
 
@@ -565,8 +566,8 @@ def test_on_a_laptop_the_rigs_name_and_state_are_never_cut(browser, width):
 
 def test_an_open_question_is_the_one_place_for_its_offer(browser):
     """Review finding 12: after an input change the bar showed "Restart?" and
-    the result's own Restart beside it. While it is asked, the result keeps
-    its words and drops the button."""
+    the result's own Restart beside it (its Reload since #142). While it is
+    asked, the result keeps its words and drops the button."""
     with Served(save=True) as served:
         page = Page(browser, served.url + "/#rack", width=1280, height=900)
         p = page.page
@@ -576,12 +577,12 @@ def test_an_open_question_is_the_one_place_for_its_offer(browser):
         p.get_by_label("vocal input").select_option("keys-in")
         p.get_by_role("button", name="Apply").click()
         result = p.locator(".activity .wiring-result")
-        result.get_by_role("button", name="Restart").click()
+        result.get_by_role("button", name="Reload").click()
         expect(p.locator(".activity .act-ask .confirm .q")).to_have_text("Restart?")
         expect(result.locator("strong")).to_have_text("Changed vocal's input")
-        expect(result.get_by_role("button", name="Restart")).to_have_count(0)
+        expect(result.get_by_role("button", name="Reload")).to_have_count(0)
         p.locator(".activity .act-ask").get_by_role("button", name="No", exact=True).click()
-        expect(result.get_by_role("button", name="Restart")).to_be_visible()
+        expect(result.get_by_role("button", name="Reload")).to_be_visible()
         page.close()
 
 
@@ -597,7 +598,7 @@ def test_on_a_phone_a_question_more_and_undo_are_one_row(browser):
         p.get_by_role("button", name="Change board's input").click()
         p.get_by_label("board input").select_option("keys-in")
         p.get_by_role("button", name="Apply").click()
-        p.locator(".activity .wiring-result").get_by_role("button", name="Restart").click()
+        p.locator(".activity .wiring-result").get_by_role("button", name="Reload").click()
         bar = p.locator(".activity")
         expect(bar.locator(".act-more")).to_have_text("+2")
         tops = [bar.locator(sel).bounding_box() for sel in (".act-ask", ".act-more", "button.undo")]

@@ -123,6 +123,19 @@ def test_a_switch_on_an_effect_is_written_with_the_controller_and_plays_now(serv
     assert entry["source"] == "midi" and entry["control"] == "c" and entry["op"] == "bypass"
 
 
+def test_a_pedal_assigned_live_leaves_the_file_what_plays_and_so_does_its_undo(served):
+    """#142's review: a live assignment writes the file and the rig plays it
+    at once, so it records what it wrote; its Undo, live too, records the
+    file put back. Neither is "File changed"."""
+    assert ask(served, "GET", "/rig/reload")[1]["changed"] is False
+    status, body = assign(served, control="c", bypass="board/overdrive")
+    assert status == 200 and body["how"] == "live", body
+    assert ask(served, "GET", "/rig/reload")[1]["changed"] is False
+    status, body = ask(served, "POST", "/undo", {})
+    assert status == 200 and body["said"] == "Undone: pedal c", body
+    assert ask(served, "GET", "/rig/reload")[1]["changed"] is False
+
+
 def test_without_the_re_plan_the_listener_would_still_serve_the_old_bindings(served, monkeypatch):
     """The re-plan is what makes it live: with `_midi_sync` stood down, the
     same write leaves C doing nothing. (Shows the test above is about the

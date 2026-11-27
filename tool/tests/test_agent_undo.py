@@ -250,7 +250,7 @@ def test_an_added_channel_is_undone_and_says_no_restart_is_needed(served):
     status, body = call(served, "POST", "/rigs/electric_board/channels/add",
                         {"name": "keys", "input": "keys-in", "width": "mono"})
     assert status == 200, body
-    assert body["takes_effect"] == "restart"
+    assert body["takes_effect"] == "reload"
     status, body = undo(served)
     assert status == 200, body
     assert body["said"] == "Undone: add channel keys"

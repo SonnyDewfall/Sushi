@@ -2164,7 +2164,7 @@ export function volumeNudged(db, direction, max = VOLUME_MAX_DB, hard = false) {
 // lock: the agent has no performance lock yet (#29), so another client is
 // not held by it.
 const STRUCTURAL = { move: "reordering", add: "adding a plugin", remove: "removing a plugin",
-  load_channel: "loading a channel", remove_channel: "removing a channel" };
+  load_channel: "loading a channel", remove_channel: "removing a channel", move_channel: "moving a channel" };
 
 export function lockRefusal(locked, op) {
   if (locked && op === "amp_model") {
@@ -2181,6 +2181,9 @@ export function lockRefusal(locked, op) {
   // A pedal's assignment (#192): not the rig's structure, but what the board
   // does on it, which a stray tap mid-song must not change.
   if (locked && op === "pedal") return "Locked: assigning a pedal changes what the board does on this rig, which the lock refuses. Unlock to assign it.";
+  // A reload (#142) plays the rig's file as it is now: whatever the file
+  // changed, plugins and channels too, and it may restart the rig.
+  if (locked && op === "reload") return "Locked: a reload plays the rig's file as it is now, which can change the rig's structure or restart it, and the lock refuses it. Unlock to reload.";
   if (!locked || !(op in STRUCTURAL)) return null;
   return `Locked: ${STRUCTURAL[op]} changes the rig's structure, which the lock refuses. Unlock to edit it.`;
 }
@@ -2953,6 +2956,21 @@ export function inputCall(rig, channel, change) {
   return { path: `/rigs/${encodeURIComponent(rig)}/channels/${encodeURIComponent(channel)}/input`, json: change };
 }
 
+// A channel one place up or down in its rig's file (#142).
+export function moveChannelCall(rig, channel, direction) {
+  return { path: `/rigs/${encodeURIComponent(rig)}/channels/${encodeURIComponent(channel)}/move`, json: { direction } };
+}
+
+// Whether channel `name` of the file's channels (`filed`, GET
+// /rigs/<rig>/channels' order) can go `direction`: not the first up, not
+// the last down, nor one the file does not have.
+export function canMoveChannel(filed, name, direction) {
+  const names = (filed || []).map((c) => c.name);
+  const at = names.indexOf(name);
+  if (at < 0) return false;
+  return direction === "up" ? at > 0 : at < names.length - 1;
+}
+
 // What a rig-file answer says: `{ok: true, title, text, commit, offer}` or
 // `{ok: false, title, reason, hint}`, the agent's reason as it gave it and,
 // for a role the machine file lacks, the lines it says to add. `offer` is
@@ -2964,6 +2982,7 @@ export function rigFileOutcome(op, what, answer) {
     new: [`Made ${what}`, `Not made: ${what}`],
     add: [`Added ${what}`, `Not added: ${what}`],
     input: [`Changed ${what}`, `Not changed: ${what}`],
+    move: [`Moved ${what}`, `Not moved: ${what}`],
   }[op];
   if (!answer.ok) return { ok: false, title: titles[1], reason: answer.reason, hint: body.machine_hint || null, code: answer.code || null };
   let text, offer = null;
@@ -2981,7 +3000,15 @@ export function rigFileOutcome(op, what, answer) {
     }
   } else {
     text = `Wrote ${body.file} in place, keeping its comments.`;
-    if (body.running) {
+    if (body.running && body.offer === "reload") {
+      // #142: the rig plays the edit once it is reloaded, live or by a
+      // restart, as the agent's diff says (`how_reload`, `why`).
+      const how = body.how_reload === "live" ? "live" : "restart";
+      const why = (body.why || []).map((r) => r.detail).join("; ");
+      text += how === "live" ? ` ${body.rig} keeps playing as it was until it is reloaded: Reload plays it live.`
+        : ` ${body.rig} keeps playing as it was until it is reloaded: Reload restarts it${why ? ` (${why})` : ""}.`;
+      offer = { op: "reload", name: body.rig, label: "Reload", how, why: body.why || [] };
+    } else if (body.running) {
       const why = (body.why || []).map((r) => r.detail).join("; ");
       text += ` ${body.rig} keeps playing as it was until it restarts${why ? ` (${why})` : ""}.`;
       offer = { op: "restart", name: body.rig, label: `Restart ${body.rig} to play it` };
@@ -3022,7 +3049,7 @@ export function wiringView(health, channelsAnswer, unsaved) {
     // come and go as values change (2026-11-06): the agent refuses an edit
     // of the running rig's file while it saw unsaved work, since the
     // restart that plays an edit would drop it.
-    unsaved: `An edit takes effect at a restart, which reloads the file: with unsaved changes on ${name}, save first.`,
+    unsaved: `An edit plays once ${name} is reloaded from its file, which drops unsaved changes: with any on ${name}, save first.`,
   };
 }
 
@@ -3168,6 +3195,78 @@ export function removeOutcome(channel, answer, asked = {}) {
   const kept = body.kept_before && body.kept_before.id ? " Revert… goes back." : "";
   return { ok: true, title: `Removed ${channel}`, notes, offer: null, ask: null,
     text: `${how} Wrote ${body.file}; not committed.${kept}` };
+}
+
+// ---------------------------------------------------------------- a reload (#142)
+// The running rig's file played as it is now (POST /rig/reload): live where
+// the agent's diff can, by restart where it cannot, asked first. Offered
+// after a rack edit of the running rig's file, and whenever GET
+// /rig/reload says the file differs from what plays ("File changed").
+
+// `restart: false` until "Restart?" was answered Yes, as a removal's.
+export function reloadCall({ discard = false, restart = false } = {}, rig = null) {
+  const json = { restart: !!restart };
+  if (rig) json.rig = rig;
+  if (discard) json.discard = true;
+  return { path: "/rig/reload", json };
+}
+
+// What a reload would do, in a word: "Live", or "Restart?" (asked first).
+export function reloadWord(how) {
+  return how === "live" ? "Live" : "Restart?";
+}
+
+// The reasons a reload restarts, as one line for a title.
+function whyText(why) {
+  return (why || []).map((r) => r.detail).join("; ");
+}
+
+// What GET /rig/reload says, for the status zone and the bar: null while the
+// file is what plays, or not known; else `{title, word, how, why, detail,
+// problem}`. A file that will not compile says so in its own word, and
+// offers no reload (the agent would refuse it).
+export function fileChanged(answer) {
+  const body = answer && answer.ok ? answer.body : null;
+  if (!body || body.changed !== true || !body.rig) return null;
+  if (body.problem) {
+    return { title: "File changed", word: "Won't load", how: null, why: [], problem: body.problem,
+      detail: `${body.file} differs from what ${body.rig} plays, and cannot be reloaded: ${body.problem}` };
+  }
+  const how = body.how === "live" ? "live" : "restart";
+  const why = whyText(body.why);
+  return { title: "File changed", word: reloadWord(how), how, why: body.why || [], problem: null,
+    detail: `${body.file} differs from what ${body.rig} plays: ` + (how === "live" ? "Reload plays it live."
+      : `Reload restarts it${why ? ` (${why})` : ""}.`) + (body.unsaved ? ` ${body.unsaved} unsaved change${body.unsaved === 1 ? "" : "s"}: a reload drops them.` : "") };
+}
+
+// What a reload said: `{ok, title, said, text, offer, ask}`. A refusal a
+// second tap answers offers it: unsaved work (drop it); a reload that
+// restarts Sushi asks (`ask: "restart"`). `asked` is what the call already
+// said yes to, kept by the next.
+export function reloadOutcome(answer, asked = {}) {
+  const body = answer.body || {};
+  if (!answer.ok) {
+    const title = answer.code === "not_switched" || body.code === "not_switched" ? "Not switched" : "Not reloaded";
+    const out = { ok: false, title, said: shortSaid(answer.reason || "", 40, title), text: null, reason: answer.reason,
+      notes: [], offer: null, ask: null };
+    if (body.midi_note) out.notes.push(`${body.midi_note}.`);
+    if (answer.code === "unsaved") out.offer = { ...asked, label: "Reload anyway", discard: true };
+    if (answer.code === "restarts") {
+      out.ask = "restart";
+      out.offer = { ...asked, restart: true };
+      out.why = body.why || [];
+    }
+    return out;
+  }
+  if (body.how === "unchanged") {
+    return { ok: true, title: "Unchanged", said: null, text: `${body.note || "Nothing to reload"}.`, notes: [], offer: null, ask: null };
+  }
+  const notes = [];
+  if (body.discard && body.discard.note) notes.push(`${body.discard.note}.`);
+  const live = body.how === "live";
+  const why = whyText(body.why);
+  return { ok: true, title: "Reloaded", said: live ? "Live" : "Restarted", notes, offer: null, ask: null,
+    text: live ? `Played ${body.file} live, with no restart.` : `Restarted to play ${body.file}${why ? ` (${why})` : ""}.` };
 }
 
 // ---------------------------------------------------------------- the user guide (#167)
@@ -3955,12 +4054,13 @@ export function undoCall(next, { discard = false, restart = false } = {}) {
 // restarts the amp), a pedal's assignment, and what switches the rig back
 // (a revert's, a channel load's or a channel removal's Undo: the rig's
 // structure, as a load and a removal are; an amp added's, #246, which
-// restarts the rig without it).
+// restarts the rig without it; a reload's, #142, which switches the rig back,
+// and a channel move's, which the lock holds as it holds the move).
 // A knob, a fader and a bypass are let through, as they are locked, and so
 // are the rack's file edits that are not behind the lock (a channel, an
 // input, a save, a delete).
 const UNDO_STRUCTURAL = ["move", "add", "remove", "amp_model"];
-const UNDO_LOCKED_ACTS = ["pedal", "load", "revert", "remove_channel", "add_amp"];
+const UNDO_LOCKED_ACTS = ["pedal", "load", "revert", "remove_channel", "add_amp", "reload", "move_channel"];
 
 // The button: `{disabled, title, cant}`. `answer` is GET /undo's (request's
 // shape), `screen` "rack" or "stage": on the stage it is for the live edits.
@@ -4120,7 +4220,8 @@ export function activityRemember(history, gone) {
 // (as the picker said it, `rigPicker`'s busy), the agent's own (another
 // page's, a pedal's), then this page's other writes in flight.
 export function activityBusy({ pending = null, agentBusy = null, saving = false, undoing = false, amp = null,
-  ampAdd = false, loading = false, removing = false, writing = false, assigning = false, deleting = false } = {}) {
+  ampAdd = false, loading = false, removing = false, writing = false, assigning = false, deleting = false,
+  reloading = false } = {}) {
   if (pending) return `${VERBS[pending.op]} ${pending.name || "the rig"}…`;
   if (agentBusy) return `${agentBusy} is running`;
   if (undoing) return "Undoing…";
@@ -4132,6 +4233,7 @@ export function activityBusy({ pending = null, agentBusy = null, saving = false,
   if (writing) return "Writing…";
   if (assigning) return "Assigning…";
   if (deleting) return "Deleting…";
+  if (reloading) return "Reloading…";
   return null;
 }
 // Changes made elsewhere (#242's pushes): the log (GET /live/log) does not
