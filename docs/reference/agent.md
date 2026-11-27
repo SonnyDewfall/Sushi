@@ -1470,14 +1470,27 @@ rig switched into its own file (`_revert_switch`, the live switch, #112).
   `live` or `restart` with `why`; or `problem` and `code` for a file that
   will not compile or whose plugins are not all there. Also `unsaved`, the
   count of live changes no save holds. Read only; the page asks every three
-  seconds, and the agent compiles only when the file, the running config,
-  the state file or the amp's wiring changed since it last looked. **What
-  plays** is the file whose compile the switch would plan nothing for (and
-  whose agent-served pedal bindings and controller are the running
-  config's), so a comment changed by hand is not a change; or the bytes the
-  agent knows play this run: a save over the file as it played writes live
-  values into it and leaves the running config as Sushi loaded it, and a
-  switch into the file makes it what plays.
+  seconds. **What plays is recorded, never guessed**: every config compiled
+  from a rig file carries, in `_meta`, the SHA-256 of the exact bytes
+  compiled and the bytes (`rig.stamp_source`: `source_sha256`,
+  `source_text`), written with the config by whatever made the rig play it
+  (`up`, a restart, every live switch: a revert, a load, a removal, Add amp,
+  a reload, Undo's switches, a pedal's Program Change). The state file names
+  that config, so an agent started later, the CLI and the pedals read the
+  same record. A save over the file while it was what plays, and a pedal
+  assigned live, record the bytes they wrote, in the same held section as
+  the write and before git is asked anything; their Undo puts the record
+  back with the file. A save over a file with an edit the rig does not play
+  (a channel added, not yet reloaded) records nothing, since the edit is
+  still not played. The GET compares the file's hash with the record and
+  compiles only when they differ, to say what a reload would do, keeping
+  that by what the compile and the decision read (the file, the running
+  config, the state file, the amp's last wiring look, the machine file's
+  contents, the plugins and amp models there are, the port table). It
+  records nothing, and takes the amp's last wiring look, as `/health` does.
+  Bytes that differ and compile to what plays (a comment changed by hand)
+  are not a change. A config from before #142 records nothing: then the
+  file is compared by what it compiles to.
 - **`POST /rig/reload {"rig"?, "discard"?, "restart"?}`**: **live** where
   `rigfile.diff` can take the running rig there (a plugin's parameters, its
   bypass, a plugin added, removed or moved), **by restart** where it cannot
@@ -1502,10 +1515,15 @@ rig switched into its own file (`_revert_switch`, the live switch, #112).
   reload, and the rig switched into it (a restart, asked, where the reload
   was one). The rack's edits of the file this run that waited for the
   reload are inside it, not steps of their own, so one press takes back an
-  Add channel and the reload that played it. Where the agent does not know
-  the file as it played (it started after a hand edit, before it had seen
-  the file and the running config agree), the step is `none` and says so,
-  and Revert… goes back to a save.
+  Add channel and the reload that played it. The bytes put back are the
+  ones the running config records, so an agent started after a hand edit
+  undoes it all the same. Folded are only the rack edits made since the file
+  was last what plays: the walk back stops at the edit made over the
+  recorded bytes, or at a step that left the file what plays. A save or a
+  pedal assignment over an edit the rig did not play, met on the way, means
+  putting back what played would lose what it wrote: then (and for a run
+  that records nothing) the step is `none`, says why, and Revert… goes back
+  to a save.
 
 **Channel order is played by Sushi**, so a move is never live. The compiler
 gives each channel its track in the file's order, its engine inputs from the

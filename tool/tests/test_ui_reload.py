@@ -298,3 +298,57 @@ def test_a_channel_moves_up_from_its_strip_and_the_reload_says_restart(browser, 
     expect(button).to_have_attribute("title", "Undo reload electric_board")
     assert page.errors == []
     page.close()
+
+
+def test_an_edits_reload_goes_once_the_file_is_what_plays_again(browser, files_served):
+    """#256's review (finding 8): after another page's reload, or an Undo,
+    the edit's Reload is answered and goes; it never stands over a file that
+    is what plays, nor hides File changed."""
+    page = rack(browser, files_served)
+    p = page.page
+    unlock(p)
+    p.get_by_role("button", name="Move vocal up").click()
+    result = bar(p).locator(".wiring-result")
+    expect(result.get_by_role("button", name="Reload")).to_be_visible()
+    # Another page reloads it (the fake's switch takes the file whole).
+    status = p.evaluate("""async () => (await fetch('/rig/reload', {method: 'POST', headers: {'content-type':
+      'application/json'}, body: JSON.stringify({restart: true})})).status""")
+    assert status == 200
+    expect(result.get_by_role("button", name="Reload")).to_have_count(0)
+    expect(result.locator("strong")).to_have_text("Moved vocal up"), "its words stay"
+    expect(p.locator(".zone-status .problem.file")).to_have_count(0)
+    # Moved back, then undone: the file is what plays again, and nothing offers a reload.
+    p.get_by_role("button", name="Move vocal down").click()
+    expect(bar(p).locator(".wiring-result").get_by_role("button", name="Reload")).to_be_visible()
+    undo = p.locator("button.undo")
+    expect(undo).to_have_attribute("title", "Undo move channel vocal")
+    undo.click()
+    expect(bar(p).locator(".undo-said strong")).to_have_text("Undone: move channel vocal")
+    expect(bar(p).locator(".wiring-result").get_by_role("button", name="Reload")).to_have_count(0)
+    expect(bar(p).locator(".file-changed-act")).to_have_count(0)
+    expect(p.locator(".zone-status .problem.file")).to_have_count(0)
+    assert page.errors == []
+    page.close()
+
+
+def test_a_yes_given_after_the_lock_came_on_is_refused_in_the_bar(browser, files_served):
+    """#256's review (finding 9): "Restart?" asked unlocked, the lock put on,
+    then Yes: said as Locked, not a tap that does nothing."""
+    files_served.lifecycle.how["electric_board"] = ("restart", [{"code": "track_added", "detail": "track 'keys'"}])
+    page = rack(browser, files_served)
+    p = page.page
+    unlock(p)
+    text = path_of(files_served).read_text()
+    path_of(files_served).write_text(text.replace("master:\n", "- name: keys\n  input: keys-in\n  width: mono\n  chain: []\nmaster:\n"))
+    bar(p).locator(".file-changed-act").get_by_role("button", name="Reload").click()
+    expect(bar(p).locator(".reload-ask .q")).to_have_text("Restart?")
+    p.locator("button.lock").click()
+    expect(p.locator("button.lock")).to_have_text("Locked")
+    bar(p).locator(".reload-ask").get_by_role("button", name="Yes").click()
+    refused = bar(p).locator(".act-item.refused:not(.past)")
+    expect(refused.locator("strong")).to_have_text("Not reloaded")
+    expect(refused).to_have_attribute("title", re.compile("^Locked: a reload plays the rig's file"))
+    expect(bar(p).locator(".reload-ask")).to_have_count(0)
+    assert reloads(files_served) == []
+    assert page.errors == []
+    page.close()

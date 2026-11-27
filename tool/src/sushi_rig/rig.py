@@ -298,12 +298,16 @@ def _compile_named_rig(
 def _compile_named_rig_unguarded(
     name: str, root: Path, path: Path, machine_file: Path | None,
 ) -> tuple[Path, Path, Any, Any, dict[str, Any]]:
-    from .rigfile import RigFileError, load_rig
+    import yaml
+
+    from .rigfile import RigFileError, parse_rig
 
     if not path.is_file():
         raise RigError(f"no such rig: {path}")
+    # Read once: the bytes compiled are the bytes recorded (`stamp_source`).
+    data = path.read_bytes()
     try:
-        loaded = load_rig(path)
+        loaded = parse_rig(yaml.safe_load(data.decode("utf-8")))
     except RigFileError as exc:
         raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
     machine_file, machine, spec, compiled = _compile_loaded(loaded, path.name, root, machine_file)
@@ -312,7 +316,56 @@ def _compile_named_rig_unguarded(
     meta = compiled.setdefault("_meta", {})
     if isinstance(meta, dict):
         meta["source"] = f"config/rigs/{name}.yaml"
+    stamp_source(compiled, data)
     return path, machine_file, machine, spec, compiled
+
+
+# What a run plays, as the bytes of its rig file (#142): every config
+# compiled from a rig file carries the SHA-256 of the exact bytes compiled,
+# and those bytes, in `_meta`, which Sushi ignores. They are written with
+# the config, in the same write, by whatever makes the rig play it (`up`, a
+# restart, a live switch of any kind), and the state file names that
+# config, so the agent across its restarts, the CLI and a pedal's switch all
+# read the same answer. A save that makes the file what plays stamps its
+# bytes the same way (the agent's `_stamp_playing`). The agent compares a
+# file's hash with it ("File changed"); a reload's Undo puts the bytes back.
+SOURCE_SHA = "source_sha256"
+SOURCE_TEXT = "source_text"
+
+
+def source_digest(data: bytes) -> str:
+    """The SHA-256 a config records of the rig file bytes it was compiled from."""
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def stamp_source(config: dict[str, Any], data: bytes | None) -> dict[str, Any]:
+    """`config` saying it plays rig file bytes `data` (None: no file does,
+    so neither is recorded). In place, and returned."""
+    meta = config.get("_meta")
+    if not isinstance(meta, dict):
+        meta = config["_meta"] = {}
+    meta.pop(SOURCE_SHA, None)
+    meta.pop(SOURCE_TEXT, None)
+    if data is not None:
+        meta[SOURCE_SHA] = source_digest(data)
+        meta[SOURCE_TEXT] = data.decode("utf-8")
+    return config
+
+
+def playing_source(config: Any) -> tuple[str | None, bytes | None]:
+    """`(sha256, bytes)` of the rig file a running config says it plays,
+    each None when not recorded (a config compiled before #142, or one no
+    file is, as a save-as that waits for a restart). The bytes only when
+    they hash to the recorded SHA."""
+    meta = config.get("_meta") if isinstance(config, dict) else None
+    sha = meta.get(SOURCE_SHA) if isinstance(meta, dict) else None
+    if not isinstance(sha, str):
+        return None, None
+    text = meta.get(SOURCE_TEXT)
+    data = text.encode("utf-8") if isinstance(text, str) else None
+    return sha, data if data is not None and source_digest(data) == sha else None
 
 
 def _compile_loaded(

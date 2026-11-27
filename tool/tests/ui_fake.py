@@ -688,10 +688,13 @@ class UiSave:
         """The running rig's config, as `up --rig` compiles its file now."""
         import yaml
 
-        from sushi_rig.rig import compile_rig_draft
+        from sushi_rig.rig import compile_rig_draft, stamp_source
 
         path = self.root / self.state["rig"]
-        config = compile_rig_draft(yaml.safe_load(path.read_text()), self.root, Path(self.state["machine"]))
+        data = path.read_bytes()
+        config = compile_rig_draft(yaml.safe_load(data.decode("utf-8")), self.root, Path(self.state["machine"]))
+        # The bytes compiled, recorded as `up --rig` records them (#142).
+        stamp_source(config, data)
         if self.pedals:
             self.write_config(self.state["config_name"], config)
         return config

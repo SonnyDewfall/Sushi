@@ -7944,3 +7944,33 @@ on the rig**: shown against `test_agent.RigLive` with the agent's real
 switch, and the UI's fake. The pedal assignment that waits for a restart
 still offers Restart; the file differs from what plays then, so File
 changed offers Reload beside it. *(2026-11-27)*
+
+**What plays is recorded where it starts to play: PR #256's review (#142).**
+The first build guessed what plays in the agent's memory, from its own
+polls: a save made before any look, a save undone and saved again, the
+second of two saves undone, and a poll landing mid-save each said File
+changed wrongly or not at all, and a reload's Undo, after a hand edit no
+look had seen, put back the hand-edited file the rig never played. Now
+every config compiled from a rig file carries the SHA-256 and the bytes it
+was compiled from (`rig.stamp_source`, `_meta.source_sha256` and
+`source_text`), so whatever makes the rig play a file (`up`, a restart, any
+live switch, a pedal's Program Change) records it in the same write as the
+config Sushi loads, under the lock that plays it, and the state file's
+config carries it across an agent restart, to the CLI and the pedals. Kept
+in the config rather than beside it in the state file: the config is the
+one thing every play path already writes from the very bytes it compiled,
+so no path needs a step of its own to keep the two in step. A save over the
+file while it was what plays, and a pedal assigned live, stamp what they
+wrote inside the write's own held section, before git; their Undo stamps
+back. `GET /rig/reload` only compares hashes, compiling just to say Live
+or Restart?, cached by the file, the configs, the machine file's contents,
+the plugins and amp models there are and the port table (it was the
+machine file's path), and takes the amp's last wiring look as /health does
+(it forced a `pw-link -l` per poll while the amp was unwired). A reload's
+Undo puts back the recorded bytes, folding only rack edits made since the
+file last was what plays, and says it cannot be undone past a save or a
+pedal over an unplayed edit, whose writing it would otherwise lose. On the
+page, an edit's Reload goes once the file is what plays again or on Undo,
+and a Yes given after the lock came on says Locked. Each repro is a test
+(`test_agent_reload.py`, `test_agent_midi_assign.py`, `test_ui_reload.py`).
+Not run on the rig. *(2026-11-27)*

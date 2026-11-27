@@ -329,3 +329,195 @@ def test_a_move_of_another_rig_waits_for_its_next_start(root):
     assert status == 200, body
     assert (body["running"], body["takes_effect"], body["offer"]) == (False, "next start", None)
     assert channel_names(path) == ["vocal", "guitar"]
+
+
+# --------------------------------------------------------------------------- #
+# What plays is recorded where it starts to play (PR #256's review)
+# --------------------------------------------------------------------------- #
+
+def tweak(agent, fake, processor, value):
+    parameter = next(iter(fake.values[processor]))
+    status, body = call(agent, "POST", "/live/parameter",
+                        json={"processor": processor, "parameter": parameter, "value": value})
+    assert status == 200, body
+
+
+def undo_newest(agent, **body):
+    status, state = call(agent, "GET", "/undo")
+    assert state["next"], state
+    return call(agent, "POST", "/undo", json={"seq": state["next"]["seq"], **body})
+
+
+def test_the_config_that_plays_records_the_bytes_it_was_compiled_from(root):
+    from sushi_rig.rig import playing_source, source_digest
+
+    agent, world, fake, runner = make_agent(root)
+    data = rig_file(root, "guitar_vocal").read_bytes()
+    sha, recorded = playing_source(world.configs[world.state["config"]])
+    assert sha == source_digest(data) and recorded == data
+
+
+def test_a_save_with_no_look_before_it_is_what_plays(root):
+    """Review finding 2: the save itself records what it wrote."""
+    agent, world, fake, runner = make_agent(root)
+    tweak(agent, fake, "guitar_eq", 0.1)
+    assert call(agent, "POST", "/rig/save", json={})[0] == 200
+    assert looked(agent)["changed"] is False
+
+
+def test_a_save_undone_takes_the_record_back_with_the_file(root):
+    """Review findings 1 and 4: undo a save and save again, with no look
+    between; the work is unsaved again (the count says it), the file what
+    played before the save."""
+    agent, world, fake, runner = make_agent(root)
+    tweak(agent, fake, "guitar_eq", 0.1)
+    assert call(agent, "POST", "/rig/save", json={})[0] == 200
+    status, body = undo_newest(agent)
+    assert status == 200 and body["said"] == "Undone: save guitar_vocal", body
+    said = looked(agent)
+    assert said["changed"] is False and said["unsaved"] == 1, said
+    tweak(agent, fake, "guitar_eq", 0.3)
+    assert call(agent, "POST", "/rig/save", json={})[0] == 200
+    said = looked(agent)
+    assert said["changed"] is False and said["unsaved"] == 0, said
+
+
+def test_the_second_of_two_saves_undone_leaves_the_first_as_what_plays(root):
+    """Review finding 3."""
+    agent, world, fake, runner = make_agent(root)
+    path = rig_file(root, "guitar_vocal")
+    tweak(agent, fake, "guitar_eq", 0.1)
+    assert call(agent, "POST", "/rig/save", json={})[0] == 200
+    first = path.read_bytes()
+    tweak(agent, fake, "guitar_eq", 0.2)
+    assert call(agent, "POST", "/rig/save", json={})[0] == 200
+    status, body = undo_newest(agent)
+    assert status == 200, body
+    assert path.read_bytes() == first
+    assert looked(agent)["changed"] is False
+
+
+def test_a_look_landing_mid_save_never_sees_the_saved_file_as_changed(root):
+    """Review finding 7: the record is written in the save's own thread,
+    before git is asked anything, so a poll between the write and the save's
+    end sees what the save made."""
+    import asyncio
+
+    agent, world, fake, runner = make_agent(root)
+    path = rig_file(root, "guitar_vocal")
+    seen = []
+    real = agent._save_write
+
+    async def watched(*args, **kwargs):
+        out = await real(*args, **kwargs)
+        run = await agent._rigfile_run(look=False)
+        seen.append((await asyncio.to_thread(agent._file_state, run, path))["changed"])
+        return out
+
+    agent._save_write = watched
+    tweak(agent, fake, "guitar_eq", 0.1)
+    assert call(agent, "POST", "/rig/save", json={})[0] == 200
+    assert seen == [False]
+    assert looked(agent)["changed"] is False
+
+
+def test_a_reload_after_a_save_over_an_unplayed_edit_cannot_be_undone(root):
+    """Review finding 4's fold: a move, a knob, a save (which writes the
+    move and the knob: not what plays, so not recorded), then a reload.
+    Putting back what played before would lose what the save wrote, so the
+    reload's step says it cannot be undone, and the save's stays."""
+    agent, world, fake, runner = make_agent(root)
+    path = rig_file(root, "guitar_vocal")
+    assert call(agent, "POST", "/rigs/guitar_vocal/channels/vocal/move", json={"direction": "up"})[0] == 200
+    tweak(agent, fake, "guitar_eq", 0.1)
+    assert call(agent, "POST", "/rig/save", json={})[0] == 200
+    saved = path.read_bytes()
+    assert looked(agent)["changed"] is True, "the move is still not played"
+    status, body = reload(agent, restart=True)
+    assert status == 200 and body["how"] == "restart", body
+    status, state = call(agent, "GET", "/undo")
+    assert state["next"]["label"] == "reload guitar_vocal" and state["next"]["can"] is False, state
+    assert "written since it was last what guitar_vocal played" in state["next"]["why"]
+    status, body = undo_newest(agent, restart=True)
+    assert status == 409 and body["code"] == "cant_undo", body
+    assert path.read_bytes() == saved, "nothing put back"
+    assert call(agent, "GET", "/undo")[1]["next"]["label"] == "save guitar_vocal"
+
+
+def test_a_hand_edit_before_the_agent_looked_is_not_what_a_reloads_undo_puts_back(root):
+    """Review finding 4's other half: a hand edit no look saw, a move, a
+    reload. Its Undo puts back the bytes the rig was compiled from, not the
+    hand-edited file that never played, and switches the rig into them."""
+    agent, world, fake, runner = make_agent(root)
+    path = rig_file(root, "guitar_vocal")
+    before = path.read_bytes()
+    turned = next(iter(fake.values["guitar_overdrive"]))
+    hand_edit(path, turned, 0.25)
+    assert call(agent, "POST", "/rigs/guitar_vocal/channels/vocal/move", json={"direction": "up"})[0] == 200
+    assert reload(agent, restart=True)[0] == 200
+    status, body = undo_newest(agent, restart=True)
+    assert status == 200 and body["how"] == "switched", body
+    assert path.read_bytes() == before
+    assert channel_names(path) == ["guitar", "vocal"]
+    assert call(agent, "GET", "/undo")[1]["next"] is None, "the move was in the reload's step"
+    # (What the rig then plays is the switch's: the fake runner's `up` starts
+    # nothing, so it is not read off the fake here.)
+
+
+def test_another_agent_over_the_same_run_knows_what_plays(root):
+    """Persisted with the running config: an agent started after a hand
+    edit says File changed, and its reload's Undo puts back what played."""
+    from sushi_rig import midi_listener
+    from sushi_rig.agent import Agent
+
+    agent, world, fake, runner = make_agent(root)
+    path = rig_file(root, "guitar_vocal")
+    before = path.read_bytes()
+    turned = next(iter(fake.values["guitar_overdrive"]))
+    hand_edit(path, turned, 0.25)
+    later = Agent(root=root, describe=world.described, switching=world.switching(), live=fake, run=runner,
+                  midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("no pedals here")))
+    said = looked(later)
+    assert said["changed"] is True and said["how"] == "live", said
+    status, body = reload(later, restart=False)
+    assert status == 200 and body["how"] == "live", body
+    status, body = undo_newest(later, restart=False)
+    assert status == 200 and body["how"] == "switched", body
+    assert path.read_bytes() == before
+
+
+def test_a_machine_file_fixed_since_the_last_look_is_looked_at_again(root):
+    """Review finding 5: the look is kept by the machine file's contents,
+    not its path."""
+    agent, world, fake, runner = make_agent(root)
+    path = rig_file(root, "guitar_vocal")
+    path.write_text(path.read_text().replace("input: vocal-in", "input: keys-in"))
+    said = looked(agent)
+    assert said["code"] == "rig_problem" and "keys-in" in said["problem"], said
+    machine = world.machine
+    text = machine.read_text()
+    vocal = text[text.index("  vocal-in:"):]
+    block = vocal[:vocal.index("\n  ", 3) if "\n  #" not in vocal[:200] else vocal.index("\n  #")]
+    machine.write_text(text.replace("roles:\n", "roles:\n" + block.replace("vocal-in:", "keys-in:", 1) + "\n", 1))
+    said = looked(agent)
+    assert said["problem"] is None and said["changed"] is True and said["how"] == "restart", said
+
+
+def test_the_look_takes_the_amps_last_wiring_and_the_reload_a_fresh_one(root):
+    """Review finding 6: the page asks every three seconds, and a fresh look
+    at an unwired amp is a `pw-link -l` each time: the GET takes the last
+    look, as /health does; the POST, which decides a restart, looks again."""
+    agent, world, fake, runner = make_agent(root)
+    asked = []
+
+    async def wiring(described, *, fresh=False, wait=True):
+        asked.append({"fresh": fresh, "wait": wait})
+        return {"wired": False, "problems": ["not linked"]}
+
+    agent._amp_wiring = wiring
+    looked(agent)
+    looked(agent)
+    assert asked == [{"fresh": False, "wait": False}] * 2
+    asked.clear()
+    reload(agent, restart=False)
+    assert {"fresh": True, "wait": True} in asked, asked

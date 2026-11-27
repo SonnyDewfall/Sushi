@@ -545,6 +545,7 @@ import dataclasses
 import functools
 import json
 import math
+import os
 import re
 import sys
 import threading
@@ -2105,10 +2106,9 @@ class Agent:
         # newest last; see history.py and the "One Undo" block.
         self.history = history_module.History(clock=clock)
         self._undo_lock = asyncio.Lock()  # one Undo at a time
-        # The running rig's file as it plays (#142): the bytes last known to
-        # be what the rig runs, for a reload's Undo and for "File changed"
-        # after a save; and the last look at the file (`_file_state`).
-        self._played: dict[str, Any] | None = None
+        # The last look at the running rig's file against what plays (#142,
+        # `_file_state`): a cache of what a reload would do, never a record
+        # of what plays, which the running config holds (`rig.stamp_source`).
         self._looked: tuple[Any, dict[str, Any]] | None = None
         # Sushi calls run here (see LIVE_WORKERS), not in the loop's executor.
         self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -5170,8 +5170,11 @@ class Agent:
                                 "written and the rig is as it was"))
             return answer
         label = "pedal" if change["control"] == "pedal" else f"pedal {change['control']}"  # not "pedal pedal"
+        # Played live: the file is what plays, where it was before (#142).
+        played = (None if done["not_live"] or outcome.get("stale")
+                  else await asyncio.to_thread(self._stamp_after_write, state, done["before"], done["after"]))
         self._history_file(path, done["before"], done["after"], label, run=run,
-                           apply="restart" if done["not_live"] else "bindings", act="pedal")
+                           apply="restart" if done["not_live"] else "bindings", act="pedal", played=played)
         if not done["not_live"]:
             await self._midi_sync()
             how = ("Sushi took the pedal's mapping live (not yet heard on a real Sushi: if it does not answer, "
@@ -6550,7 +6553,7 @@ class Agent:
                     edits = live_edits(self._chain_log, since=state.get("started_at"))
                     kept: dict[str, Any] = {}
                     out, library, written = await self._save_write(
-                        request, target, source, captured, model, parameters, edits, kept)
+                        request, target, source, captured, model, parameters, edits, kept, state=state)
                     created = out != source
                     shown, was = self._save_shown(out), self._save_shown(source)
                     note = (f"{shown} is a new file, written from nothing: the comments stay in {was}"
@@ -6596,13 +6599,7 @@ class Agent:
                     else:
                         self._history_file(out, kept.get("before"), written, f"save {out.stem}", act="save",
                                            run={"state": state}, save_entry=answer["entry"],
-                                           chain_before=chain_before)
-                        # A save over the file as it played is still what
-                        # plays, though the running config says otherwise
-                        # (#142): what was written is, not "File changed".
-                        played = self._played_bytes(out, state)
-                        if played is not None and played == kept.get("before"):
-                            self._note_played(out, written, state)
+                                           chain_before=chain_before, played=kept.get("played"))
                     # Kept only now that the save has wholly happened, so a
                     # revert point is always a save that was logged.
                     answer["snapshot"] = await self._keep_snapshot(
@@ -6668,13 +6665,18 @@ class Agent:
     async def _save_write(
         self, request, target: Path, source: Path, captured: dict[str, Any],
         model: str | None, parameters: dict[str, float] | None, edits: dict[str, Any] | None = None,
-        kept: dict[str, Any] | None = None,
+        kept: dict[str, Any] | None = None, state: dict[str, Any] | None = None,
     ) -> tuple[Path, dict[str, Any] | None, bytes]:
         """`save_rig`, then `take.library_state` and the file's own git state
         (`save.file_git_state`), off the loop, within `SAVE_TIMEOUT`; refusals as `save_route` says. The thread cannot be
         stopped past the deadline (see `LIVE_TIMEOUT`), so a 504 says the
         file may still be written. Also the bytes written, read back at once
-        in the same thread, for the save's snapshot (saves.py)."""
+        in the same thread, for the save's snapshot (saves.py). A save over
+        the running rig's own file (`state`, the run) that was what plays
+        makes it what plays again: the running config records the bytes
+        written (`_stamp_after_write`, #142), in the same thread, before git
+        is asked anything, and `kept["played"]` says what it recorded
+        before, for the save's Undo."""
         from .save import SaveError, file_git_state, save_rig
         from .take import library_state
 
@@ -6686,6 +6688,8 @@ class Agent:
             out = save_rig(target.stem, source, amp_model=model, amp_parameters=parameters, state=captured,
                            edits=edits)
             written = out.read_bytes()
+            if state is not None and kept is not None and out == source:
+                kept["played"] = self._stamp_after_write(state, kept.get("before"), written)
             library = library_state(root)
             if library is not None:
                 # `dirty` is the whole checkout's; what the file itself is,
@@ -6805,7 +6809,7 @@ class Agent:
         app.router.add_post("/rigs/{name}/channels/{channel}/input", self.channel_input_route)
         app.router.add_post("/rigs/{name}/channels/{channel}/move", self.channel_move_route)
 
-    async def _rigfile_run(self) -> dict[str, Any]:
+    async def _rigfile_run(self, *, look: bool = True) -> dict[str, Any]:
         """What the rig files routes need of the run, read now: `described`,
         the state file, the running rig's file (None unless a rig of channels
         is up) and the run's machine file -- the one the running rig was
@@ -6825,7 +6829,9 @@ class Agent:
             machine_file = root / machine_file
         # Whether the amp is wired (#246), for a switch into the edited file
         # to ask "Restart?" over (`_would_restart`), as the switch decides.
-        wiring = await self._amp_wiring_decided(described)
+        # `look` False (GET /rig/reload, polled): the last look, as /health
+        # takes it, never a fresh `pw-link -l` per poll while it says unwired.
+        wiring = await (self._amp_wiring_decided(described) if look else self._amp_wiring(described, wait=False))
         return {"described": described, "state": state, "running": running, "machine": machine_file,
                 "wiring": wiring}
 
@@ -7288,9 +7294,6 @@ class Agent:
                 refusal = rigfile_refusal(run["state"], self.log)
                 if refusal is not None:
                     raise RigFileRefused(*refusal)
-                # The file as it plays, looked at before it is written: what
-                # a reload's Undo puts back (`_file_state` keeps it, #142).
-                await asyncio.to_thread(self._file_state, run, path)
                 done = await self._rigfile_thread(request, path, work)
         else:
             done = await self._rigfile_thread(request, path, work)
@@ -7839,7 +7842,6 @@ class Agent:
             # restart's own failure, which is said within it.
             self._remember(command or ["revert", name], reason, kind="lifecycle")
             return {**out, "ok": False, "code": "not_switched", "reason": reason}
-        await self._note_switched(name)  # the file is what plays now (#142)
         return out
 
     # ======================================================================= #
@@ -8182,8 +8184,15 @@ class Agent:
                     await self._rigfile_thread(request, path, put_back)
                     if apply == "none" and entry.get("save_entry") is not None and same_run:
                         self._withdraw_save(entry)
+                    if apply == "none" and same_run:
+                        # A save that recorded what it wrote as what plays
+                        # (#142): the record goes back with the file.
+                        await asyncio.to_thread(self._restamp, entry, run["state"])
                 if apply == "bindings":
-                    return await self._undo_bindings(request, path, run)
+                    undone = await self._undo_bindings(request, path, run)
+                    if undone.get("how") == "live":
+                        await asyncio.to_thread(self._restamp, entry, run["state"])
+                    return undone
                 if apply == "restart" and not same_run:
                     return {"how": "restart", "offer": "restart", "rig": name}
                 return {"how": "file", "rig": name}
@@ -8819,18 +8828,20 @@ class Agent:
     # with nothing written: the running rig switched into its own file as it
     # is now (`_revert_switch`, the live switch, #112), live where
     # `rigfile.diff` can take it there, by restart where it cannot. Outside
-    # it the agent calls in at `app` (`_reload_routes`), `_write_edit` (the
-    # file looked at before a rack edit writes it), `_save_held` (a save
-    # over the file as it played is still what plays) and `_revert_switch`
-    # (a switch into the file makes it what plays: `_note_switched`).
+    # it the agent calls in at `app` (`_reload_routes`), `_save_held` and the
+    # pedal assignment (`_stamp_after_write`: a write that leaves the file
+    # what plays), and the Undo of those (`_restamp`).
     #
-    # What plays is known two ways. The file compiles to the config the rig
-    # runs (`rigfile.diff` of the two plans nothing, and the agent's own
-    # bindings agree): it is what plays, and its bytes are kept
-    # (`_note_played`) for the next reload's Undo. Or its bytes are the ones
-    # kept for this run: a save writes live values into the file and leaves
-    # the running config as the rig loaded it, so the file is what plays
-    # though the config disagrees. Anything else is "File changed".
+    # What plays is recorded, never guessed: every config compiled from a
+    # rig file carries the SHA-256 of the exact bytes compiled, and the
+    # bytes (`rig.stamp_source`), written with the config by whatever made
+    # the rig play it (`up`, a restart, any live switch), under the lock
+    # that plays it. A save over a file that was what plays, and a pedal
+    # assigned live, stamp the bytes they wrote the same way, before any git
+    # step. `GET /rig/reload` only compares the file's hash with the
+    # recorded one, and compiles only when they differ, to say what a reload
+    # would do. A config compiled before #142 records none: then the file is
+    # compared by compiling it (`_plays_as`), and nothing is recorded.
     #
     # Locks as a revert's: lifecycle (`busy: "reload"`), then live, held
     # while unsaved work is checked and the restart is asked about.
@@ -8839,38 +8850,52 @@ class Agent:
         app.router.add_get("/rig/reload", self.reload_state_route)
         app.router.add_post("/rig/reload", self.reload_route)
 
-    @staticmethod
-    def _run_of(state: dict[str, Any]) -> tuple:
-        """Which run a state file is of, as `run_changed` tells two apart."""
-        return tuple(state.get(key) for key in ("started_at", "config", "rig"))
+    def _stamp_after_write(self, state: dict[str, Any], before: bytes | None,
+                           after: bytes) -> dict[str, Any] | None:
+        """A write of the running rig's file that leaves it what plays (a save,
+        a pedal assigned live): when the file before it was what plays (its
+        hash the recorded one), the running config records `after` instead,
+        and what it recorded before is returned (`{"before": bytes, "after":
+        sha}`, for the write's Undo, `_restamp`). None when the file before
+        was not what plays, or no record was there: a save over a file with
+        an edit the rig does not play keeps that edit, so the file still is
+        not what plays. Off the loop, under the lock the write holds."""
+        from .rig import playing_source, source_digest, stamp_source
 
-    def _note_played(self, path: Path, data: bytes, state: dict[str, Any]) -> None:
-        """`data` is rig file `path` as the run `state` is of plays it."""
-        self._played = {"path": str(Path(path).resolve()), "run": self._run_of(state), "bytes": data}
+        try:
+            now = self.switching.read_state() or state
+            if any(now.get(k) != state.get(k) for k in ("started_at", "rig")):
+                return None  # restarted or switched since: that run's config is not this one's to stamp
+            running = self.switching.read_config(now.get("config"))
+        except Exception:  # noqa: BLE001 -- nothing recorded to follow
+            return None
+        state = now
+        sha, recorded = playing_source(running)
+        if sha is None or recorded is None or before is None or source_digest(before) != sha:
+            return None
+        path = rig_file_of(state, self._midi_root())
+        if self._record_running(path, state, {}, stamp_source(copy.deepcopy(running), after)) is not None:
+            return None
+        return {"before": recorded, "after": source_digest(after)}
 
-    def _played_bytes(self, path: Path, state: dict[str, Any]) -> bytes | None:
-        """The bytes of `path` known to be what the run `state` is of plays,
-        or None when not known."""
-        played = self._played
-        if played and played["path"] == str(Path(path).resolve()) and played["run"] == self._run_of(state):
-            return played["bytes"]
-        return None
+    def _restamp(self, entry: dict[str, Any], state: dict[str, Any]) -> None:
+        """The Undo of a write that stamped what plays (`_stamp_after_write`):
+        the file is back as it was, and so is the record, while the running
+        config still records what the write wrote. Off the loop."""
+        from .rig import playing_source, stamp_source
 
-    async def _note_switched(self, name: str) -> None:
-        """A switch into rig `name` has wholly happened: its file is what
-        plays now, in the run the state file is of now (a restart is
-        another). Off the loop for the reads."""
-        def look() -> None:
-            state = self.switching.read_state() or {}
-            if not isinstance(state.get("rig"), str) or Path(state["rig"]).stem != name:
-                return
-            path = rig_file_of(state, self._midi_root())
-            try:
-                self._note_played(path, path.read_bytes(), state)
-            except OSError:
-                pass
-
-        await asyncio.to_thread(look)
+        played = entry.get("played")
+        if not played:
+            return
+        try:
+            state = self.switching.read_state() or state
+            running = self.switching.read_config(state.get("config"))
+        except Exception:  # noqa: BLE001 -- nothing recorded to follow
+            return
+        if playing_source(running)[0] != played["after"]:
+            return
+        path = rig_file_of(state, self._midi_root())
+        self._record_running(path, state, {}, stamp_source(copy.deepcopy(running), played["before"]))
 
     def _plays_as(self, running: dict[str, Any], compiled: dict[str, Any], state: dict[str, Any]) -> bool:
         """Whether `compiled` is what the running config `running` plays: the
@@ -8913,51 +8938,85 @@ class Agent:
         running config cannot be read), and for a change `how` a reload
         would play it (`live`, `restart` with `why`, as `_would_restart`
         decides) or, for a file that will not compile, `problem` and its
-        `code`. Also `data` (the bytes looked at) and `compiled`. Kept for
-        as long as the file, the running config, the state file and the
-        amp's wiring are what they were (`_looked`), so a page asking every
-        few seconds compiles once per change. Off the loop."""
+        `code`. Also `data` (the bytes looked at), `compiled`, and
+        `recorded`, the bytes the running config says it plays (None when not
+        known). Whether it changed is the file's hash against the one the
+        running config records (`rig.playing_source`); what a reload would
+        do is compiled only when they differ, and kept (`_looked`) for as
+        long as everything the compile and the decision read is the same:
+        the file, the running config, the state file, the amp's wiring, the
+        machine file's contents, the plugins and the amp's models there are,
+        and the port table. Records nothing. Off the loop."""
         import hashlib
+
+        from .paths import checkout_root
+        from .rig import playing_source
 
         state = run["state"]
         try:
             data = path.read_bytes()
         except OSError as exc:
-            return {"changed": None, "data": None, "how": None, "why": [], "code": "unreadable",
+            return {"changed": None, "data": None, "compiled": None, "recorded": None, "how": None, "why": [],
+                    "code": "unreadable",
                     "problem": f"{path.name} could not be read: {type(exc).__name__}: {exc}"}
         running: dict[str, Any] | None
         try:
             running = self.switching.read_config(run["described"].get("config"))
         except Exception:  # noqa: BLE001 -- not known: said as that
             running = None
+        sha, recorded = playing_source(running)
+        digest = history_module.digest(data)
+        out: dict[str, Any] = {"data": data, "compiled": None, "recorded": recorded, "how": None, "why": [],
+                               "problem": None, "code": None}
+        if sha is not None and sha == digest:
+            out["changed"] = False  # the bytes that play: nothing to compile
+            return out
+        if running is None:
+            out.update(changed=None, problem="the running rig's compiled config could not be read", code="unreadable")
+            return out
 
         def seal(value: Any) -> str:
             return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
-        key = (str(path.resolve()), history_module.digest(data), seal(running), seal(state), seal(run.get("wiring")),
-               str(run.get("machine")))
+        def contents(where: Any) -> str | None:
+            try:
+                return hashlib.sha256(Path(where).read_bytes()).hexdigest()
+            except (OSError, TypeError):
+                return None
+
+        def listing(where: Any) -> list[str] | None:
+            # What is there, by name: a plugin bundle or an amp model put in,
+            # or taken out, since the last look (a top-level listing each).
+            try:
+                return sorted(os.listdir(where))
+            except (OSError, TypeError):
+                return None
+
+        root = self._midi_root()
+        try:
+            plugins = self.switching.plugins(root)
+        except Exception:  # noqa: BLE001 -- not known: a key that cannot match a known one
+            plugins = None
+        key = (str(path.resolve()), digest, sha, seal(running), seal(state), seal(run.get("wiring")),
+               contents(run.get("machine")), seal(listing(plugins)),
+               seal(listing(Path(self._amp_root()) / "amp" / "models")), contents(checkout_root() / stereo.PORTS_FILE))
         looked = self._looked
         if looked is not None and looked[0] == key:
-            return looked[1]
-        out: dict[str, Any] = {"data": data, "compiled": None, "how": None, "why": [], "problem": None, "code": None}
-        played = self._played_bytes(path, state)
-        if played is not None and played == data:
-            out["changed"] = False  # what plays, kept: a save wrote it, or a switch played it
-        elif running is None:
-            out.update(changed=None, problem="the running rig's compiled config could not be read", code="unreadable")
+            return {**looked[1], "data": data, "recorded": recorded}
+        try:
+            compiled = self._reload_compile(data, run, path.stem)
+        except RigFileRefused as exc:
+            out.update(changed=True, problem=" ".join(str(exc).split()), code=exc.code)
         else:
-            try:
-                compiled = self._reload_compile(data, run, path.stem)
-            except RigFileRefused as exc:
-                out.update(changed=True, problem=" ".join(str(exc).split()), code=exc.code)
+            out["compiled"] = compiled
+            if self._plays_as(running, compiled, state):
+                # Other bytes that play the same (a comment changed by hand),
+                # or a config compiled before #142, which records none: not
+                # a change to the sound, and nothing is recorded for it.
+                out["changed"] = False
             else:
-                out["compiled"] = compiled
-                if self._plays_as(running, compiled, state):
-                    out["changed"] = False
-                    self._note_played(path, data, state)
-                else:
-                    why = self._would_restart(compiled, run)
-                    out.update(changed=True, how="restart" if why else "live", why=why)
+                why = self._would_restart(compiled, run)
+                out.update(changed=True, how="restart" if why else "live", why=why)
         self._looked = (key, out)
         return out
 
@@ -8970,8 +9029,9 @@ class Agent:
         not compile; `unsaved`, the live changes no save holds, which a
         reload is refused over (`discard`). Read only. `changed` is null
         with no rig of channels up, or a running config that cannot be
-        read."""
-        run = await self._rigfile_run()
+        read. The amp's wiring is the last look (`look=False`): only the
+        POST, which decides a restart, looks again."""
+        run = await self._rigfile_run(look=False)
         path = run["running"]
         if path is None:
             return web.json_response({"ok": True, "rig": None, "changed": None, "how": None, "why": [],
@@ -9075,7 +9135,7 @@ class Agent:
                 if answer is None:
                     # One Undo (#209): the file as it played put back, and the
                     # rig switched into it, whatever the switch below does.
-                    self._reload_history(path, look["data"], run)
+                    self._reload_history(path, look["data"], look["recorded"], run)
 
                     def mark(entry: dict[str, Any]) -> None:
                         entry["args"]["reload"] = True
@@ -9101,39 +9161,48 @@ class Agent:
             return web.json_response(answer)
         return web.json_response(answer, status=504 if answer.get("abandoned") else 409)
 
-    def _reload_history(self, path: Path, after: bytes, run: dict[str, Any]) -> None:
-        """A reload's one Undo step: the file put back as it played, `apply:
-        "switch"`. The rack's edits of this file this run that waited for a
-        restart (`apply: "restart"`) are in it, so they go: undoing the
-        reload undoes them. Where what played is not known (the agent has
-        not seen the file and the running config agree this run), the bytes
-        before the oldest waiting edit are, when those edits lead to the
-        file as it is; failing that, the waiting edits are undone by a
-        switch of their own, and a reload with none is a step that says it
-        cannot be undone."""
+    def _reload_history(self, path: Path, after: bytes, recorded: bytes | None, run: dict[str, Any]) -> None:
+        """A reload's one Undo step: the file put back as it played before
+        (`recorded`, the bytes the running config records), `apply:
+        "switch"`. The rack's edits of this file made since it was last what
+        plays (`apply: "restart"`, this run) are in it, so they go: undoing
+        the reload undoes them. The walk back stops at the edit made over
+        the bytes that play, or at a step that left the file what plays (a
+        save, a switch into it); any other step of this file on the way (a
+        save over an edit the rig did not play, a pedal assignment) means
+        the bytes that played before are not the file's history any more,
+        and putting them back would lose what that step wrote: then, and
+        where nothing is recorded, the step says it cannot be undone."""
+        from .rig import source_digest
+
         state = run["state"]
         here = str(Path(path).resolve())
-
-        def waiting(entry: dict[str, Any]) -> bool:
-            return (entry.get("kind") == "file" and entry.get("apply") == "restart"
-                    and str(Path(entry.get("path") or "").resolve()) == here
-                    and not run_changed(entry.get("run") or {}, state))
-
-        edits = [e for e in self.history.entries if waiting(e)]
-        before = self._played_bytes(path, state)
-        if before is None and edits and edits[-1].get("after") == history_module.digest(after):
-            before = edits[0].get("before")
-        if before is not None:
-            for entry in edits:
+        sha = source_digest(recorded) if recorded is not None else None
+        fold: list[dict[str, Any]] = []
+        whole = sha is not None
+        for entry in reversed(self.history.entries) if whole else ():
+            if entry.get("kind") != "file" or str(Path(entry.get("path") or "").resolve()) != here:
+                continue
+            if entry.get("apply") == "restart" and not run_changed(entry.get("run") or {}, state):
+                fold.append(entry)
+                if history_module.digest(entry.get("before")) == sha:
+                    break
+                continue
+            if entry.get("after") == sha:
+                break  # where the file was last what plays
+            whole = False
+            break
+        if whole:
+            for entry in fold:
                 self.history.drop(entry)
-            self._history_file(path, before, after, f"reload {path.stem}", run=run, apply="switch", act="reload")
+            self._history_file(path, recorded, after, f"reload {path.stem}", run=run, apply="switch", act="reload")
             return
-        for entry in edits:
-            entry["apply"] = "switch"  # the rig plays them now: putting one back plays that
-        if not edits:
-            self.history.push("none", f"reload {path.stem}", rig=path.stem, act="reload",
-                              why=(f"{path.name} as {path.stem} played it before the reload is not known to "
-                                   "this agent: Revert… goes back to a save"))
+        why = (f"{path.name} as {path.stem} played it before the reload is not recorded (a run started before "
+               "#142): Revert… goes back to a save") if sha is None else (
+               f"{path.name} was written since it was last what {path.stem} played (a save or a pedal over an "
+               "edit the rig did not play), so putting back what played would lose that: Revert… goes back "
+               "to a save")
+        self.history.push("none", f"reload {path.stem}", rig=path.stem, act="reload", why=why)
 
 
     # ======================================================================= #
@@ -10337,10 +10406,14 @@ def renamed_running(running: dict[str, Any], compiled: dict[str, Any]) -> dict[s
     loaded (tracks, host, cc_mappings) and the agent serves from it
     (`_midi_agent`, the controller in `_meta`) as it runs, under the new
     file's name and source. Pure."""
+    from .rig import SOURCE_SHA, SOURCE_TEXT
     from .rigfile import MIDI_CONTROLLER
 
     out = copy.deepcopy(running)
-    meta = {k: v for k, v in (compiled.get("_meta") or {}).items() if k != MIDI_CONTROLLER}
+    # Not the new file's bytes, which this run does not play (#142): no file
+    # is what plays until the restart, so nothing is recorded.
+    meta = {k: v for k, v in (compiled.get("_meta") or {}).items()
+            if k not in (MIDI_CONTROLLER, SOURCE_SHA, SOURCE_TEXT)}
     if MIDI_CONTROLLER in (running.get("_meta") or {}):
         meta[MIDI_CONTROLLER] = running["_meta"][MIDI_CONTROLLER]
     out["_meta"] = meta

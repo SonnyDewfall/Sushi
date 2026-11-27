@@ -493,7 +493,21 @@ async function refreshReload(force = false) {
   const answer = await request("GET", "/rig/reload");
   const was = JSON.stringify(ru.look && ru.look.ok ? ru.look.body : null);
   ru.look = answer;
+  // The file is what plays (another page reloaded, an Undo put it back): an
+  // edit's Reload is answered, and goes, so it hides nothing (#256's review).
+  if (answer.ok && answer.body.changed === false && answer.body.rig === rig.config_name) dropReloadOffer();
   return JSON.stringify(answer.ok ? answer.body : null) !== was;
+}
+
+// An edit's answer without its Reload, which is answered or no longer
+// stands; its words stay.
+function dropReloadOffer() {
+  const w = state.wiring;
+  if (w.result && w.result.offer && w.result.offer.op === "reload") {
+    w.result = keepActId(w.result, { ...w.result, offer: null });
+    return true;
+  }
+  return false;
 }
 
 // Every rig's channels, for "start from" and a strip's Load….
@@ -1347,6 +1361,8 @@ async function undo(opts = {}) {
     const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
     if (rig.config_name) refreshRigChannels(rig.config_name, true).then(render);
     refreshMidi(true).then(render);
+    // What the edit offered to reload may have been put back: asked again.
+    dropReloadOffer();
     refreshReload(true).then(render);
     if (state.revert.open) refreshSaves();
   }
@@ -5390,7 +5406,11 @@ function startReload(rig, how, why, channel = null) {
 
 async function reload(rig, asked, channel = null) {
   const ru = state.reloadUi;
-  if (ru.pending || R.lockRefusal(state.locked, "reload")) return;
+  if (ru.pending) return;
+  // Locked since it was asked (a Yes, Reload anyway): said, never a tap
+  // that does nothing (#256's review).
+  const refusal = R.lockRefusal(state.locked, "reload");
+  if (refusal) { ru.ask = null; fail("Not reloaded", { reason: refusal, lock: true }); render(); return; }
   ru.ask = null;
   ru.pending = { rig };
   render();
@@ -5409,10 +5429,7 @@ async function reload(rig, asked, channel = null) {
     ru.result = said;
   }
   // An edit's Reload is answered: its result stays, without the offer.
-  const w = state.wiring;
-  if (answer.ok && w.result && w.result.offer && w.result.offer.op === "reload") {
-    w.result = keepActId(w.result, { ...w.result, offer: null });
-  }
+  if (answer.ok) dropReloadOffer();
   render();
   if (answer.ok) {
     refreshRigChannels(rig, true).then(render);

@@ -670,7 +670,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   `restart: false` and the rig drawn; one the diff says restarts asks
   **Restart?** first and then sends `restart: true`. **Reloaded** with
   **Live** or **Restarted**, the plan's file and reasons on hover; **Not
-  reloaded** with **Reload anyway** for unsaved work. Its Undo, behind the
+  reloaded** with **Reload anyway** for unsaved work. A Yes or Reload anyway
+  given after the lock came on is said **Not reloaded**, "Locked". An edit's
+  Reload goes once the file is what plays again (`GET /rig/reload` says
+  `changed: false`: another page reloaded it, an Undo put it back) and on
+  any Undo, the edit's words staying, so it never hides File changed. Its Undo, behind the
   lock (`UNDO_LOCKED_ACTS`), puts the file back as it played and switches
   the rig into it. The decisions are rig.js's (`reloadCall`, `reloadWord`,
   `fileChanged`, `reloadOutcome`, `moveChannelCall`, `canMoveChannel`),
