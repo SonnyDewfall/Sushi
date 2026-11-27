@@ -291,11 +291,12 @@ written; a missing role comes back with the lines to add (`machine_hint`).
 `GET /machine/roles` gives the pickers what the patchbay says each role can
 feed and the ceiling as the compiler refuses one more channel.
 
-An edit of the running rig's own file takes effect at a restart, and the
-answer says so with `rigfile.diff`'s reasons, as a switch gives them, and
-offers it. It is refused while the agent saw changes since the last save
-(`unsaved`): the restart that plays the edit reloads the file and would drop
-them, so Save comes first. The restart itself refuses the same way
+An edit of the running rig's own file plays once the rig is reloaded from
+it (`POST /rig/reload`, #142: the live switch into its own file, live where
+`rigfile.diff` can be, by restart where it cannot), and the answer offers the
+reload, saying which and why (`_would_restart`, as a revert asks it). It is
+refused while the agent saw changes since the last save (`unsaved`): the
+reload that plays the edit would drop them, so Save comes first. The restart itself refuses the same way
 (`restart_refusal`, unless `{"discard": true}`), for a change made after the
 edit and for every other restart; and it, like every switch by restart
 (`switch_steps`), is started against the run's machine file, the one the

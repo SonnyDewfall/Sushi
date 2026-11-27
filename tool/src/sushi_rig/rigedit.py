@@ -1,6 +1,7 @@
-"""A new rig, and a channel added or re-wired, as rig files: the decisions
-behind the web UI's New rig screen and the rack's channel edits (agent.py's
-rig files block, which does the reading, the compiling and the writing).
+"""A new rig, and a channel added, re-wired, moved or removed, as rig files:
+the decisions behind the web UI's New rig screen and the rack's channel edits
+(agent.py's rig files block, which does the reading, the compiling and the
+writing).
 
 Phase 2's words for the screen: "a 'new rig' flow that asks how many channels,
 mono or stereo for each, and which input each listens on, and refuses past the

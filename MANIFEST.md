@@ -7901,3 +7901,46 @@ the amp, which sits in front of the channel. **Not measured**: the rig, its
 PipeWire and realtime scheduling (`sushi-rig top` needs PipeWire), a real
 string, the amp, the agent and the page; Sushi on JACK here needed a
 stand-in for ALSA's sequencer, preloaded into Sushi alone. *(2026-11-26)*
+
+**Reload the running rig's file, offered after an edit, and move a channel
+(#142).** The running rig's own file was read again only by a restart: after
+Add channel, Change input or a hand edit the agent said the change "takes
+effect when it restarts". `POST /rig/reload {"rig"?, "discard"?,
+"restart"?}` now plays the file as it is now through the live switch into
+it (`_revert_switch`, as a revert and a channel load do), nothing written:
+live where `rigfile.diff` can (a parameter, a bypass, a plugin added,
+removed or moved), by restart where it cannot (a channel added, removed or
+moved, an input on another role, Sushi's MIDI map, the amp's model), and
+with `"restart": false` a restart is `409 restarts` with `why` first.
+Refused while there is unsaved live work unless `discard`
+(`reload_refusal`), for a file that will not compile or whose plugins are
+missing, and for another rig than the page drew. A file that is what plays
+is a no-op that says so (`how: "unchanged"`). One Undo step, `act:
+"reload"`: the file put back as it played and the rig switched into it,
+with the rack edits that waited for the reload inside it. `GET /rig/reload`
+says whether the file differs from what plays and what a reload would do;
+**what plays** is the file whose compile the switch would plan nothing for,
+or the bytes the agent knows play this run (a save over the file as it
+played writes live values into it and leaves the running config as Sushi
+loaded it, so the config alone would call every save a change). The page
+reads it every three seconds: **File changed** in the status zone, and
+**Reload** in the activity bar beside **Live** or **Restart?**, which an
+edit's own answer offers in place of the old Restart. `POST
+/rigs/<rig>/channels/<c>/move {"direction"}` swaps a channel with its
+neighbour by Add channel's rules (in place, comments moving with it,
+compiled first, refused for the running rig while it has unsaved changes),
+with **↑** and **↓** on each strip. **Channel order is played by Sushi**:
+the compiler gives each channel its track in the file's order, its engine
+inputs from the first free one and its own output bus by its place, which
+the patchbay wires and the recorder's stems read; the sends (each into
+`master_return`) and the master (always last) do not change. So a move is
+`track_order` and `track` in `rigfile.diff`, a restart, never live. Reload,
+a move and their Undos are behind the lock. Found on the way: `_would_restart`
+asked the Sushi link whether it can remove a track even with none to remove,
+which a link that answers nothing (the rig files tests' stand-in) turned
+into an `unreadable` restart; it now asks only with tracks to remove. Docs:
+the agent, the web UI and building-a-rig. **Not run against a live Sushi or
+on the rig**: shown against `test_agent.RigLive` with the agent's real
+switch, and the UI's fake. The pedal assignment that waits for a restart
+still offers Restart; the file differs from what plays then, so File
+changed offers Reload beside it. *(2026-11-27)*

@@ -44,18 +44,23 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
 
 ## Add a channel to the rig that is playing
 
-1. Save first if you have unsaved changes: the rig has to restart to play a new
-   channel, and the page will refuse the edit until you have saved.
+1. Save first if you have unsaved changes: the rig plays a new channel only
+   once it reloads its file, which would drop them, and the page will refuse
+   the edit until you have saved.
 2. On the rack, at the bottom of the left column, click **Add channel**.
 3. Fill in **New channel name**, **Input**, **Width** and **Start from**, as
    above.
 4. Click **Add** and the channel's name.
-5. **Added**, in the bar at the top, confirms it. The channel is now in the rig's file but
-   not yet in the sound. Click **Restart** beside it; the bar asks **Restart?**: click
-   **Yes**. The sound stops for a few seconds while the rig comes back. **No**
-   puts it off; the channel then plays the next time the rig starts.
+5. **Added**, in the bar at the top, confirms it. The channel is now in the
+   rig's file but not yet in the sound; the strip says **Needs reload**, and
+   the status at the top says **File changed**. Beside **Added** the bar says
+   **Restart?**: a new channel is a restart. Unlock the page (the **Lock**
+   button), then click **Reload**; the bar asks **Restart?**: click **Yes**.
+   The sound stops for a few seconds while the rig comes back. **No** puts it
+   off; the channel then plays the next time the rig reloads or starts.
 6. Changed your mind? **Undo**, at the top of the page, takes the channel out
-   of the file again.
+   of the file again. Once you have reloaded, one **Undo** takes back the
+   reload and the channel with it.
 
 ## Change a channel's input
 
@@ -63,7 +68,43 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
 2. On the rack, in the channel's strip on the left, click **Change input**.
 3. Pick the new **Input**, and the **Width** if that changes too.
 4. Click **Apply**, or **Cancel**.
-5. Click **Restart**, then **Yes**. **Undo** puts the old input back.
+5. Unlock the page, click **Reload**, then **Yes**: an input is wired only
+   when the rig starts, so this is a restart too. **Undo** puts the old
+   input back.
+
+## Move a channel up or down
+
+1. Unlock the page, and save first, as above.
+2. On the rack, in the channel's strip on the left, click **↑** or **↓**.
+   The first channel has no **↑**, the last no **↓**.
+3. **Moved**, in the bar at the top, confirms it: the channel and its
+   comments moved in the rig's file, and nothing else in it changed. The
+   strips stay in the order the rig plays until it is reloaded.
+4. The bar says **Restart?** beside it: a channel's place is its place in the
+   sound engine, along with the inputs and outputs it is given, so moving one
+   is never played live. Click **Reload**, then **Yes**. **Undo** moves it
+   back.
+
+## Play a change to the rig's file: Reload
+
+When the rig's file no longer says what is playing, the status at the top
+of the page says **File changed** (hover over it for what a reload would
+do), and the bar offers **Reload**. That happens after an edit on the rack
+and after you edit the file by hand in a text editor.
+
+- Beside it, **Live** means the reload plays the file with no gap: a
+  plugin's settings, its on/off, a plugin added, removed or moved.
+- **Restart?** means the rig has to restart to play it, which stops the
+  sound for a few seconds: a channel added, removed or moved, an input
+  changed, the pedals' map, the amp's model. Click **Reload** and the bar
+  asks **Restart?** before anything happens.
+
+With unsaved changes on the rig, **Reload** says **Not reloaded** and offers
+**Reload anyway**, which drops them. A file that does not load says **Won't
+load** beside **File changed**; hover over it for why, and fix the file.
+**Reloaded** and **Live** or **Restarted** confirm it; **Undo** puts the
+file and the sound back as they were before the reload. Reload is behind the
+lock.
 
 ## Remove a channel
 
@@ -127,9 +168,10 @@ folder's `.gitignore` where it is.
 
 ## Things that may surprise you
 
-- **Adding a channel or changing an input needs the rig to restart**, which is
-  a few seconds of silence. Nothing changes in the sound until then.
-  So does **removing** a channel, and putting it back with **Undo**.
+- **Adding, moving a channel or changing an input needs the rig to restart**,
+  which is a few seconds of silence. Nothing changes in the sound until you
+  **Reload**. So does **removing** a channel, and putting it back with
+  **Undo**. A setting changed by hand in the file reloads live.
 - **A new channel with an empty chain has no effects.** Add them on the rack
   once the rig is running ([Shaping a sound](shaping-a-sound.md#add-a-plugin)),
   or use **Start from** to copy another channel's chain.
@@ -167,8 +209,8 @@ folder's `.gitignore` where it is.
   `config/rigs/` folder.
 - Adding a channel from the page and restarting to play it has been done on the
   rig: a vocal channel was added to a guitar rig that way. Making a whole new
-  rig on the **New rig** screen, **Change input**, **Remove** and **Delete** are
-  not yet recorded as tried on the rig.
+  rig on the **New rig** screen, **Change input**, **Remove**, **Delete**,
+  moving a channel and **Reload** are not yet recorded as tried on the rig.
 
 ## If something goes wrong
 
