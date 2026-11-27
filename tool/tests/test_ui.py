@@ -3800,10 +3800,12 @@ def test_the_stage_has_no_new_rig_and_no_channel_edits(browser, files_served):
 
 # -- review, 2026-11-06 -------------------------------------------------------
 
-def test_after_an_edit_a_knob_turned_makes_the_offered_restart_refuse_until_told(browser, files_served):
-    """(1) The restart an edit offers reloads the file, so a knob turned after
-    the edit would be lost by it: the agent refuses, the page says why in
-    place, and dropping the change is a second, explicit tap."""
+def test_after_an_edit_a_knob_turned_makes_the_offered_reload_refuse_until_told(browser, files_served):
+    """(1) The reload an edit offers (#142, the restart it offered before)
+    plays the file, so a knob turned after the edit would be lost by it: the
+    agent refuses, the page says why in the bar, and dropping the change is
+    a second, explicit tap."""
+    files_served.lifecycle.how["electric_board"] = ("restart", [{"code": "track_added", "detail": "track 'keys'"}])
     page = Watched(browser, files_served, "/#rack")
     p = page.page
     wiring = inputs_region(p)
@@ -3813,16 +3815,17 @@ def test_after_an_edit_a_knob_turned_makes_the_offered_restart_refuse_until_told
     expect(result).to_contain_text("Added keys to electric_board")
     turn_drive_down(p, 1)
     until(lambda: abs(files_served.rig.info["overdrive"]["Drive"]["value"] - 0.61) < 1e-9)
-    result.get_by_role("button", name="Restart").click()
+    unlock(p)
+    result.get_by_role("button", name="Reload").click()
     p.locator(".activity").get_by_role("group", name="Restart?").get_by_role("button", name="Yes").click()
-    refused = p.locator(".activity .problem.refused")
-    expect(refused).to_contain_text("Not restarted: electric_board")
-    expect(refused).to_have_attribute("title", re.compile("electric_board has 1 change made through the agent and not saved"))
+    refused = p.locator(".activity .reload-result.refused")
+    expect(refused.locator("strong")).to_have_text("Not reloaded")
+    expect(refused).to_have_attribute("title", re.compile("electric_board is running with 1 change made through the agent and not saved"))
     expect(refused).to_have_attribute("title", re.compile("Save first"))
-    assert ["restart"] not in files_served.lifecycle.calls
-    refused.get_by_role("button", name="Restart anyway").click()
-    expect(p.locator(".activity .notice")).to_have_attribute("title", re.compile(re.escape("Restarted electric_board from its file.")))
-    assert files_served.lifecycle.calls[-1] == ["restart"]
+    assert ["switch", "electric_board"] not in files_served.lifecycle.calls
+    refused.get_by_role("button", name="Reload anyway").click()
+    expect(p.locator(".activity .reload-result strong")).to_have_text("Reloaded")
+    assert files_served.lifecycle.calls[-1] == ["switch", "electric_board"]
     page.close()
 
 
