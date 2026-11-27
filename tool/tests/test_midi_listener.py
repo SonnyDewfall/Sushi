@@ -525,14 +525,14 @@ def test_a_rig_to_switch_to_is_checked_to_compile_from_its_files(tmp_path, monke
     # Unreadable. Stood in, because a mode of 0 is no obstacle to root, which
     # the container job runs as, and an assertion that root passes over tests
     # nothing there.
-    real_read = Path.read_text
+    # Both ways a file is read: the compile reads its bytes once (#142).
+    for method in ("read_text", "read_bytes"):
+        def refuse(self, *args, _real=getattr(Path, method), **kwargs):
+            if self == lead:
+                raise PermissionError(13, "Permission denied", str(self))
+            return _real(self, *args, **kwargs)
 
-    def refuse(self, *args, **kwargs):
-        if self == lead:
-            raise PermissionError(13, "Permission denied", str(self))
-        return real_read(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", refuse)
+        monkeypatch.setattr(Path, method, refuse)
     said = problem("lead")
     assert said is not None and said.startswith("lead.yaml: ") and "PermissionError" in said, said
 

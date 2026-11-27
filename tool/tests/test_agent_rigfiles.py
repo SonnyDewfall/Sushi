@@ -201,8 +201,14 @@ def stereo(name, role="guitar-in", **extra):
 def test_a_draft_compiles_to_exactly_what_up_rig_compiles_its_file_to(root, name):
     """One path: a rig not yet written is compiled as `up --rig` compiles it
     once it is, so what the routes accept is what starts."""
+    from sushi_rig.rig import playing_source, stamp_source
+
     raw = rig_doc(root, name)
-    assert compile_rig_draft(raw, root, machine_file(root)) == compile_named_rig(name, root, machine_file(root))
+    named = compile_named_rig(name, root, machine_file(root))
+    # The one difference: `up --rig` records the bytes it compiled (#142),
+    # and a draft is no file's bytes yet.
+    assert playing_source(named)[1] == (root / "config" / "rigs" / f"{name}.yaml").read_bytes()
+    assert compile_rig_draft(raw, root, machine_file(root)) == stamp_source(named, None)
 
 
 def test_a_draft_is_wired_too_so_a_role_the_machine_lacks_is_refused_before_up_would():
