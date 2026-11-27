@@ -1347,6 +1347,7 @@ async function undo(opts = {}) {
     const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
     if (rig.config_name) refreshRigChannels(rig.config_name, true).then(render);
     refreshMidi(true).then(render);
+    refreshReload(true).then(render);
     if (state.revert.open) refreshSaves();
   }
 }
@@ -5343,7 +5344,10 @@ async function rigFileWrite(call, op, what, rig, channel = null) {
   }
   state.wiring.result = { ...R.rigFileOutcome(op, what, answer), channel };
   render();
-  if (answer.ok) refreshRigChannels(rig, true).then(render);
+  if (answer.ok) {
+    refreshRigChannels(rig, true).then(render);
+    refreshReload(true).then(render);  // "File changed" (#142), now rather than at the next look
+  }
   return answer;
 }
 
@@ -5363,7 +5367,6 @@ async function moveChannel(rig, channel, direction) {
   const refusal = R.lockRefusal(state.locked, "move_channel");
   if (refusal) { fail(`Not moved: ${channel}`, { reason: refusal, lock: true }); render(); return; }
   await rigFileWrite(R.moveChannelCall(rig, channel, direction), "move", `${channel} ${direction}`, rig, channel);
-  refreshReload(true).then(render);
 }
 
 // A reload (#142): Reload pressed, from an edit's answer or "File changed".
